@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
-type CaptchaResponse = { id: string; svg: string };
+type CaptchaResponse = { id: string; svg: string; expiresIn?: string };
+const captchaCacheKey = "dns-guard-captcha";
 
 export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) => void }) {
   const [username, setUsername] = useState("");
@@ -9,13 +10,39 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
   const [captchaSvg, setCaptchaSvg] = useState("");
   const [captchaCode, setCaptchaCode] = useState("");
   const [captchaError, setCaptchaError] = useState("");
+  const [captchaLoading, setCaptchaLoading] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [title, setTitle] = useState("域盾 DNSGuard");
   const [subtitle, setSubtitle] = useState("DNS 安全策略管理平台");
   const [clock, setClock] = useState(() => new Date());
 
-  const refreshCaptcha = async () => {
+  const refreshCaptcha = async (force = false) => {
+    if (!force) {
+      try {
+        const cached = JSON.parse(sessionStorage.getItem(captchaCacheKey) ?? "null") as (CaptchaResponse & { expiresAt?: number }) | null;
+        if (cached?.id && cached.svg && cached.expiresAt && cached.expiresAt > Date.now()) {
+          setCaptchaId(cached.id);
+          setCaptchaSvg(cached.svg);
+          setCaptchaCode("");
+          setCaptchaError("");
+          return;
+        }
+      } catch {
+        try {
+          sessionStorage.removeItem(captchaCacheKey);
+        } catch {
+          // Ignore storage restrictions.
+        }
+      }
+    } else {
+      try {
+        sessionStorage.removeItem(captchaCacheKey);
+      } catch {
+        // Ignore storage restrictions; the server already consumed the captcha.
+      }
+    }
+    setCaptchaLoading(true);
     try {
       const response = await fetch("/api/auth/captcha", { cache: "no-store" });
       if (!response.ok) throw new Error("captcha unavailable");
@@ -24,10 +51,17 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
       setCaptchaSvg(value.svg);
       setCaptchaCode("");
       setCaptchaError("");
+      try {
+        sessionStorage.setItem(captchaCacheKey, JSON.stringify({ ...value, expiresAt: Date.now() + Number(value.expiresIn ?? 300) * 1000 }));
+      } catch {
+        // Captcha still works when browser storage is unavailable.
+      }
     } catch {
       setCaptchaId("");
       setCaptchaSvg("");
       setCaptchaError("验证码加载失败，请点击重新加载");
+    } finally {
+      setCaptchaLoading(false);
     }
   };
 
@@ -64,10 +98,15 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
       });
       if (!response.ok) throw new Error("登录失败");
       const payload = await response.json() as { mustChangePassword?: boolean };
+      try {
+        sessionStorage.removeItem(captchaCacheKey);
+      } catch {
+        // Ignore storage restrictions; the server already consumed the captcha.
+      }
       onLogin(payload.mustChangePassword === true);
     } catch {
       setError("用户名、密码或验证码错误，或认证服务不可用");
-      void refreshCaptcha();
+      void refreshCaptcha(true);
     } finally {
       setLoading(false);
     }
@@ -93,7 +132,7 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
           <label>图形验证码
             <div className="captcha-row">
               <input value={captchaCode} onChange={(event) => setCaptchaCode(event.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 4))} placeholder="请输入验证码" autoComplete="off" maxLength={4} />
-              <button className="captcha-image" type="button" onClick={() => void refreshCaptcha()} aria-label="刷新验证码">{captchaImage ? <img src={captchaImage} alt="验证码" /> : captchaError ? "重新加载" : "加载中"}</button>
+              <button className="captcha-image" type="button" disabled={captchaLoading} onClick={() => void refreshCaptcha(true)} aria-label="刷新验证码">{captchaImage ? <img src={captchaImage} alt="验证码" /> : captchaError ? "重新加载" : "加载中"}</button>
             </div>
           </label>
           {captchaError && <p className="login-error">{captchaError}</p>}
