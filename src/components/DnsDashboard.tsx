@@ -331,6 +331,16 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   };
 
   const publish = async () => {
+    const changes = preview?.changes ?? [];
+    if (changes.length === 0) {
+      setNotice("当前没有待发布的 RPZ 变更");
+      return;
+    }
+    const added = changes.filter((change) => change.type === "added").length;
+    const changed = changes.filter((change) => change.type === "changed").length;
+    const removed = changes.filter((change) => change.type === "removed").length;
+    const summary = [`新增 ${added} 条`, `变更 ${changed} 条`, `删除 ${removed} 条`].join("，");
+    if (!window.confirm(`确认发布 RPZ 变更？\n${summary}\n发布后将同步到 Primary 和 Secondary。`)) return;
     setBusy(true);
     setNotice("");
     try {
