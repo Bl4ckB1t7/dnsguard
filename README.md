@@ -72,4 +72,8 @@ rules → named-checkzone → RPZ Primary → NOTIFY / IXFR → Secondary
 ```bash
 npm run build
 cd server && go test ./...
+cd ..
+./scripts/test-functional.sh
 ```
+
+`test-functional.sh` 需要本地 BIND 测试环境和 `AUTH_ENABLED=false`，会创建一个临时 RPZ 规则，验证发布、精确/泛域名记录、主辅同步、删除回滚和待发布状态，结束后自动清理。
