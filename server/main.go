@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -109,6 +110,63 @@ func validateSecurityConfig() error {
 	}
 	if (os.Getenv("TLS_CERT_FILE") == "" || os.Getenv("TLS_KEY_FILE") == "") && os.Getenv("TRUST_PROXY_TLS") != "true" {
 		return fmt.Errorf("configure TLS_CERT_FILE/TLS_KEY_FILE or set TRUST_PROXY_TLS=true in production")
+	}
+	if err := validateProductionRuntimeFiles(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProductionRuntimeFiles() error {
+	for _, item := range []struct {
+		path  string
+		label string
+		mode  os.FileMode
+	}{
+		{authFilePath(), "AUTH_FILE", 0o077},
+		{os.Getenv("DNS_NODE_CONFIG_FILE"), "DNS_NODE_CONFIG_FILE", 0},
+	} {
+		if item.path == "" {
+			return fmt.Errorf("%s must be configured in production", item.label)
+		}
+		info, err := os.Stat(item.path)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("%s must be an existing regular file: %s", item.label, item.path)
+		}
+		if item.mode != 0 && info.Mode().Perm()&item.mode != 0 {
+			return fmt.Errorf("%s must not be group/world accessible: %s", item.label, item.path)
+		}
+	}
+	if os.Getenv("TLS_CERT_FILE") != "" {
+		for _, path := range []string{os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE")} {
+			info, err := os.Stat(path)
+			if err != nil || !info.Mode().IsRegular() {
+				return fmt.Errorf("TLS file must be an existing regular file: %s", path)
+			}
+		}
+	}
+	for _, path := range []string{os.Getenv("DNS_STATE_FILE"), os.Getenv("AUDIT_FILE"), os.Getenv("RPZ_ARTIFACT_FILE")} {
+		if path == "" {
+			continue
+		}
+		parent := filepath.Dir(path)
+		info, err := os.Stat(parent)
+		if err != nil || !info.IsDir() {
+			return fmt.Errorf("runtime data directory does not exist: %s", parent)
+		}
+		if info.Mode().Perm()&0o002 != 0 {
+			return fmt.Errorf("runtime data directory must not be world writable: %s", parent)
+		}
+	}
+	if rpzConfig("RPZ_PUBLISH_MODE", "artifact") == "nsupdate" {
+		keyFile := os.Getenv("RPZ_KEY_FILE")
+		info, err := os.Stat(keyFile)
+		if keyFile == "" || err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("RPZ_KEY_FILE must be an existing regular file in nsupdate mode")
+		}
+		if info.Mode().Perm()&0o007 != 0 {
+			return fmt.Errorf("RPZ_KEY_FILE must not be world accessible")
+		}
 	}
 	return nil
 }
