@@ -105,7 +105,7 @@ func liveDNSNodes() []DNSNode {
 	dnsMu.RLock()
 	result := append([]DNSNode{}, state.Nodes...)
 	dnsMu.RUnlock()
-	now := time.Now().UTC().Format("2006-01-02 15:04:05Z")
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	primarySerial := ""
 	for index := range result {
 		result[index].Address = configuredDNSAddress(result[index])
@@ -198,7 +198,7 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 		"rules":          rules,
 		"publishedRules": published,
 		"rpzHits":        0,
-		"lastSync":       time.Now().UTC().Format("15:04:05Z"),
+		"lastSync":       time.Now().UTC().Format("15:04:05"),
 		"publisherMode":  rpzStatusSnapshot().Mode,
 		"lastPublish":    rpzStatusSnapshot().LastPublish,
 		"publishMessage": rpzStatusSnapshot().Message,
