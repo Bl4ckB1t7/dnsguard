@@ -310,10 +310,17 @@ func rpzRuleFingerprint(rule RPZRule) string {
 }
 
 func rpzRuleSummary(rule RPZRule) string {
+	reason := strings.TrimSpace(rule.Reason)
 	if rpzRuleType(rule) == "A" {
-		return "A → " + rule.Value + " / " + rule.Reason
+		if reason == "" {
+			return "A → " + rule.Value
+		}
+		return "A → " + rule.Value + " / " + reason
 	}
-	return "白名单 / " + rule.Reason
+	if reason == "" {
+		return "白名单"
+	}
+	return "白名单 / " + reason
 }
 
 func copyRPZRules(rules []RPZRule) []RPZRule {
@@ -815,10 +822,6 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 			request.Value = ip.To4().String()
 		} else {
 			request.Value = ""
-		}
-		if strings.TrimSpace(request.Reason) == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请填写加白原因"})
-			return
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		action := "passthru"
