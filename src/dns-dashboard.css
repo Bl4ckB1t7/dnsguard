@@ -8,7 +8,6 @@ button, input { font: inherit; }
 .dns-header h1 { margin: 10px 0 8px; font-size: 28px; letter-spacing: 2px; font-weight: 650; }
 .dns-header p, .dns-footer { color: #76a8b6; font-size: 12px; }
 .dns-header .dns-subtitle { margin: 0; color: #9bd4dc; letter-spacing: 1px; }
-.dns-header .dns-tagline { margin: 5px 0 0; color: #6f9fab; font-size: 11px; }
 .dns-nav { display: flex; gap: 6px; margin-top: 20px; }
 .dns-nav button { border: 1px solid #1b5366; border-radius: 8px; background: transparent; color: #79aeba; padding: 7px 14px; cursor: pointer; }
 .dns-nav button:hover, .dns-nav button.active { border-color: #2dd8eb; background: #0a4055; color: #e4fdff; }
