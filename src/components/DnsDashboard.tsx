@@ -7,6 +7,8 @@ type RPZChange = { type: string; domain: string; before: string; after: string }
 type RPZPreview = { pending: boolean; currentCount: number; publishedCount: number; changes: RPZChange[] };
 type RPZVersion = { id: string; createdAt: string; mode: string; ruleCount: number };
 type PublishJob = { id: string; status: string; message?: string; error?: string };
+type AuditEntry = { timestamp: string; actor: string; action: string; result: string; ip?: string; hash?: string };
+type AuditResponse = { items: AuditEntry[]; total: number; page: number; pageSize: number };
 
 function csrfHeaders(): Record<string, string> {
   const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("network_csrf="))?.split("=").slice(1).join("=");
@@ -66,17 +68,24 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [auditSearchDraft, setAuditSearchDraft] = useState("");
+  const [auditSearch, setAuditSearch] = useState("");
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(20);
+  const [auditTotal, setAuditTotal] = useState(0);
 
   const load = async () => {
     setLoading(true);
     setLoadError("");
     try {
-      const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions] = await Promise.all([
+      const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions, nextAudit] = await Promise.all([
         readJSON<Overview>("/api/dns/overview"),
         readJSON<DnsNode[]>("/api/dns/nodes"),
         readJSON<Rule[]>("/api/dns/rpz"),
         readJSON<RPZPreview>("/api/dns/rpz/preview"),
         readJSON<RPZVersion[]>("/api/dns/rpz/versions"),
+        readJSON<AuditResponse>(`/api/audit?q=${encodeURIComponent(auditSearch)}&page=${auditPage}&pageSize=${auditPageSize}`),
       ]);
       setOverview(nextOverview);
       setNodes(nextNodes ?? []);
@@ -85,11 +94,24 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setSelectedRuleIds((selected) => selected.filter((id) => (nextRules ?? []).some((rule) => rule.id === id)));
       setPreview(nextPreview);
       setVersions(nextVersions ?? []);
+      setAuditEntries(nextAudit.items ?? []);
+      setAuditTotal(nextAudit.total ?? 0);
     } catch (error) {
       setLoadError(`状态加载失败：${(error as Error).message}。`);
       throw error;
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadAudit = async (search = auditSearch, page = auditPage, pageSize = auditPageSize) => {
+    try {
+      const result = await readJSON<AuditResponse>(`/api/audit?q=${encodeURIComponent(search)}&page=${page}&pageSize=${pageSize}`);
+      setAuditEntries(result.items ?? []);
+      setAuditTotal(result.total ?? 0);
+      setAuditPage(result.page ?? page);
+    } catch (error) {
+      setLoadError(`审计日志加载失败：${(error as Error).message}。`);
     }
   };
 
@@ -234,6 +256,8 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const visibleRules = filteredRules.slice((currentRulePage - 1) * rulePageSize, currentRulePage * rulePageSize);
   const ruleStart = filteredRules.length === 0 ? 0 : (currentRulePage - 1) * rulePageSize + 1;
   const ruleEnd = Math.min(currentRulePage * rulePageSize, filteredRules.length);
+  const auditPageCount = Math.max(1, Math.ceil(auditTotal / auditPageSize));
+  const currentAuditPage = Math.min(auditPage, auditPageCount);
   const visibleRuleIds = visibleRules.map((rule) => rule.id);
   const allVisibleSelected = visibleRuleIds.length > 0 && visibleRuleIds.every((id) => selectedRuleIds.includes(id));
   const toggleVisibleRules = () => {
@@ -270,6 +294,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       </section>
 
       <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU · 显示 {ruleStart}-{ruleEnd} / {filteredRules.length} 条 · 当前模式：{overview?.publisherMode ?? "artifact"} · 任务：{overview?.publishJobStatus ?? "idle"}</span></div><div className="record-tools"><input className="record-search" value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="搜索域名 / 原因" aria-label="搜索 RPZ 规则" /><button className="table-action bulk-action" disabled={busy || selectedRuleIds.length === 0} onClick={() => void bulkRemoveRules()}>批量删除{selectedRuleIds.length ? `（${selectedRuleIds.length}）` : ""}</button><button className="publish-button" disabled={busy || !overview?.pendingPublish} onClick={() => void publish()}>{overview?.pendingPublish ? "生成 / 发布 RPZ" : "已是最新"}</button></div></div><div className="table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="选择当前页规则" checked={allVisibleSelected} onChange={toggleVisibleRules} /></th><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{visibleRules.map((rule) => <tr key={rule.id}><td><input type="checkbox" aria-label={`选择 ${rule.domain}`} checked={selectedRuleIds.includes(rule.id)} onChange={() => setSelectedRuleIds((selected) => selected.includes(rule.id) ? selected.filter((id) => id !== rule.id) : [...selected, rule.id])} /></td><td className="mono">{rule.domain}</td><td>{rule.action}</td><td>{rule.reason}</td><td><span className={`rule-status ${rule.status}`}>{rule.status === "published" ? "已发布" : rule.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{rule.updatedAt}</td><td><button className="table-action" onClick={() => void removeRule(rule.id)}>删除</button></td></tr>)}</tbody></table>{rules.length === 0 ? <div className="empty">暂无 RPZ 规则</div> : filteredRules.length === 0 ? <div className="empty">没有匹配的 RPZ 规则</div> : null}</div>{filteredRules.length > 0 && <div className="pagination"><span>第 {currentRulePage} / {rulePageCount} 页</span><div className="pagination-actions"><label>每页 <select value={rulePageSize} onChange={(event) => { setRulePageSize(Number(event.target.value)); setRulePage(1); }}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select> 条</label><button disabled={currentRulePage <= 1} onClick={() => setRulePage(Math.max(1, currentRulePage - 1))}>上一页</button><button disabled={currentRulePage >= rulePageCount} onClick={() => setRulePage(Math.min(rulePageCount, currentRulePage + 1))}>下一页</button></div></div>}</section>
+      <section className="dns-panel audit-panel"><div className="panel-heading"><div><h2>审计日志</h2><span>共 {auditTotal} 条 · 支持按用户、动作、结果和 IP 搜索</span></div><div className="record-tools"><input className="record-search" value={auditSearchDraft} onChange={(event) => setAuditSearchDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setAuditSearch(auditSearchDraft); setAuditPage(1); void loadAudit(auditSearchDraft, 1, auditPageSize); } }} placeholder="搜索审计日志" aria-label="搜索审计日志" /><button className="table-action" onClick={() => { setAuditSearch(auditSearchDraft); setAuditPage(1); void loadAudit(auditSearchDraft, 1, auditPageSize); }}>搜索</button></div></div><div className="table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>动作</th><th>结果</th><th>来源 IP</th><th>校验</th></tr></thead><tbody>{auditEntries.map((entry, index) => <tr key={`${entry.timestamp}-${entry.action}-${index}`}><td>{formatDateTime(entry.timestamp)}</td><td>{entry.actor || "—"}</td><td className="mono">{entry.action}</td><td>{entry.result}</td><td className="mono">{entry.ip || "—"}</td><td className="audit-hash" title={entry.hash || "无哈希"}>{entry.hash ? `${entry.hash.slice(0, 12)}…` : "—"}</td></tr>)}</tbody></table>{auditEntries.length === 0 && <div className="empty">暂无匹配的审计日志</div>}</div>{auditTotal > 0 && <div className="pagination"><span>第 {currentAuditPage} / {auditPageCount} 页</span><div className="pagination-actions"><label>每页 <select value={auditPageSize} onChange={(event) => { const size = Number(event.target.value); setAuditPageSize(size); setAuditPage(1); void loadAudit(auditSearch, 1, size); }}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select> 条</label><button disabled={currentAuditPage <= 1} onClick={() => void loadAudit(auditSearch, currentAuditPage - 1, auditPageSize)}>上一页</button><button disabled={currentAuditPage >= auditPageCount} onClick={() => void loadAudit(auditSearch, currentAuditPage + 1, auditPageSize)}>下一页</button></div></div>}</section>
       <footer className="dns-footer">当前版本：文件型控制面 · DNS 节点状态通过 dig / SOA Serial 实时探测</footer>
     </main>
   );

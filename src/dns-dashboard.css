@@ -47,6 +47,7 @@ button, input { font: inherit; }
 .pagination select { border: 1px solid #2b7080; background: #031321; color: #a6dce4; padding: 5px 7px; }
 .pagination button { border: 1px solid #2b7080; background: transparent; color: #a6dce4; padding: 6px 11px; cursor: pointer; }
 .pagination button:disabled { opacity: .4; cursor: not-allowed; }
+.audit-hash { color: #7fe7d0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .3px; }
 .change-list, .version-list { display: grid; gap: 8px; max-height: 320px; overflow-y: auto; }
 .change-item, .version-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #123f50; border-radius: 9px; background: #031522; font-size: 12px; }
 .change-item small, .version-item small { margin-left: auto; color: #76acb9; }
