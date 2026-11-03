@@ -23,7 +23,13 @@ if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dns-ops-a
   exit 1
 fi
 
-export ARCHIVE
+DNS_STATE_FILE="${DNS_STATE_FILE:-$ROOT/data/dns-state.json}"
+DNS_NODE_CONFIG_FILE="${DNS_NODE_CONFIG_FILE:-$ROOT/config/dns-nodes.json}"
+AUDIT_FILE="${AUDIT_FILE:-$ROOT/data/audit.json}"
+RPZ_ARTIFACT_FILE="${RPZ_ARTIFACT_FILE:-$ROOT/data/rpz/rpz.local.db}"
+AUTH_FILE="${AUTH_FILE:-$ROOT/.run/auth.json}"
+RPZ_KEY_FILE="${RPZ_KEY_FILE:-}"
+export ARCHIVE ROOT DNS_STATE_FILE DNS_NODE_CONFIG_FILE AUDIT_FILE RPZ_ARTIFACT_FILE AUTH_FILE RPZ_KEY_FILE
 python3 - <<'PY'
 import hashlib
 import json
@@ -34,6 +40,13 @@ import tempfile
 from pathlib import Path
 
 archive = Path(os.environ["ARCHIVE"]).expanduser().resolve()
+root = Path(os.environ["ROOT"]).resolve()
+allowed = set()
+for key in ("DNS_STATE_FILE", "DNS_NODE_CONFIG_FILE", "AUDIT_FILE", "RPZ_ARTIFACT_FILE", "AUTH_FILE", "RPZ_KEY_FILE"):
+    raw = os.environ.get(key, "")
+    if raw:
+        path = Path(raw).expanduser()
+        allowed.add((path if path.is_absolute() else root / path).resolve())
 with tarfile.open(archive, "r:gz") as bundle:
     members = bundle.getmembers()
     for member in members:
@@ -52,7 +65,8 @@ with tarfile.open(archive, "r:gz") as bundle:
         stage = Path(temp)
         for entry in manifest.get("files", []):
             relative = Path(entry["path"])
-            if relative.is_absolute() or ".." in relative.parts or str(relative) not in members_by_name:
+            destination = (Path("/") / relative).resolve()
+            if relative.is_absolute() or ".." in relative.parts or str(relative) not in members_by_name or destination not in allowed:
                 raise SystemExit(f"invalid manifest path: {relative}")
             destination = stage / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -63,7 +77,7 @@ with tarfile.open(archive, "r:gz") as bundle:
         for entry in manifest["files"]:
             relative = Path(entry["path"])
             source = stage / relative
-            destination = Path("/") / relative
+            destination = (Path("/") / relative).resolve()
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(destination.name + ".restore.tmp")
             shutil.copy2(source, temporary)
