@@ -278,6 +278,9 @@ baidu.com.rpz.local.
 | `DNS_STATE_FILE` | RPZ 规则、已发布快照、版本记录 |
 | `DNS_NODE_CONFIG_FILE` | DNS 节点名称、角色、地址 |
 | `AUDIT_FILE` | 登录、规则、节点、发布审计 |
+| `AUDIT_MAX_ENTRIES` | `2000` | 当前审计文件保留条目数 |
+| `AUDIT_ROTATE_BYTES` | `5242880` | 审计文件达到该字节数后轮转，0 表示关闭 |
+| `AUDIT_ROTATE_BACKUPS` | `3` | 审计轮转文件数量 |
 | `RPZ_ARTIFACT_FILE` | 生成的 RPZ 文件 |
 | `RPZ_LOG_FILES` | BIND RPZ 日志，用于命中统计 |
 | `.run/` | API/Web PID、二进制和启动日志 |
@@ -291,6 +294,13 @@ sudo install -o dnsops -g bind -m 0640 /path/to/rpz-manager.key /etc/dns-ops/key
 ```
 
 TSIG key 只能授予控制面读取权限，不能放入 Git、前端目录或普通用户可读目录。
+
+审计记录包含 SHA-256 哈希链，当前文件达到大小阈值后按 `.1`、`.2` 等文件轮转。
+可以通过接口搜索和分页：
+
+```bash
+curl -b cookies.txt 'http://127.0.0.1:8080/api/audit?q=rpz&page=1&pageSize=50'
+```
 
 ## 6. 已有生产 BIND 的接入步骤
 
