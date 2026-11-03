@@ -31,7 +31,9 @@ button, input { font: inherit; }
 .form-hint { margin: -4px 0 4px; color: #75aabd; font-size: 12px; line-height: 1.5; }
 .table-wrap { overflow-x: auto; }
 .pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; color: #76acb9; font-size: 12px; }
-.pagination div { display: flex; gap: 8px; }
+.pagination-actions { display: flex; align-items: center; gap: 8px; }
+.pagination label { display: flex; align-items: center; gap: 5px; }
+.pagination select { border: 1px solid #2b7080; background: #031321; color: #a6dce4; padding: 5px 7px; }
 .pagination button { border: 1px solid #2b7080; background: transparent; color: #a6dce4; padding: 6px 11px; cursor: pointer; }
 .pagination button:disabled { opacity: .4; cursor: not-allowed; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
