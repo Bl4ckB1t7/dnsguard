@@ -80,7 +80,7 @@ ip link show
 ### 4.2 首次部署
 
 ```bash
-git clone https://github.com/Bl4ckB1t7/dns-ops-platform.git dnsguard
+git clone https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
 cp .env.example .env
 ```
