@@ -14,6 +14,11 @@ type DashboardView = "overview" | "audit";
 
 const telegramEventOptions = [
   { value: "publish_failed", label: "RPZ 发布失败" },
+  { value: "rpz_rule_create", label: "新增 RPZ 规则" },
+  { value: "rpz_rule_update", label: "编辑 RPZ 规则" },
+  { value: "rpz_rule_delete", label: "删除 RPZ 规则" },
+  { value: "rpz_publish_success", label: "RPZ 发布成功" },
+  { value: "rpz_rollback", label: "RPZ 回滚" },
   { value: "node_down", label: "DNS 节点不可达" },
   { value: "node_degraded", label: "RPZ Serial 不一致" },
   { value: "node_recovered", label: "节点恢复正常" },

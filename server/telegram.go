@@ -48,7 +48,15 @@ type telegramSendMessageResponse struct {
 }
 
 func defaultTelegramEvents() []string {
-	return []string{"publish_failed", "node_down", "node_degraded", "node_recovered"}
+	return []string{"publish_failed", "rpz_rule_create", "rpz_rule_update", "rpz_rule_delete", "rpz_publish_success", "rpz_rollback", "node_down", "node_degraded", "node_recovered"}
+}
+
+func rpzRuleTelegramMessage(action string, rule RPZRule) string {
+	target := rule.Value
+	if target == "" {
+		target = "PASSTHRU"
+	}
+	return fmt.Sprintf("🛡️ 域盾 DNSGuard RPZ 操作\n操作：%s\n域名：%s\n类型：%s\n目标：%s\n原因：%s", action, rule.Domain, rule.Type, target, rule.Reason)
 }
 
 func defaultTelegramConfig() TelegramConfig {
@@ -240,7 +248,7 @@ func telegramTest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请先保存 Telegram Bot Token 和 Chat ID"})
 		return
 	}
-	if err := sendTelegramMessage(config, "🔔 域盾 DNSGuard Telegram 告警测试\n配置已生效。", false); err != nil {
+	if err := sendTelegramMessage(config, "🔔 域盾 DNSGuard Telegram 告警测试\n配置已生效。", false, "test"); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Telegram 测试消息发送失败"})
 		return
 	}
@@ -272,18 +280,18 @@ func telegramAPIURL() string {
 	return fmt.Sprintf("%s/bot%s/sendMessage", base, strings.TrimSpace(currentTelegramConfig().BotToken))
 }
 
-func sendTelegramMessage(config TelegramConfig, message string, useCooldown bool) error {
+func sendTelegramMessage(config TelegramConfig, message string, useCooldown bool, cooldownKey string) error {
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("telegram alert message is empty")
 	}
 	if useCooldown {
 		now := time.Now()
 		telegramAlertMu.Lock()
-		if last, ok := telegramLastAlerts[message]; ok && telegramAlertCooldown(config) > 0 && now.Sub(last) < telegramAlertCooldown(config) {
+		if last, ok := telegramLastAlerts[cooldownKey]; ok && telegramAlertCooldown(config) > 0 && now.Sub(last) < telegramAlertCooldown(config) {
 			telegramAlertMu.Unlock()
 			return nil
 		}
-		telegramLastAlerts[message] = now
+		telegramLastAlerts[cooldownKey] = now
 		telegramAlertMu.Unlock()
 	}
 	payload, err := json.Marshal(telegramSendMessageRequest{ChatID: strings.TrimSpace(config.ChatID), Text: message, DisableWebPagePreview: true})
@@ -315,7 +323,7 @@ func sendTelegramAlert(event, message string) error {
 	if !telegramAlertEnabled(event) {
 		return nil
 	}
-	return sendTelegramMessage(config, message, true)
+	return sendTelegramMessage(config, message, true, event)
 }
 
 func queueTelegramAlert(event, message string) {

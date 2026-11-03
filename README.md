@@ -405,6 +405,11 @@ sudo chmod 600 /etc/dns-ops/auth.json
 域盾支持通过 Telegram Bot API 发送以下运行告警：
 
 - `publish_failed`：RPZ 发布失败
+- `rpz_rule_create`：新增 RPZ 规则
+- `rpz_rule_update`：编辑 RPZ 规则
+- `rpz_rule_delete`：删除 RPZ 规则
+- `rpz_publish_success`：RPZ 发布完成
+- `rpz_rollback`：RPZ 版本回滚
 - `node_down`：DNS 节点不可达
 - `node_degraded`：辅节点 RPZ Serial 与主节点不一致
 - `node_recovered`：节点从异常状态恢复

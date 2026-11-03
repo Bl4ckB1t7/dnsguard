@@ -988,6 +988,7 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		auditEvent(r, authUsername(), "rpz.rule.create", rpzAuditDetail(rule))
+		queueTelegramAlert("rpz_rule_create", rpzRuleTelegramMessage("新增规则", rule))
 		writeJSON(w, http.StatusCreated, rule)
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -1040,6 +1041,7 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, rule := range deleted {
 		auditEvent(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(rule))
+		queueTelegramAlert("rpz_rule_delete", rpzRuleTelegramMessage("批量删除规则", rule))
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(deleted)})
 }
@@ -1129,6 +1131,7 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		auditEvent(r, authUsername(), "rpz.rule.update", rpzAuditDetail(updated))
+		queueTelegramAlert("rpz_rule_update", rpzRuleTelegramMessage("编辑规则", updated))
 		writeJSON(w, http.StatusOK, updated)
 		return
 	}
@@ -1160,5 +1163,6 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditEvent(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(removed))
+	queueTelegramAlert("rpz_rule_delete", rpzRuleTelegramMessage("删除规则", removed))
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }

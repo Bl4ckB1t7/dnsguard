@@ -414,6 +414,7 @@ func runPublishJob(id, actor, remoteAddr string) {
 	rpzRuntimeState.JobID = id
 	rpzRuntimeState.JobStatus = "succeeded"
 	rpzRuntimeMu.Unlock()
+	queueTelegramAlert("rpz_publish_success", fmt.Sprintf("✅ 域盾 DNSGuard RPZ 操作完成\n任务：%s\n结果：%s", id, result.Message))
 }
 
 func publishRPZ(w http.ResponseWriter, r *http.Request) {
@@ -507,5 +508,6 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditEvent(r, authUsername(), "rpz.rollback", target.ID)
+	queueTelegramAlert("rpz_rollback", fmt.Sprintf("↩️ 域盾 DNSGuard RPZ 回滚\n版本：%s\n规则数：%d", target.ID, len(target.Rules)))
 	publishRPZ(w, r)
 }
