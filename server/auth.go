@@ -56,10 +56,7 @@ func authUsername() string {
 }
 
 func authPassword() string {
-	if value := os.Getenv("AUTH_PASSWORD"); value != "" {
-		return value
-	}
-	return "admin"
+	return ""
 }
 
 func authSecret() []byte {
@@ -94,6 +91,15 @@ func loadAuth() {
 	}
 }
 
+func authFileHasPasswordHash() bool {
+	content, err := os.ReadFile(authFilePath())
+	if err != nil {
+		return false
+	}
+	var loaded authStore
+	return json.Unmarshal(content, &loaded) == nil && strings.HasPrefix(loaded.PasswordHash, "$2")
+}
+
 func passwordValid(username, password string) bool {
 	if username != authUsername() {
 		return false
@@ -107,7 +113,7 @@ func passwordValid(username, password string) bool {
 		}
 		return hmac.Equal([]byte(hash), []byte(passwordDigest(password)))
 	}
-	return password == authPassword()
+	return false
 }
 
 func newSessionID() string {

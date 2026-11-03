@@ -91,14 +91,14 @@ func validateSecurityConfig() error {
 	if os.Getenv("APP_ENV") != "production" {
 		return nil
 	}
-	if os.Getenv("AUTH_PASSWORD") == "" || os.Getenv("AUTH_PASSWORD") == "admin" || os.Getenv("AUTH_PASSWORD") == "change-me" {
-		return fmt.Errorf("AUTH_PASSWORD must be changed in production")
-	}
 	if len(os.Getenv("AUTH_SECRET")) < 32 {
 		return fmt.Errorf("AUTH_SECRET must be at least 32 characters in production")
 	}
 	if !authEnabled() {
 		return fmt.Errorf("AUTH_ENABLED must be true in production")
+	}
+	if !authFileHasPasswordHash() {
+		return fmt.Errorf("AUTH_FILE must contain a bcrypt password hash; run scripts/create-auth-file.sh")
 	}
 	if (os.Getenv("TLS_CERT_FILE") == "" || os.Getenv("TLS_KEY_FILE") == "") && os.Getenv("TRUST_PROXY_TLS") != "true" {
 		return fmt.Errorf("configure TLS_CERT_FILE/TLS_KEY_FILE or set TRUST_PROXY_TLS=true in production")

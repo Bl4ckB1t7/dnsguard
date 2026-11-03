@@ -157,9 +157,8 @@ WEB_BIND_ADDRESS=192.0.2.20
 | `APP_ENV` | `production` | 生产环境必须设置为 `production` |
 | `AUTH_ENABLED` | `true` | 生产必须开启 |
 | `AUTH_USERNAME` | `admin` | 管理用户名 |
-| `AUTH_PASSWORD` | 强随机密码 | 生产不能使用默认值 |
 | `AUTH_SECRET` | 32 位以上随机值 | 会话签名密钥 |
-| `AUTH_FILE` | `/etc/dns-ops/auth.json` | 密码哈希文件，可选 |
+| `AUTH_FILE` | `/etc/dns-ops/auth.json` | bcrypt 密码哈希文件 |
 | `BIND_INTERFACE` | `tailscale0` | 自动获取 Web 绑定地址的网卡名 |
 | `WEB_BIND_ADDRESS` | `192.0.2.20` | 直接指定前端监听地址，优先级高于网卡 |
 | `WEB_MODE` | `preview` | 生产使用 `preview`，开发可使用 `dev` |
@@ -270,10 +269,20 @@ TSIG key 只能授予控制面读取权限，不能放入 Git、前端目录或�
 APP_ENV=production
 AUTH_ENABLED=true
 AUTH_USERNAME=admin
-AUTH_PASSWORD=<strong-random-password>
 AUTH_SECRET=<at-least-32-random-characters>
+AUTH_FILE=/etc/dns-ops/auth.json
 WEB_MODE=preview
 ```
+
+密码不写入 `.env`。使用交互式命令生成只保存 bcrypt 哈希的认证文件：
+
+```bash
+sudo env AUTH_FILE=/etc/dns-ops/auth.json AUTH_USERNAME=admin \
+  ./scripts/create-auth-file.sh
+sudo chmod 600 /etc/dns-ops/auth.json
+```
+
+服务启动时会校验 `AUTH_FILE` 中存在 bcrypt 哈希；生产环境没有认证文件时会直接启动失败。登录后也可以通过密码修改接口更新哈希文件。
 
 HTTPS 任选一种：
 
