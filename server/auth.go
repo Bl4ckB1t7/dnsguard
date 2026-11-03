@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"net"
@@ -390,7 +391,7 @@ func authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		public := r.URL.Path == "/api/health" || (r.URL.Path == "/api/settings" && r.Method == http.MethodGet) || r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/captcha" || r.URL.Path == "/api/auth/me" || r.URL.Path == "/api/auth/logout" || r.Method == http.MethodOptions
+		public := r.URL.Path == "/api/health" || r.URL.Path == "/api/monitoring/status" || (r.URL.Path == "/api/settings" && r.Method == http.MethodGet) || r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/captcha" || r.URL.Path == "/api/auth/me" || r.URL.Path == "/api/auth/logout" || r.Method == http.MethodOptions
 		if public {
 			next.ServeHTTP(w, r)
 			return
@@ -406,6 +407,25 @@ func authMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func monitoringTokenValid(r *http.Request) bool {
+	expected := strings.TrimSpace(os.Getenv("MONITORING_TOKEN"))
+	if expected != "" {
+		const prefix = "Bearer "
+		provided := strings.TrimSpace(r.Header.Get("Authorization"))
+		if !strings.HasPrefix(provided, prefix) {
+			return false
+		}
+		provided = strings.TrimSpace(strings.TrimPrefix(provided, prefix))
+		return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func csrfValid(r *http.Request) bool {

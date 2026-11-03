@@ -1,0 +1,11 @@
+[Unit]
+Description=Run DNS Ops Platform health check every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=dns-ops-monitor.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

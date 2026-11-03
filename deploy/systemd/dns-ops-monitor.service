@@ -1,0 +1,19 @@
+[Unit]
+Description=DNS Ops Platform health check
+After=dns-ops-api.service
+Requires=dns-ops-api.service
+
+[Service]
+Type=oneshot
+User=dnsops
+Group=dnsops
+WorkingDirectory=/opt/dns-ops-platform
+EnvironmentFile=-/etc/dns-ops/dns-ops.env
+ExecStart=/opt/dns-ops-platform/scripts/check-dns-ops.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/dns-ops
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

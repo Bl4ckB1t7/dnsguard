@@ -203,6 +203,7 @@ WEB_BIND_ADDRESS=192.0.2.20
 | `TLS_CERT_FILE` | `/etc/dns-ops/tls/fullchain.pem` | API 直出 HTTPS 时使用 |
 | `TLS_KEY_FILE` | `/etc/dns-ops/tls/privkey.pem` | API 直出 HTTPS 时使用 |
 | `TRUST_PROXY_TLS` | `true` | HTTPS 在可信反向代理终止时使用 |
+| `MONITORING_TOKEN` | 随机值 | 监控接口 Bearer Token；为空时仅允许本机回环地址 |
 
 ### 5.2 DNS 节点配置
 
@@ -301,6 +302,28 @@ TSIG key 只能授予控制面读取权限，不能放入 Git、前端目录或�
 8. 使用 systemd、Nginx 或现有进程管理器托管服务，禁止使用开发模式长期运行。
 
 控制面不应直接覆盖生产 BIND Zone 文件。动态更新、权限和 NOTIFY/IXFR 应由 BIND 的原生机制负责。
+
+### 6.1 运行状态监控和告警
+
+`GET /api/monitoring/status` 返回节点健康数、待发布状态和最近发布任务状态，
+不返回 DNS 节点地址或规则内容。配置 `MONITORING_TOKEN` 后使用 Bearer Token：
+
+```bash
+curl -H "Authorization: Bearer $MONITORING_TOKEN" \
+  http://127.0.0.1:8080/api/monitoring/status
+MONITORING_TOKEN="$MONITORING_TOKEN" ./scripts/check-dns-ops.sh
+```
+
+检查脚本在状态不是 `ok` 时返回非零退出码，可直接接入 Zabbix、Prometheus
+blackbox、Cron 或企业告警平台。systemd 部署可额外启用一分钟一次的检查：
+
+```bash
+sudo install -m 0644 deploy/systemd/dns-ops-monitor.service \
+  deploy/systemd/dns-ops-monitor.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dns-ops-monitor.timer
+systemctl list-timers dns-ops-monitor.timer
+```
 
 ## 7. 认证和生产安全要求
 

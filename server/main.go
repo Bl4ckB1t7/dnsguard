@@ -54,6 +54,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", health)
+	mux.HandleFunc("/api/monitoring/status", monitoringStatus)
 	mux.HandleFunc("/api/settings", settings)
 	mux.HandleFunc("/api/auth/login", authLogin)
 	mux.HandleFunc("/api/auth/captcha", captcha)
