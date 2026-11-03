@@ -10,8 +10,8 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
   const [captchaCode, setCaptchaCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [title, setTitle] = useState("网络态势中枢");
-  const [subtitle, setSubtitle] = useState("数据中心核心网络实时监控与智能分析平台");
+  const [title, setTitle] = useState("DNS 解析控制中心");
+  const [subtitle, setSubtitle] = useState("BIND 集群与 RPZ 策略管理平台");
   const [clock, setClock] = useState(() => new Date());
 
   const refreshCaptcha = async () => {
