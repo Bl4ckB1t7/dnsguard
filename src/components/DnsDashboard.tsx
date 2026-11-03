@@ -22,6 +22,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
   const [rules, setRules] = useState<Rule[]>([]);
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [recordSearch, setRecordSearch] = useState("");
+  const [ruleSearch, setRuleSearch] = useState("");
   const [domain, setDomain] = useState("");
   const [reason, setReason] = useState("");
   const [notice, setNotice] = useState("");
@@ -90,6 +91,12 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
     return [record.name, record.type, record.value, record.policy, record.status].some((value) => value.toLowerCase().includes(query));
   });
 
+  const filteredRules = rules.filter((rule) => {
+    const query = ruleSearch.trim().toLowerCase();
+    if (!query) return true;
+    return [rule.domain, rule.action, rule.reason, rule.status].some((value) => value.toLowerCase().includes(query));
+  });
+
   return (
     <main className="dns-shell">
       <header className="dns-header">
@@ -110,7 +117,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
         <div className="dns-panel"><div className="panel-heading"><h2>添加 RPZ 白名单</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>原因<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="业务系统依赖" required /></label><button disabled={busy}>{busy ? "保存中…" : "保存白名单规则"}</button></form>{notice && <p className="notice">{notice}</p>}</div>
       </section>
 
-      <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU · 当前模式：{overview?.publisherMode ?? "artifact"}</span></div><button className="publish-button" disabled={busy || (rules.length === 0 && (overview?.publishedRules ?? 0) === 0)} onClick={() => void publish()}>生成 / 发布 RPZ</button></div><div className="table-wrap"><table><thead><tr><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{rules.map((rule) => <tr key={rule.id}><td className="mono">{rule.domain}</td><td>{rule.action}</td><td>{rule.reason}</td><td><span className={`rule-status ${rule.status}`}>{rule.status === "published" ? "已发布" : rule.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{rule.updatedAt}</td><td><button className="table-action" onClick={() => void removeRule(rule.id)}>删除</button></td></tr>)}</tbody></table>{rules.length === 0 && <div className="empty">暂无 RPZ 规则</div>}</div></section>
+      <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU · {filteredRules.length}/{rules.length} 条 · 当前模式：{overview?.publisherMode ?? "artifact"}</span></div><div className="record-tools"><input className="record-search" value={ruleSearch} onChange={(event) => setRuleSearch(event.target.value)} placeholder="搜索域名 / 原因" aria-label="搜索 RPZ 规则" /><button className="publish-button" disabled={busy || (rules.length === 0 && (overview?.publishedRules ?? 0) === 0)} onClick={() => void publish()}>生成 / 发布 RPZ</button></div></div><div className="table-wrap"><table><thead><tr><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{filteredRules.map((rule) => <tr key={rule.id}><td className="mono">{rule.domain}</td><td>{rule.action}</td><td>{rule.reason}</td><td><span className={`rule-status ${rule.status}`}>{rule.status === "published" ? "已发布" : rule.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{rule.updatedAt}</td><td><button className="table-action" onClick={() => void removeRule(rule.id)}>删除</button></td></tr>)}</tbody></table>{rules.length === 0 ? <div className="empty">暂无 RPZ 规则</div> : filteredRules.length === 0 ? <div className="empty">没有匹配的 RPZ 规则</div> : null}</div></section>
       <section className="dns-panel"><div className="panel-heading"><div><h2>当前 RPZ 记录</h2><span>CONTROL-PLANE RECORDS · {filteredRecords.length}/{records.length} 条</span></div><div className="record-tools"><input className="record-search" value={recordSearch} onChange={(event) => setRecordSearch(event.target.value)} placeholder="搜索记录名 / 值" aria-label="搜索当前 RPZ 记录" /><button className="refresh-button" onClick={() => void load()}>刷新记录</button></div></div><div className="table-wrap"><table><thead><tr><th>记录名</th><th>类型</th><th>值</th><th>策略</th><th>状态</th><th>更新时间</th></tr></thead><tbody>{filteredRecords.map((record) => <tr key={record.name}><td className="mono">{record.name}</td><td>{record.type}</td><td className="mono">{record.value}</td><td>{record.policy}</td><td><span className={`rule-status ${record.status}`}>{record.status === "published" ? "已发布" : record.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{record.updatedAt}</td></tr>)}</tbody></table>{records.length === 0 ? <div className="empty">当前没有 RPZ 记录</div> : filteredRecords.length === 0 ? <div className="empty">没有匹配的 RPZ 记录</div> : null}</div></section>
       <footer className="dns-footer">当前版本：文件型控制面 · DNS 节点状态通过 dig / SOA Serial 实时探测</footer>
     </main>
