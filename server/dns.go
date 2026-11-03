@@ -89,9 +89,14 @@ func rpzHitCount() (int, bool) {
 	if len(files) == 0 {
 		return 0, false
 	}
-	count := 0
+	rawCount := 0
 	readable := false
 	markers := []string{"rpz QNAME", "rpz CLIENT-IP", "rpz IP", "rpz NSDNAME", "rpz NSIP"}
+	unique := make(map[string]struct{})
+	window := 2
+	if configured, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RPZ_HIT_DEDUP_SECONDS"))); err == nil && configured > 0 {
+		window = configured
+	}
 	for _, path := range files {
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -101,13 +106,48 @@ func rpzHitCount() (int, bool) {
 		for _, line := range strings.Split(string(content), "\n") {
 			for _, marker := range markers {
 				if strings.Contains(line, marker) {
-					count++
+					if key, ok := rpzHitFingerprint(line, window); ok {
+						unique[key] = struct{}{}
+					} else {
+						rawCount++
+					}
 					break
 				}
 			}
 		}
 	}
-	return count, readable
+	return len(unique) + rawCount, readable
+}
+
+func rpzHitFingerprint(line string, window int) (string, bool) {
+	parts := strings.SplitN(line, " client ", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	stamp := strings.TrimSpace(parts[0])
+	if dot := strings.IndexByte(stamp, '.'); dot >= 0 {
+		stamp = stamp[:dot]
+	}
+	when, err := time.Parse("02-Jan-2006 15:04:05", stamp)
+	if err != nil {
+		return "", false
+	}
+	clientParts := strings.SplitN(parts[1], " ", 3)
+	if len(clientParts) < 3 {
+		return "", false
+	}
+	client := strings.Split(clientParts[1], "#")[0]
+	queryStart := strings.Index(clientParts[2], "(")
+	queryEnd := strings.Index(clientParts[2], "):")
+	if client == "" || queryStart < 0 || queryEnd <= queryStart {
+		return "", false
+	}
+	queryName := clientParts[2][queryStart+1 : queryEnd]
+	action := strings.TrimSpace(clientParts[2][queryEnd+2:])
+	if queryName == "" || action == "" {
+		return "", false
+	}
+	return fmt.Sprintf("%s|%s|%s|%d", client, queryName, action, when.Unix()/int64(window)), true
 }
 
 func configuredDNSAddress(node DNSNode) string {

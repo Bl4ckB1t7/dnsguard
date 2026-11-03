@@ -53,6 +53,18 @@ func TestRPZHitCountReportsNotConfigured(t *testing.T) {
 	}
 }
 
+func TestRPZHitFingerprintDeduplicatesNodesWithinWindow(t *testing.T) {
+	lines := []string{
+		"03-Nov-2026 15:37:12.073 client @a 127.0.0.1#41169 (hit-test.example): rpz QNAME NXDOMAIN rewrite hit-test.example/A/IN via hit-test.example.rpz.local",
+		"03-Nov-2026 15:37:12.101 client @b 127.0.0.1#36679 (hit-test.example): rpz QNAME NXDOMAIN rewrite hit-test.example/A/IN via hit-test.example.rpz.local",
+	}
+	first, ok := rpzHitFingerprint(lines[0], 2)
+	second, ok2 := rpzHitFingerprint(lines[1], 2)
+	if !ok || !ok2 || first != second {
+		t.Fatalf("expected matching fingerprints, got %q/%q (%v/%v)", first, second, ok, ok2)
+	}
+}
+
 func TestNextRuleIDIsUnique(t *testing.T) {
 	first := nextRuleID()
 	second := nextRuleID()
