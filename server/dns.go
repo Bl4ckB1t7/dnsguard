@@ -169,6 +169,9 @@ func probeDNSNode(ctx context.Context, address string) (string, error) {
 	if address == "" {
 		return "", fmt.Errorf("DNS 节点地址为空")
 	}
+	if !dnsNodeAddressAllowed(address) {
+		return "", fmt.Errorf("DNS 节点地址不在允许范围内")
+	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		host = strings.Trim(address, "[]")
@@ -379,7 +382,7 @@ func loadDNSNodeConfig() error {
 		dnsMu.RUnlock()
 		nodes := make([]DNSNode, 0, len(configs))
 		for _, config := range configs {
-			if config.ID == "" || !validDNSNodeAddress(config.Address) {
+			if config.ID == "" || !dnsNodeAddressAllowed(config.Address) {
 				return fmt.Errorf("读取 DNS 节点配置失败: 节点 %q 地址无效", config.ID)
 			}
 			node := previous[config.ID]
@@ -396,7 +399,7 @@ func loadDNSNodeConfig() error {
 	}
 	for _, item := range strings.Split(os.Getenv("DNS_NODE_ADDRESSES"), ",") {
 		parts := strings.SplitN(strings.TrimSpace(item), "=", 2)
-		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !validDNSNodeAddress(parts[1]) {
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !dnsNodeAddressAllowed(parts[1]) {
 			continue
 		}
 		dnsMu.Lock()
@@ -579,7 +582,7 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 			Role    string `json:"role"`
 			Address string `json:"address"`
 		}
-		if err := decodeJSON(r, &request); err != nil || strings.TrimSpace(request.ID) == "" || !validDNSNodeAddress(request.Address) {
+		if err := decodeJSON(r, &request); err != nil || strings.TrimSpace(request.ID) == "" || !dnsNodeAddressAllowed(request.Address) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "节点 ID 或地址无效"})
 			return
 		}
@@ -633,6 +636,39 @@ func validDNSNodeAddress(address string) bool {
 	}
 	portNumber, err := strconv.Atoi(port)
 	return err == nil && portNumber > 0 && portNumber <= 65535
+}
+
+func dnsNodeAllowedCIDRs() string {
+	if configured := strings.TrimSpace(os.Getenv("DNS_NODE_ALLOWED_CIDRS")); configured != "" {
+		return configured
+	}
+	return "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7"
+}
+
+func dnsNodeAddressAllowed(address string) bool {
+	if !validDNSNodeAddress(address) {
+		return false
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		host = strings.Trim(strings.TrimSpace(address), "[]")
+	}
+	host = strings.Trim(host, "[]")
+	if ip := net.ParseIP(host); ip != nil {
+		for _, cidr := range strings.Split(dnsNodeAllowedCIDRs(), ",") {
+			_, network, parseErr := net.ParseCIDR(strings.TrimSpace(cidr))
+			if parseErr == nil && network.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, allowedHost := range strings.Split(os.Getenv("DNS_NODE_ALLOWED_HOSTS"), ",") {
+		if strings.EqualFold(host, strings.TrimSpace(allowedHost)) && strings.TrimSpace(allowedHost) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func dnsRecords(w http.ResponseWriter, r *http.Request) {

@@ -193,7 +193,11 @@ WEB_BIND_ADDRESS=192.0.2.20
 ```dotenv
 DNS_NODE_CONFIG_FILE=/etc/dns-ops/dns-nodes.json
 DNS_NODE_ADDRESSES=primary-1=10.0.0.10:53,secondary-1=10.0.0.11:53
+DNS_NODE_ALLOWED_CIDRS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+DNS_NODE_ALLOWED_HOSTS=
 ```
+
+节点地址默认只允许回环、RFC1918 私网和 ULA 网段。使用主机名时，必须显式加入 `DNS_NODE_ALLOWED_HOSTS`；使用其他网段时，必须显式加入 `DNS_NODE_ALLOWED_CIDRS`。这样页面保存地址和服务端 `dig` 探测使用同一套白名单。
 
 ### 5.3 RPZ 发布配置
 

@@ -152,3 +152,22 @@ func TestCaptchaRateLimit(t *testing.T) {
 		t.Fatalf("expected rate limit response 429, got %d", recorder.Code)
 	}
 }
+
+func TestDNSNodeAddressAllowlist(t *testing.T) {
+	t.Setenv("DNS_NODE_ALLOWED_CIDRS", "192.0.2.0/24,127.0.0.0/8")
+	t.Setenv("DNS_NODE_ALLOWED_HOSTS", "dns-primary.internal")
+	for _, test := range []struct {
+		address string
+		allowed bool
+	}{
+		{"192.0.2.10:53", true},
+		{"127.0.0.2:5353", true},
+		{"203.0.113.10:53", false},
+		{"dns-primary.internal:53", true},
+		{"other.internal:53", false},
+	} {
+		if got := dnsNodeAddressAllowed(test.address); got != test.allowed {
+			t.Errorf("dnsNodeAddressAllowed(%q) = %v, want %v", test.address, got, test.allowed)
+		}
+	}
+}
