@@ -2,6 +2,8 @@ node_modules/
 dist/
 .run/
 data/*.json
+data/*.bak
+data/*.lock
 data/*.tmp
 data/rpz/
 dns-lab/logs/
