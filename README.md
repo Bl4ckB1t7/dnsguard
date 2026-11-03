@@ -124,6 +124,19 @@ git pull --ff-only
 ./scripts/start-dnsguard.sh
 ```
 
+### 本地 BIND/RPZ 开发环境（可选）
+
+生产部署不依赖本地 BIND。需要联调 RPZ 发布、主辅同步或运行完整功能测试时，使用
+`dev/bind-rpz/` 和对应的启动脚本：
+
+```bash
+sudo BIND_USER=bind BIND_GROUP=bind ./scripts/start-bind-rpz.sh
+./scripts/stop-bind-rpz.sh
+```
+
+该环境只监听 `127.0.0.2:5353`、`127.0.0.3:5353` 和 `127.0.0.4:5353`，不会占用系统
+53 端口。生产环境请使用真实 BIND 节点地址和端口，不要把开发节点配置带入生产。
+
 ### 4.4 生产 systemd 部署
 
 开发启动脚本适合首次验证；生产环境建议让 systemd 托管 API，让 Nginx
