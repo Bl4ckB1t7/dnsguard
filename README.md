@@ -427,6 +427,30 @@ AUDIT_FILE
 RPZ_KEY_FILE（使用受保护的密钥备份流程）
 ```
 
+仓库提供不依赖数据库的备份/恢复脚本。脚本生成带 SHA-256 清单的压缩包，默认备份
+状态、节点配置、审计和 RPZ 产物；认证文件和 TSIG Key 只有显式开启敏感文件选项时才会
+加入，并且备份目录和归档使用受限权限：
+
+```bash
+sudo install -d -m 0700 /var/backups/dns-ops
+sudo env DNS_OPS_ENV_FILE=/etc/dns-ops/dns-ops.env \
+  BACKUP_DIR=/var/backups/dns-ops BACKUP_INCLUDE_SENSITIVE=true \
+  ./scripts/backup-dns-ops.sh
+```
+
+恢复前必须停止控制面；脚本会拒绝服务运行中恢复、校验归档路径和 SHA-256 清单，
+然后使用临时文件原子替换目标文件：
+
+```bash
+sudo systemctl stop dns-ops-api.service
+sudo env DNS_OPS_ENV_FILE=/etc/dns-ops/dns-ops.env \
+  ./scripts/restore-dns-ops.sh /var/backups/dns-ops/dns-ops-YYYYMMDDTHHMMSSZ.tar.gz
+sudo systemctl start dns-ops-api.service
+```
+
+恢复后先执行只读验证和 `./scripts/test-functional.sh`，确认 RPZ Serial、节点状态和
+审计文件正常后再发布规则。备份归档必须进入企业受保护的备份系统，不能提交到 Git。
+
 恢复顺序：
 
 ```text
