@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 
-type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number; lastSync: string; publisherMode: string; lastPublish: string; publishMessage: string };
+type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; lastPublish: string; publishMessage: string };
 type DnsNode = { id: string; name: string; role: string; address: string; status: string; rpzVersion: string; lastSync: string };
 type Rule = { id: string; domain: string; action: string; reason: string; status: string; updatedAt: string };
 
@@ -101,7 +101,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
       <section className="dns-cards">
         <article><span>DNS 节点</span><strong>{overview ? `${overview.healthyNodes}/${overview.nodes}` : "—"}</strong><small>健康节点</small></article>
         <article><span>RPZ 规则</span><strong>{overview?.rules ?? "—"}</strong><small>{overview?.publishedRules ?? 0} 条已发布</small></article>
-        <article><span>RPZ 命中</span><strong>{overview?.rpzHits?.toLocaleString() ?? "—"}</strong><small>最近统计窗口</small></article>
+        <article><span>RPZ 命中</span><strong>{overview?.rpzHits?.toLocaleString() ?? "—"}</strong><small>{overview?.rpzHitStatus === "ready" ? "BIND 日志累计" : "未配置 RPZ 日志"}</small></article>
         <article><span>最后同步</span><strong className="sync-value">{overview?.lastSync ?? "—"}</strong><small>Primary → Secondary</small></article>
       </section>
 

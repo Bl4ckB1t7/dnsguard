@@ -58,6 +58,37 @@ var dnsHealthMu sync.Mutex
 var dnsHealthCache []DNSNode
 var dnsHealthAt time.Time
 
+func rpzHitCount() (int, bool) {
+	files := make([]string, 0)
+	for _, item := range strings.Split(os.Getenv("RPZ_LOG_FILES"), ",") {
+		if path := strings.TrimSpace(item); path != "" {
+			files = append(files, path)
+		}
+	}
+	if len(files) == 0 {
+		return 0, false
+	}
+	count := 0
+	readable := false
+	markers := []string{"rpz QNAME", "rpz CLIENT-IP", "rpz IP", "rpz NSDNAME", "rpz NSIP"}
+	for _, path := range files {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		readable = true
+		for _, line := range strings.Split(string(content), "\n") {
+			for _, marker := range markers {
+				if strings.Contains(line, marker) {
+					count++
+					break
+				}
+			}
+		}
+	}
+	return count, readable
+}
+
 func configuredDNSAddress(node DNSNode) string {
 	for _, item := range strings.Split(os.Getenv("DNS_NODE_ADDRESSES"), ",") {
 		parts := strings.SplitN(strings.TrimSpace(item), "=", 2)
@@ -203,6 +234,11 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 	published := len(state.Published)
 	pendingPublish := !rpzRulesEqual(state.Rules, state.Published)
 	dnsMu.RUnlock()
+	rpzHits, rpzHitsReady := rpzHitCount()
+	var rpzHitsValue any
+	if rpzHitsReady {
+		rpzHitsValue = rpzHits
+	}
 	healthy := 0
 	for _, node := range nodes {
 		if node.Status == "healthy" {
@@ -215,7 +251,8 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 		"rules":          rules,
 		"publishedRules": published,
 		"pendingPublish": pendingPublish,
-		"rpzHits":        0,
+		"rpzHits":        rpzHitsValue,
+		"rpzHitStatus":   map[bool]string{true: "ready", false: "not_configured"}[rpzHitsReady],
 		"lastSync":       time.Now().UTC().Format("15:04:05"),
 		"publisherMode":  rpzStatusSnapshot().Mode,
 		"lastPublish":    rpzStatusSnapshot().LastPublish,

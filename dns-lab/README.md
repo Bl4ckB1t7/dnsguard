@@ -19,5 +19,6 @@ RPZ_PRIMARY=127.0.0.2 RPZ_PRIMARY_PORT=5353 \
 RPZ_ZONE=rpz.local \
 RPZ_KEY_FILE=/home/REDACTED/dns-ops-platform/dns-lab/keys/rpz-manager.key \
 DNS_NODE_ADDRESSES=primary-1=127.0.0.2:5353,secondary-1=127.0.0.3:5353,secondary-2=127.0.0.4:5353 \
+RPZ_LOG_FILES=/var/log/named/dns-ops-lab/primary.log,/var/log/named/dns-ops-lab/secondary.log,/var/log/named/dns-ops-lab/secondary-2.log \
 ./scripts/start-tailscale.sh
 ```
