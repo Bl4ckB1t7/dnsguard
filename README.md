@@ -46,6 +46,8 @@ API:      http://127.0.0.1:8080
 
 当前 Tailscale 启动脚本默认 `AUTH_ENABLED=false`，暂时直接进入控制台。重新启用认证时设置 `AUTH_ENABLED=true`；生产环境必须同时设置 `AUTH_PASSWORD` 和长度至少 32 位的 `AUTH_SECRET`。
 
+生产环境可让 Go API 直接提供 HTTPS：设置 `APP_ENV=production`、`AUTH_ENABLED=true`、`TLS_CERT_FILE` 和 `TLS_KEY_FILE`。如果 HTTPS 由 Nginx、Traefik 或 Tailscale Funnel 等反向代理终止，则设置 `TRUST_PROXY_TLS=true`，并确保代理只允许 HTTPS 访问。
+
 节点地址通过 `DNS_NODE_ADDRESSES` 配置，格式为 `节点ID=host:port`，例如：
 
 ```bash

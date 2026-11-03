@@ -74,6 +74,11 @@ func main() {
 	}
 	server := &http.Server{Addr: listenAddr, Handler: authMiddleware(mux), ReadHeaderTimeout: 5 * time.Second}
 	log.Printf("dns ops API listening on %s", server.Addr)
+	certFile := os.Getenv("TLS_CERT_FILE")
+	keyFile := os.Getenv("TLS_KEY_FILE")
+	if certFile != "" && keyFile != "" {
+		log.Fatal(server.ListenAndServeTLS(certFile, keyFile))
+	}
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -86,6 +91,12 @@ func validateSecurityConfig() error {
 	}
 	if len(os.Getenv("AUTH_SECRET")) < 32 {
 		return fmt.Errorf("AUTH_SECRET must be at least 32 characters in production")
+	}
+	if !authEnabled() {
+		return fmt.Errorf("AUTH_ENABLED must be true in production")
+	}
+	if (os.Getenv("TLS_CERT_FILE") == "" || os.Getenv("TLS_KEY_FILE") == "") && os.Getenv("TRUST_PROXY_TLS") != "true" {
+		return fmt.Errorf("configure TLS_CERT_FILE/TLS_KEY_FILE or set TRUST_PROXY_TLS=true in production")
 	}
 	return nil
 }
