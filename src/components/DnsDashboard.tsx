@@ -14,9 +14,18 @@ function csrfHeaders(): Record<string, string> {
 }
 
 async function readJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { credentials: "include", ...init });
-  if (!response.ok) throw new Error((await response.json().catch(() => null))?.error ?? "请求失败");
-  return response.json() as Promise<T>;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(url, { credentials: "include", ...init, signal: controller.signal });
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error ?? `请求失败（HTTP ${response.status}）`);
+    return response.json() as Promise<T>;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("请求超时，请检查 API 或 DNS 节点状态");
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 async function waitForPublishJob(id: string): Promise<PublishJob> {
@@ -50,6 +59,8 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [domain, setDomain] = useState("");
   const [reason, setReason] = useState("");
   const [notice, setNotice] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showPasswordPanel, setShowPasswordPanel] = useState(mustChangePassword);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -57,20 +68,29 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [confirmPassword, setConfirmPassword] = useState("");
 
   const load = async () => {
-    const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions] = await Promise.all([
-      readJSON<Overview>("/api/dns/overview"),
-      readJSON<DnsNode[]>("/api/dns/nodes"),
-      readJSON<Rule[]>("/api/dns/rpz"),
-      readJSON<RPZPreview>("/api/dns/rpz/preview"),
-      readJSON<RPZVersion[]>("/api/dns/rpz/versions"),
-    ]);
-    setOverview(nextOverview);
-    setNodes(nextNodes ?? []);
-    setNodeDrafts(Object.fromEntries((nextNodes ?? []).map((node) => [node.id, node.address])));
-    setRules(nextRules ?? []);
-    setSelectedRuleIds((selected) => selected.filter((id) => (nextRules ?? []).some((rule) => rule.id === id)));
-    setPreview(nextPreview);
-    setVersions(nextVersions ?? []);
+    setLoading(true);
+    setLoadError("");
+    try {
+      const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions] = await Promise.all([
+        readJSON<Overview>("/api/dns/overview"),
+        readJSON<DnsNode[]>("/api/dns/nodes"),
+        readJSON<Rule[]>("/api/dns/rpz"),
+        readJSON<RPZPreview>("/api/dns/rpz/preview"),
+        readJSON<RPZVersion[]>("/api/dns/rpz/versions"),
+      ]);
+      setOverview(nextOverview);
+      setNodes(nextNodes ?? []);
+      setNodeDrafts(Object.fromEntries((nextNodes ?? []).map((node) => [node.id, node.address])));
+      setRules(nextRules ?? []);
+      setSelectedRuleIds((selected) => selected.filter((id) => (nextRules ?? []).some((rule) => rule.id === id)));
+      setPreview(nextPreview);
+      setVersions(nextVersions ?? []);
+    } catch (error) {
+      setLoadError(`状态加载失败：${(error as Error).message}。`);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -91,7 +111,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setDomain(""); setReason("");
       setNotice("RPZ 白名单规则已保存");
       await load();
-    } catch (error) { setNotice((error as Error).message); }
+    } catch (error) { setNotice(`RPZ 发布失败：${(error as Error).message}`); }
     finally { setBusy(false); }
   };
 
@@ -107,7 +127,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setNotice(`${node.name} 配置已保存`);
       setEditingNodeId(null);
       await load();
-    } catch (error) { setNotice((error as Error).message); }
+    } catch (error) { setNotice(`RPZ 回滚失败：${(error as Error).message}`); }
     finally { setBusy(false); }
   };
 
@@ -224,8 +244,10 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
     <main className="dns-shell">
       <header className="dns-header">
         <div><span className="dns-kicker">DNS OPERATIONS CONTROL</span><h1>企业 DNS / RPZ 管理平台</h1><p>文件型策略控制面，不使用数据库。</p></div>
-        <div className="dns-header-actions"><button onClick={() => void load()}>刷新状态</button>{authEnabled && <><button className="ghost" onClick={() => setShowPasswordPanel(true)}>修改密码</button><button className="ghost" onClick={() => void logout()}>退出登录</button></>}</div>
+        <div className="dns-header-actions"><button disabled={loading} onClick={() => void load().catch(() => undefined)}>{loading ? "加载中…" : "刷新状态"}</button>{authEnabled && <><button className="ghost" onClick={() => setShowPasswordPanel(true)}>修改密码</button><button className="ghost" onClick={() => void logout()}>退出登录</button></>}</div>
       </header>
+
+      {loadError && <div className="global-notice" role="alert"><span>{loadError}</span><button onClick={() => void load().catch(() => undefined)}>重试</button></div>}
 
       {showPasswordPanel && <div className="password-overlay" role="presentation" onMouseDown={(event) => { if (!mustChangePassword && event.target === event.currentTarget && !busy) setShowPasswordPanel(false); }}><section className="password-panel" role="dialog" aria-modal="true" aria-labelledby="password-title"><div className="panel-heading"><div><h2 id="password-title">{mustChangePassword ? "首次登录请修改密码" : "修改密码"}</h2><span>{mustChangePassword ? "为保障生产安全，修改密码后才能继续使用" : "修改成功后当前会话将退出"}</span></div>{!mustChangePassword && <button className="password-close" type="button" disabled={busy} onClick={() => setShowPasswordPanel(false)} aria-label="关闭">×</button>}</div><form className="password-form" onSubmit={changePassword}><label>当前密码<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" required /></label><label>新密码<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><label>确认新密码<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><p className="form-hint">新密码至少 8 位，修改后需要重新登录。</p><div className="password-actions">{!mustChangePassword && <button type="button" className="password-cancel" disabled={busy} onClick={() => setShowPasswordPanel(false)}>取消</button>}<button type="submit" disabled={busy}>{busy ? "保存中…" : "保存新密码"}</button></div></form></section></div>}
 
