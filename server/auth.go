@@ -32,8 +32,9 @@ func authEnabled() bool {
 }
 
 type authStore struct {
-	Username     string `json:"username"`
-	PasswordHash string `json:"passwordHash"`
+	Username           string `json:"username"`
+	PasswordHash       string `json:"passwordHash"`
+	MustChangePassword bool   `json:"mustChangePassword,omitempty"`
 }
 
 var storedAuth authStore
@@ -168,7 +169,7 @@ func validSession(value string) bool {
 
 func authMe(w http.ResponseWriter, r *http.Request) {
 	if !authEnabled() {
-		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "authEnabled": false, "username": authUsername()})
+		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "authEnabled": false, "username": authUsername(), "mustChangePassword": false})
 		return
 	}
 	cookie, err := r.Cookie(sessionCookie)
@@ -176,7 +177,10 @@ func authMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": authUsername()})
+	authMu.RLock()
+	mustChangePassword := storedAuth.MustChangePassword
+	authMu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": authUsername(), "mustChangePassword": mustChangePassword})
 }
 
 func authLogin(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +217,10 @@ func authLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: signSession(credentials.Username, expiry, sessionID), Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: newCSRFToken(), Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
 	auditEvent(r, credentials.Username, "login", "success")
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": credentials.Username})
+	authMu.RLock()
+	mustChangePassword := storedAuth.MustChangePassword
+	authMu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": credentials.Username, "mustChangePassword": mustChangePassword})
 }
 
 func requestIP(r *http.Request) string {
@@ -328,7 +335,7 @@ func authPasswordChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authMu.Lock()
-	updatedAuth := authStore{Username: authUsername(), PasswordHash: string(hash)}
+	updatedAuth := authStore{Username: authUsername(), PasswordHash: string(hash), MustChangePassword: false}
 	authMu.Unlock()
 	if err := saveAuthFile(updatedAuth); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "密码保存失败"})
@@ -402,12 +409,22 @@ func authMiddleware(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 			return
 		}
+		if passwordChangeRequired() && r.URL.Path != "/api/auth/password" && r.URL.Path != "/api/auth/logout" && r.URL.Path != "/api/auth/me" {
+			writeJSON(w, http.StatusPreconditionRequired, map[string]string{"error": "password change required"})
+			return
+		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && !csrfValid(r) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "csrf token required"})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func passwordChangeRequired() bool {
+	authMu.RLock()
+	defer authMu.RUnlock()
+	return storedAuth.MustChangePassword
 }
 
 func setSecurityHeaders(w http.ResponseWriter, r *http.Request) {

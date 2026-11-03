@@ -386,6 +386,8 @@ sudo chmod 600 /etc/dns-ops/auth.json
 ```
 
 服务启动时会校验 `AUTH_FILE` 中存在 bcrypt 哈希；生产环境没有认证文件时会直接启动失败。登录后也可以通过密码修改接口更新哈希文件。
+通过 `scripts/create-auth-file.sh` 新生成的认证文件会标记为“首次登录必须改密码”，
+首次登录只能进入改密码页面，修改成功后才会开放 DNS/RPZ 操作。
 生产环境同时要求 `MONITORING_TOKEN` 为至少 32 位随机值；健康检查和告警脚本必须使用该值访问监控接口。
 
 HTTPS 任选一种：

@@ -5,6 +5,7 @@ import { DnsDashboard } from "./components/DnsDashboard";
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
 
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "include" })
@@ -12,13 +13,14 @@ export function App() {
         const payload = await response.json().catch(() => ({}));
         setAuthenticated(response.ok && payload.authenticated === true);
         setAuthEnabled(payload.authEnabled !== false);
+        setMustChangePassword(payload.mustChangePassword === true);
       })
       .catch(() => { setAuthenticated(false); setAuthEnabled(true); });
   }, []);
 
   if (authenticated === null || authEnabled === null) return <div className="login-viewport" />;
   if (!authEnabled) return <DnsDashboard authEnabled={false} onLogout={() => undefined} />;
-  if (!authenticated) return <LoginPage onLogin={() => setAuthenticated(true)} />;
+  if (!authenticated) return <LoginPage onLogin={(required) => { setAuthenticated(true); setMustChangePassword(required); }} />;
 
-  return <DnsDashboard authEnabled onLogout={() => setAuthenticated(false)} />;
+  return <DnsDashboard authEnabled mustChangePassword={mustChangePassword} onLogout={() => { setAuthenticated(false); setMustChangePassword(false); }} />;
 }

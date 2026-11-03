@@ -13,8 +13,9 @@ import (
 )
 
 type authStore struct {
-	Username     string `json:"username"`
-	PasswordHash string `json:"passwordHash"`
+	Username           string `json:"username"`
+	PasswordHash       string `json:"passwordHash"`
+	MustChangePassword bool   `json:"mustChangePassword,omitempty"`
 }
 
 func readPassword(prompt string) (string, error) {
@@ -51,7 +52,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "hash password: %v\n", err)
 		os.Exit(1)
 	}
-	content, err := json.MarshalIndent(authStore{Username: *username, PasswordHash: string(hash)}, "", "  ")
+	content, err := json.MarshalIndent(authStore{Username: *username, PasswordHash: string(hash), MustChangePassword: true}, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "encode auth file: %v\n", err)
 		os.Exit(1)

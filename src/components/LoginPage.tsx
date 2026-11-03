@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 
 type CaptchaResponse = { id: string; svg: string };
 
-export function LoginPage({ onLogin }: { onLogin: () => void }) {
+export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [captchaId, setCaptchaId] = useState("");
@@ -60,7 +60,8 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
         body: JSON.stringify({ username, password, captchaId, captcha: captchaCode }),
       });
       if (!response.ok) throw new Error("登录失败");
-      onLogin();
+      const payload = await response.json() as { mustChangePassword?: boolean };
+      onLogin(payload.mustChangePassword === true);
     } catch {
       setError("用户名、密码或验证码错误，或认证服务不可用");
       void refreshCaptcha();
