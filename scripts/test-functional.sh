@@ -51,7 +51,7 @@ wait_publish_job() {
 curl -fsS "$API_URL/api/health" | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"'
 pass "API health"
 
-curl -fsS "$API_URL/api/settings" | python3 -c 'import json,sys; assert json.load(sys.stdin)["title"] == "DNS 解析控制中心"'
+curl -fsS "$API_URL/api/settings" | python3 -c 'import json,sys; assert json.load(sys.stdin)["title"] == "域盾 DNSGuard"'
 pass "settings"
 
 curl -fsS "$API_URL/api/auth/me" | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["authenticated"] and x["authEnabled"] is False'

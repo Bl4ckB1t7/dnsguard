@@ -376,7 +376,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   return (
     <main className="dns-shell">
       <header className="dns-header">
-        <div><span className="dns-kicker">DNS OPERATIONS CONTROL</span><h1>企业 DNS / RPZ 管理平台</h1><nav className="dns-nav" aria-label="平台导航"><button className={activeView === "overview" ? "active" : ""} onClick={() => selectView("overview")}>运行总览</button><button className={activeView === "audit" ? "active" : ""} onClick={() => selectView("audit")}>审计日志</button></nav></div>
+        <div><span className="dns-kicker">DNSGUARD OPERATIONS</span><h1>域盾 DNSGuard</h1><nav className="dns-nav" aria-label="平台导航"><button className={activeView === "overview" ? "active" : ""} onClick={() => selectView("overview")}>运行总览</button><button className={activeView === "audit" ? "active" : ""} onClick={() => selectView("audit")}>审计日志</button></nav></div>
         <div className="dns-header-actions"><button disabled={loading} onClick={() => void (activeView === "audit" ? loadAudit() : load()).catch(() => undefined)}>{loading ? "加载中…" : "刷新状态"}</button>{authEnabled && <><button className="ghost" onClick={() => setShowPasswordPanel(true)}>修改密码</button><button className="ghost" onClick={() => void logout()}>退出登录</button></>}</div>
       </header>
 

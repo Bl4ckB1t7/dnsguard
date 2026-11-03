@@ -1,4 +1,4 @@
-# DNS Ops Platform
+# 域盾（DNSGuard）
 
 轻量的企业 DNS / BIND / RPZ 运维控制面。它不替代 BIND，也不直接接管 DNS 查询服务，而是负责规则管理、发布、节点状态、审计和回滚。
 

@@ -10,8 +10,8 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
   const [captchaCode, setCaptchaCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [title, setTitle] = useState("DNS 解析控制中心");
-  const [subtitle, setSubtitle] = useState("BIND 集群与 RPZ 策略管理平台");
+  const [title, setTitle] = useState("域盾 DNSGuard");
+  const [subtitle, setSubtitle] = useState("企业 DNS 安全运维平台");
   const [clock, setClock] = useState(() => new Date());
 
   const refreshCaptcha = async () => {
@@ -81,7 +81,7 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
       <div className="login-scan" />
       <section className="login-card">
         <div className="login-corner login-corner-a" /><div className="login-corner login-corner-b" />
-        <div className="login-brand"><b>▥</b><span>DNS<small>RESOLUTION CENTER</small></span></div>
+        <div className="login-brand"><b>▥</b><span>DNSGuard<small>DNS SECURITY OPERATIONS</small></span></div>
         <div className="login-title"><h1>{title}</h1><span>DNS RESOLUTION CONTROL CENTER</span><small>{subtitle}</small></div>
         <div className="login-divider"><i /><b>SECURE ACCESS</b><i /></div>
         <form onSubmit={submit}>

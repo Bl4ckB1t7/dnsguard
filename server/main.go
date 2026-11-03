@@ -38,8 +38,8 @@ func settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"title":    "DNS 解析控制中心",
-		"subtitle": "BIND 集群与 RPZ 策略管理平台",
+		"title":    "域盾 DNSGuard",
+		"subtitle": "企业 DNS 安全运维平台",
 	})
 }
 
