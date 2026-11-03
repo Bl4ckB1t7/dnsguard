@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompileRPZIncludesExactAndWildcardTriggers(t *testing.T) {
@@ -169,5 +170,30 @@ func TestDNSNodeAddressAllowlist(t *testing.T) {
 		if got := dnsNodeAddressAllowed(test.address); got != test.allowed {
 			t.Errorf("dnsNodeAddressAllowed(%q) = %v, want %v", test.address, got, test.allowed)
 		}
+	}
+}
+
+func TestLiveDNSNodesReturnsFreshCacheWithoutDig(t *testing.T) {
+	t.Setenv("DNS_HEALTH_CACHE_SECONDS", "60")
+	dnsHealthMu.Lock()
+	originalCache := dnsHealthCache
+	originalAt := dnsHealthAt
+	dnsHealthCache = []DNSNode{{ID: "cached", Status: "healthy", RPZVersion: "42"}}
+	dnsHealthAt = time.Now()
+	dnsHealthMu.Unlock()
+	defer func() {
+		dnsHealthMu.Lock()
+		dnsHealthCache = originalCache
+		dnsHealthAt = originalAt
+		dnsHealthMu.Unlock()
+	}()
+
+	started := time.Now()
+	got := liveDNSNodes()
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("cached node read took %s; expected no synchronous dig", elapsed)
+	}
+	if len(got) != 1 || got[0].ID != "cached" {
+		t.Fatalf("unexpected cached nodes: %+v", got)
 	}
 }

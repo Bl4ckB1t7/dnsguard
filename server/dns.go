@@ -82,6 +82,7 @@ var domainPattern = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])
 var dnsHealthMu sync.Mutex
 var dnsHealthCache []DNSNode
 var dnsHealthAt time.Time
+var dnsHealthRefreshing atomic.Bool
 var ruleSequence atomic.Uint64
 var stateFileMu sync.Mutex
 var nodeConfigFileMu sync.Mutex
@@ -196,12 +197,20 @@ func probeDNSNode(ctx context.Context, address string) (string, error) {
 	return fields[2], nil
 }
 
-func liveDNSNodes() []DNSNode {
-	dnsHealthMu.Lock()
-	defer dnsHealthMu.Unlock()
-	if len(dnsHealthCache) > 0 && time.Since(dnsHealthAt) < 5*time.Second {
-		return append([]DNSNode{}, dnsHealthCache...)
+func dnsHealthCacheTTL() time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DNS_HEALTH_CACHE_SECONDS")))
+	if err != nil || seconds < 1 || seconds > 300 {
+		seconds = 5
 	}
+	return time.Duration(seconds) * time.Second
+}
+
+func refreshDNSHealth() {
+	if !dnsHealthRefreshing.CompareAndSwap(false, true) {
+		return
+	}
+	defer dnsHealthRefreshing.Store(false)
+
 	dnsMu.RLock()
 	result := append([]DNSNode{}, state.Nodes...)
 	dnsMu.RUnlock()
@@ -233,9 +242,42 @@ func liveDNSNodes() []DNSNode {
 			}
 		}
 	}
+	dnsHealthMu.Lock()
 	dnsHealthCache = append([]DNSNode{}, result...)
 	dnsHealthAt = time.Now()
-	return result
+	dnsHealthMu.Unlock()
+}
+
+func startDNSHealthMonitor() {
+	interval := dnsHealthCacheTTL()
+	if configured, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DNS_HEALTH_INTERVAL_SECONDS"))); err == nil && configured >= 1 && configured <= 300 {
+		interval = time.Duration(configured) * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			refreshDNSHealth()
+		}
+	}()
+}
+
+func liveDNSNodes() []DNSNode {
+	dnsHealthMu.Lock()
+	cached := append([]DNSNode{}, dnsHealthCache...)
+	refreshedAt := dnsHealthAt
+	dnsHealthMu.Unlock()
+	if refreshedAt.IsZero() {
+		refreshDNSHealth()
+		dnsHealthMu.Lock()
+		cached = append([]DNSNode{}, dnsHealthCache...)
+		dnsHealthMu.Unlock()
+		return cached
+	}
+	if time.Since(refreshedAt) >= dnsHealthCacheTTL() {
+		go refreshDNSHealth()
+	}
+	return cached
 }
 
 func rpzRulesEqual(current, published []RPZRule) bool {
@@ -615,6 +657,7 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 		}
 		dnsHealthMu.Lock()
 		dnsHealthCache = nil
+		dnsHealthAt = time.Time{}
 		dnsHealthMu.Unlock()
 		auditEvent(r, authUsername(), "dns.node.update", request.ID+":"+request.Address)
 		writeJSON(w, http.StatusOK, map[string]any{"updated": true, "nodeId": request.ID, "address": request.Address})

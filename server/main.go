@@ -51,6 +51,7 @@ func main() {
 	}
 	loadAudit()
 	loadAuth()
+	startDNSHealthMonitor()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", health)

@@ -204,6 +204,8 @@ WEB_BIND_ADDRESS=192.0.2.20
 | `TLS_KEY_FILE` | `/etc/dns-ops/tls/privkey.pem` | API 直出 HTTPS 时使用 |
 | `TRUST_PROXY_TLS` | `true` | HTTPS 在可信反向代理终止时使用 |
 | `MONITORING_TOKEN` | 随机值 | 监控接口 Bearer Token；为空时仅允许本机回环地址 |
+| `DNS_HEALTH_CACHE_SECONDS` | `5` | 页面读取节点健康缓存的最大新鲜度 |
+| `DNS_HEALTH_INTERVAL_SECONDS` | `10` | 后台 DNS 节点探测间隔 |
 
 ### 5.2 DNS 节点配置
 
@@ -371,6 +373,10 @@ TRUST_PROXY_TLS=true
 前端预览服务和 API 会统一返回 `nosniff`、禁止 iframe、严格 Referrer Policy
 和 Permissions Policy；HTTPS 请求额外返回 HSTS。生产反向代理仍应保留 HTTPS
 跳转、访问控制和日志，不要把开发模式直接暴露到公网。
+
+DNS 节点探测由后台定时任务执行，页面读取最近一次缓存，不再在每次打开概览页时
+同步等待多个 `dig` 请求。首次读取在缓存尚未建立时会执行一次初始化探测；节点配置
+保存后会立即使缓存失效，下一次读取重新建立状态。
 
 ## 8. 验证、备份和恢复
 
