@@ -39,7 +39,7 @@ func settings(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"title":    "域盾 DNSGuard",
-		"subtitle": "企业 DNS 安全运维平台",
+		"subtitle": "域策 · DNS 安全策略管理平台",
 	})
 }
 

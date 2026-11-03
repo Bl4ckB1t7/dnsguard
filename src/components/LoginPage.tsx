@@ -11,7 +11,7 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [title, setTitle] = useState("域盾 DNSGuard");
-  const [subtitle, setSubtitle] = useState("企业 DNS 安全运维平台");
+  const [subtitle, setSubtitle] = useState("域策 · DNS 安全策略管理平台");
   const [clock, setClock] = useState(() => new Date());
 
   const refreshCaptcha = async () => {
@@ -82,7 +82,7 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
       <section className="login-card">
         <div className="login-corner login-corner-a" /><div className="login-corner login-corner-b" />
         <div className="login-brand"><b>▥</b><span>DNSGuard<small>DNS SECURITY OPERATIONS</small></span></div>
-        <div className="login-title"><h1>{title}</h1><span>DNS RESOLUTION CONTROL CENTER</span><small>{subtitle}</small></div>
+        <div className="login-title"><h1>{title}</h1><span>DNS RESOLUTION CONTROL CENTER</span><small>{subtitle}</small><em className="login-tagline">让每一次解析，都有安全边界。</em></div>
         <div className="login-divider"><i /><b>SECURE ACCESS</b><i /></div>
         <form onSubmit={submit}>
           <label>用户标识<input autoFocus value={username} onChange={(event) => setUsername(event.target.value)} placeholder="请输入用户名" autoComplete="username" /></label>
