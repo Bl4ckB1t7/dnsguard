@@ -21,13 +21,14 @@ import (
 )
 
 type DNSNode struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Role       string `json:"role"`
-	Address    string `json:"address"`
-	Status     string `json:"status"`
-	RPZVersion string `json:"rpzVersion"`
-	LastSync   string `json:"lastSync"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Role        string `json:"role"`
+	Address     string `json:"address"`
+	Status      string `json:"status"`
+	RPZVersion  string `json:"rpzVersion"`
+	LastSync    string `json:"lastSync"`
+	LastChecked string `json:"lastChecked"`
 }
 
 type DNSNodeConfig struct {
@@ -225,6 +226,7 @@ func refreshDNSHealth() {
 	primarySerial := ""
 	for index := range result {
 		result[index].Address = configuredDNSAddress(result[index])
+		result[index].LastChecked = now
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		serial, err := probeDNSNode(ctx, result[index].Address)
 		cancel()
@@ -734,7 +736,7 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "新增节点必须填写名称和角色"})
 				return
 			}
-			auditNode = DNSNode{ID: request.ID, Name: request.Name, Role: request.Role, Address: request.Address, Status: "unknown", RPZVersion: "—", LastSync: "未探测"}
+			auditNode = DNSNode{ID: request.ID, Name: request.Name, Role: request.Role, Address: request.Address, Status: "unknown", RPZVersion: "—", LastSync: "未探测", LastChecked: "未检测"}
 			state.Nodes = append(state.Nodes, auditNode)
 			created = true
 		}

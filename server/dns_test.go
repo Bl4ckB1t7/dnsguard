@@ -26,6 +26,27 @@ func TestDNSNodeCannotDeletePrimary(t *testing.T) {
 	}
 }
 
+func TestDNSHealthRecordsLastChecked(t *testing.T) {
+	originalState := state
+	originalCache := dnsHealthCache
+	originalAt := dnsHealthAt
+	defer func() {
+		state = originalState
+		dnsHealthCache = originalCache
+		dnsHealthAt = originalAt
+	}()
+	state = dnsState{Nodes: []DNSNode{{ID: "health-test", Role: "辅节点", Address: "127.0.0.1:1"}}}
+	dnsHealthCache = nil
+	dnsHealthAt = time.Time{}
+	refreshDNSHealth()
+	if len(dnsHealthCache) != 1 {
+		t.Fatalf("expected one health result, got %d", len(dnsHealthCache))
+	}
+	if _, err := time.Parse("2006-01-02 15:04:05", dnsHealthCache[0].LastChecked); err != nil {
+		t.Fatalf("last checked time should use the local display format, got %q: %v", dnsHealthCache[0].LastChecked, err)
+	}
+}
+
 func TestRPZRuleUpdateChangesTargetAndRequiresPublish(t *testing.T) {
 	t.Setenv("DNS_STATE_FILE", filepath.Join(t.TempDir(), "dns-state.json"))
 	t.Setenv("AUDIT_FILE", filepath.Join(t.TempDir(), "audit.json"))
