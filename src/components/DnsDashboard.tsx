@@ -64,12 +64,17 @@ function auditActionLabel(action: string): string {
 }
 
 function auditDetail(entry: AuditEntry): string {
+  const readableNodeDetail = (verb: string): string => {
+    if (entry.result.includes(" / ")) return `${verb}：${entry.result}`;
+    const separator = entry.result.indexOf(":");
+    return separator > 0 ? `${verb}：节点 ID ${entry.result.slice(0, separator)} · 地址 ${entry.result.slice(separator + 1)}` : `${verb}：${entry.result}`;
+  };
   if (entry.action === "login") return entry.result === "success" ? "登录成功" : "登录失败";
   if (entry.action === "logout") return "会话已退出";
   if (entry.action === "password.change") return "账户密码已更新";
-  if (entry.action === "dns.node.create") return `已添加：${entry.result}`;
-  if (entry.action === "dns.node.update") return `已更新：${entry.result}`;
-  if (entry.action === "dns.node.delete") return `已删除：${entry.result}`;
+  if (entry.action === "dns.node.create") return readableNodeDetail("已添加");
+  if (entry.action === "dns.node.update") return readableNodeDetail("已更新");
+  if (entry.action === "dns.node.delete") return readableNodeDetail("已删除");
   if (entry.action === "rpz.rule.create") return `域名：${entry.result}`;
   if (entry.action === "rpz.rule.delete") return `域名：${entry.result}`;
   if (entry.action === "rpz.publish") {
