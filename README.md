@@ -1,564 +1,594 @@
 # 域盾（DNSGuard）
 
-轻量的企业 DNS / BIND / RPZ 运维控制面。它不替代 BIND，也不直接接管 DNS 查询服务，而是负责规则管理、发布、节点状态、审计和回滚。
+域盾（DNSGuard）是面向企业 DNS 运维的轻量控制面，负责 RPZ 规则管理、发布、节点状态、审计、版本回滚和告警配置。BIND 仍然是 DNS 查询和 RPZ 执行的数据面，域盾不接管 DNS 查询，也不需要数据库。
 
-## 1. 为什么开发这个系统
+## 先看这里
 
-企业 DNS 运维通常会遇到以下问题：
+- **生产部署使用安装脚本和 systemd**，不要用开发启动脚本长期运行。
+- **不使用数据库**：规则、节点、版本、审计和运行状态使用受保护的 JSON 文件保存。
+- **生产默认通过 `nsupdate + TSIG` 更新 RPZ Primary**，由 BIND 原生 NOTIFY/IXFR 同步 Secondary。
+- **API 默认只监听 `127.0.0.1:8080`**，生产通过 Nginx 或现有 HTTPS 反向代理提供页面访问。
+- **发布不是自动发生的**：新增、编辑或删除规则后，必须在页面点击“生成 / 发布 RPZ”。没有待发布变更时，发布按钮会显示“已是最新”。
+- 本地 BIND/RPZ 联调环境保留在 `dev/bind-rpz/`，只监听 `5353`，不会占用生产 DNS 的 `53` 端口。
 
-- RPZ 白名单依赖人工修改主 DNS 文件，容易出现格式错误或漏改。
-- 修改后需要重启或手动 reload，发布窗口长，影响面不可见。
-- 主节点和辅节点的 RPZ Serial、同步状态缺少统一视图。
-- 误删规则后只能依赖备份文件，缺少可操作的版本回滚。
-- 多人协作时没有发布任务状态、操作审计和变更原因。
-- DNS 节点地址、发布密钥和运行状态混在一起，迁移、备份和恢复困难。
-- 传统方案引入数据库、消息队列和复杂微服务后，部署成本又过高。
+## 解决什么问题
 
-本项目的目标是：**用一个轻量控制面解决 DNS/RPZ 的日常运维问题，同时保持 BIND 数据面稳定、文件可读、部署简单、可回滚。**
+企业中手工维护 BIND RPZ 通常会遇到：
 
-## 2. 设计原则
+- 修改 Zone 文件容易出现格式错误、漏改或误删。
+- 修改后需要手工 reload/restart，发布过程缺少统一状态。
+- Primary、Secondary 的 RPZ Serial 和健康状态分散，故障发现不及时。
+- 多人操作缺少原因、操作者、来源地址和可检索的审计记录。
+- 误操作后只能依赖文件备份，回滚步骤不清晰。
+- 引入数据库、消息队列和多个微服务后，部署和维护成本过高。
 
-1. BIND 继续承担 DNS 查询和 RPZ 执行，不把查询链路迁移到 Web 系统。
-2. 不使用数据库，规则、节点配置、版本和审计均使用 JSON 文件保存。
-3. 发布前生成预览并进行规则校验，发布后记录版本。
-4. 当前默认使用 `artifact` 模式，只生成 RPZ 文件；生产环境显式配置 `nsupdate` 后才更新 Primary。
-5. 管理 API 默认只监听回环地址，由管理网卡上的前端代理访问。
-6. 生产必须启用认证、HTTPS 或可信 HTTPS 反向代理。
+域盾的目标是把这些操作集中到一个可回滚、可审计、文件可读的控制面，同时不改变 BIND 的稳定数据面。
 
-## 3. 系统架构
+## 功能概览
 
-```text
-管理员浏览器
-    │ 管理网卡:5173
-    ▼
-Vite Preview / 反向代理
-    │ /api → 127.0.0.1:8080
-    ▼
-Go API 控制面
-    ├── Cookie 会话、CSRF、登录限速、审计
-    ├── RPZ 规则、预览、版本、回滚、发布任务
-    ├── dig / SOA Serial 节点探测
-    └── JSON 文件持久化
-             │ nsupdate + TSIG
-             ▼
-        BIND RPZ Primary
-             │ NOTIFY / IXFR
-             ▼
-        BIND Secondary 集群
+- RPZ 白名单：CNAME `rpz-passthru` 动作。
+- RPZ A 记录重定向：将域名和泛域名触发器指向指定 IPv4。
+- 发布预览：显示当前规则、已发布规则和待处理变更。
+- 受控发布：内置规则校验、`named-checkzone` 校验、`nsupdate` 发布和任务状态。
+- 版本记录：保存发布版本，支持回滚并重新发布。
+- DNS 节点管理：增加、编辑、删除节点，角色固定为主节点或辅节点。
+- 真实节点状态：通过 `dig` 查询节点 SOA Serial，显示正常、版本不一致或不可达。
+- 当前 RPZ 记录：读取配置的 BIND RPZ 日志并进行去重统计。
+- 审计日志：支持搜索、分页、规则详情展开和哈希链校验状态。
+- 告警配置：前端配置 Telegram Bot、Chat ID、告警事件和冷却时间。
+- 认证能力：验证码、登录限速、CSRF、Cookie 会话、首次登录改密和主动改密。
+- 备份恢复：对状态、节点、审计和 RPZ 产物进行带 SHA-256 清单的备份和恢复。
+
+## 架构
+
+```mermaid
+flowchart TD
+    A[管理员浏览器] --> B[Nginx 或现有 HTTPS 反向代理]
+    B --> C[React 静态页面]
+    B --> D[Go API 127.0.0.1:8080]
+    D --> E[JSON 文件状态 / 节点 / 审计 / 版本]
+    D --> F[named-checkzone]
+    D --> G[nsupdate + TSIG]
+    G --> H[BIND RPZ Primary]
+    H -->|NOTIFY / IXFR| I[BIND Secondary 集群]
+    D --> J[dig / SOA Serial 探测]
+    D --> K[Telegram Bot API]
 ```
 
-控制面不要求必须部署在 DNS Primary 上。推荐部署在独立管理节点，只需要：
+推荐部署在独立管理节点，不要求控制面和 BIND Primary 在同一台服务器。控制面至少需要：
 
-- 能访问 DNS Primary 的 DNS/动态更新端口；
-- 能查询 Primary 和 Secondary 的 RPZ SOA；
-- 能读取 TSIG key 文件，或通过受保护的密钥挂载提供；
-- 管理员能从管理网卡访问前端。
+- 到 Primary 的 DNS 动态更新端口和 SOA 查询连通性。
+- 到全部 Secondary 的 DNS SOA 查询连通性。
+- 能读取 RPZ 动态更新使用的 TSIG key。
+- 管理员能通过管理网段访问 HTTPS 页面。
 
-如果发布方式是本机 `rndc` 或本地 RPZ 文件，则控制面才需要与 BIND 位于同一台服务器。
+## 生产部署
 
-## 4. 一键部署
+### 前置条件
 
-### 4.1 前置条件
-
-Debian/Ubuntu 示例：
+以下以 Debian/Ubuntu 为例：
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y git curl nodejs npm golang bind9-dnsutils
+sudo apt-get install -y git curl nodejs npm golang bind9-utils bind9-dnsutils
 ```
 
-确认命令存在：
+确认依赖：
 
 ```bash
 node --version
 npm --version
 go version
 dig -v
-ip link show
+nsupdate -h >/dev/null
+named-checkzone -h >/dev/null
+systemctl --version
 ```
 
-### 4.2 首次部署
+准备信息：
+
+| 信息 | 示例 | 用途 |
+|---|---|---|
+| RPZ Primary | `DNS_PRIMARY:53` | 动态更新目标 |
+| Secondary 列表 | `DNS_SECONDARY_1:53,DNS_SECONDARY_2:53` | 节点状态和同步验证 |
+| TSIG key 文件 | `PATH_TO_RPZ_KEY` | `nsupdate` 认证 |
+| RPZ 日志文件 | `/var/log/named/rpz.log` | RPZ 命中统计 |
+| 管理网卡 | `BIND_INTERFACE` | Web 绑定地址来源 |
+| HTTPS 域名 | `DNSGUARD_DOMAIN` | Nginx `server_name` |
+
+### 一键安装和配置
+
+从 GitHub 获取代码：
 
 ```bash
 git clone https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
-sudo ./scripts/install-dnsguard.sh
-sudo ./scripts/setup-dnsguard.sh
-sudo systemctl start dnsguard-api.service
-sudo systemctl status dnsguard-api.service --no-pager
 ```
 
-`install-dnsguard.sh` 会自动创建 `dnsguard` 系统用户、安装到 `/opt/dnsguard`、
-创建 `/etc/dnsguard`、`/var/lib/dnsguard` 和 `/var/log/dnsguard`，构建前端/API，
-并安装 systemd 服务。随后 `setup-dnsguard.sh` 以交互方式只询问现场必需信息，
-生成单一运行配置 `/etc/dnsguard/dnsguard.env`、节点文件和随机安全密钥；登录密码
-单独保存为 `/etc/dnsguard/auth.json`，不会写入配置文件。配置完成后会自动执行
-DNS、RPZ、认证和 TLS 预检查。
-
-生产部署前，请先把 BIND 动态更新使用的 TSIG key 安全复制到 setup 提示的路径，
-然后重新运行 setup。默认采用 `nsupdate` 发布到 Primary；如果 HTTPS 在现有可信
-反向代理终止，setup 会生成 `TRUST_PROXY_TLS=true`，无需在 DNSGuard 主机上生成证书。
-需要直接由 API 提供 HTTPS 时，再手动填写 `TLS_CERT_FILE` 和 `TLS_KEY_FILE`，并把
-`TRUST_PROXY_TLS` 改为 `false`。
-
-也可以使用环境变量进行无人值守安装（示例）：
+执行安装脚本：
 
 ```bash
-sudo DNSGUARD_NONINTERACTIVE=true \
-  DNSGUARD_PRIMARY_ADDRESS=10.0.0.10:53 \
-  DNSGUARD_SECONDARY_ADDRESSES=10.0.0.11:53,10.0.0.12:53 \
-  DNSGUARD_RPZ_KEY_FILE=/etc/dnsguard/keys/rpz-manager.key \
-  DNSGUARD_BIND_INTERFACE=eth0 \
-  ./scripts/setup-dnsguard.sh
+sudo ./scripts/install-dnsguard.sh
 ```
 
-检查安装结果：
+安装脚本会完成：
+
+1. 创建 `dnsguard` 系统用户和用户组。
+2. 将程序安装到 `/opt/dnsguard`。
+3. 创建 `/etc/dnsguard`、`/var/lib/dnsguard` 和 `/var/log/dnsguard`。
+4. 使用非 root 用户构建 React 前端和 Go API。
+5. 安装 `dnsguard-api.service`、`dnsguard-monitor.service` 和定时器。
+6. 设置服务最小权限和显式可写目录。
+
+执行交互式配置：
+
+```bash
+sudo ./scripts/setup-dnsguard.sh
+```
+
+配置脚本会询问：
+
+1. Primary 地址，格式为 `HOST:PORT`。
+2. Secondary 地址，多个地址使用逗号分隔。
+3. TSIG key 源文件路径。
+4. BIND RPZ 日志文件路径，多个文件使用逗号分隔。
+5. 管理网卡名称。
+6. Web 绑定地址，可留空并自动读取管理网卡 IPv4。
+7. 登录用户名，默认是 `admin`。
+
+配置脚本会自动生成：
+
+- `/etc/dnsguard/dnsguard.env`：唯一运行配置。
+- `/etc/dnsguard/dns-nodes.json`：DNS 节点配置。
+- `/etc/dnsguard/keys/rpz-manager.key`：服务使用的受保护 TSIG key 副本。
+- `/etc/dnsguard/auth.json`：bcrypt 密码哈希文件，不保存明文密码。
+- `/var/lib/dnsguard/`：规则状态、版本、审计和 RPZ 产物。
+
+如果认证文件不存在，配置脚本会交互式要求输入初始密码。密码不会写入 `dnsguard.env`。
+如果重复运行配置脚本，已有的 `AUTH_SECRET` 和 `MONITORING_TOKEN` 会保留，不会无故导致所有会话失效。
+
+完成后执行生产预检查：
 
 ```bash
 sudo /opt/dnsguard/scripts/preflight-dnsguard.sh
-sudo systemctl enable --now dnsguard-monitor.timer
 ```
 
-开发验证仍可使用 `start-dnsguard.sh`；生产环境不要再手工复制 `.env` 或以 root
-启动 API，统一由 `/etc/dnsguard/dnsguard.env` 和 systemd 管理。
+预检查会验证：
 
-停止：
+- 生产模式和认证是否开启。
+- 会话密钥和监控 Token 长度是否足够。
+- bcrypt 认证文件和节点 JSON 是否有效。
+- 所有 DNS 节点是否能通过 `dig` 查询。
+- `nsupdate` 模式下 TSIG key 和 Primary SOA 是否可用。
+- HTTPS 证书或可信反向代理配置是否满足要求。
 
-```bash
-./scripts/stop-dnsguard.sh
-```
-
-旧的 `start-tailscale.sh` 和 `stop-tailscale.sh` 仅保留为兼容入口，新的部署文档统一使用 `start-dnsguard.sh` 和 `stop-dnsguard.sh`。这里的 `BIND_INTERFACE` 只是服务器网卡名，不依赖某个特定网络产品。
-
-日常升级：
+启动服务：
 
 ```bash
-git pull --ff-only
-./scripts/start-dnsguard.sh
-```
-
-### 本地 BIND/RPZ 开发环境（可选）
-
-生产部署不依赖本地 BIND。需要联调 RPZ 发布、主辅同步或运行完整功能测试时，使用
-`dev/bind-rpz/` 和对应的启动脚本：
-
-```bash
-sudo BIND_USER=bind BIND_GROUP=bind ./scripts/start-bind-rpz.sh
-./scripts/stop-bind-rpz.sh
-```
-
-该环境只监听 `127.0.0.2:5353`、`127.0.0.3:5353` 和 `127.0.0.4:5353`，不会占用系统
-53 端口。生产环境请使用真实 BIND 节点地址和端口，不要把开发节点配置带入生产。
-
-### 4.4 生产 systemd 部署
-
-`install-dnsguard.sh` 已经完成以下 systemd 安装步骤。若现场需要手工复核或迁移，
-仍可参考本节。生产环境建议让 systemd 托管 API，让 Nginx
-或现有 HTTPS 反向代理托管 `dist/` 并代理 `/api/`。仓库提供了带最小权限
-限制的服务模板：
-
-```bash
-sudo useradd --system --home /opt/dnsguard --shell /usr/sbin/nologin dnsguard || true
-sudo install -d -o dnsguard -g dnsguard -m 0750 \
-  /opt/dnsguard /etc/dnsguard /var/lib/dnsguard /var/lib/dnsguard/rpz /var/log/dnsguard
-sudo cp -a . /opt/dnsguard/
-sudo chown -R dnsguard:dnsguard /opt/dnsguard /var/lib/dnsguard /var/log/dnsguard
-sudo install -m 0644 deploy/systemd/dnsguard-api.service \
-  /etc/systemd/system/dnsguard-api.service
-```
-
-将生产配置保存为 `/etc/dnsguard/dnsguard.env`，并将 `AUTH_FILE`、
-`DNS_NODE_CONFIG_FILE`、`RPZ_KEY_FILE` 指向 `/etc/dnsguard/` 下的受保护文件。
-状态、审计和 RPZ 产物使用 `/var/lib/dnsguard/`。先在发布目录构建 API 和前端：
-
-```bash
-cd /opt/dnsguard
-sudo -u dnsguard npm ci
-sudo -u dnsguard npm run build
-sudo -u dnsguard mkdir -p .run
-sudo -u dnsguard go build -o .run/dnsguard-api ./server
-sudo systemctl daemon-reload
 sudo systemctl enable --now dnsguard-api.service
+sudo systemctl enable --now dnsguard-monitor.timer
 sudo systemctl status dnsguard-api.service --no-pager
+sudo systemctl list-timers dnsguard-monitor.timer --no-pager
 ```
 
-API 只监听 `127.0.0.1:8080`，Web 代理应仅允许管理网段访问，并将 HTTPS
-终止在反向代理。升级时先执行 `systemctl stop dnsguard-api`，替换构建产物，
-再执行 `systemctl start dnsguard-api`；失败时使用 `journalctl -u dnsguard-api`
-查看日志并回滚上一份 `.run/dnsguard-api`。服务模板使用 `ProtectSystem`、
-`NoNewPrivileges`、独立运行用户和显式可写目录，避免把整个系统目录暴露给 API。
+### 无人值守配置
 
-仓库提供 Nginx 配置模板 `deploy/nginx/dnsguard.conf`。将 `DNSGUARD_DOMAIN`、证书路径
-和管理网段 ACL 按现场替换后启用：
+已准备好全部参数时，可以使用环境变量：
 
 ```bash
-sudo install -m 0644 deploy/nginx/dnsguard.conf /etc/nginx/sites-available/dnsguard.conf
-sudo ln -sf /etc/nginx/sites-available/dnsguard.conf /etc/nginx/sites-enabled/dnsguard.conf
+sudo env DNSGUARD_NONINTERACTIVE=true \
+  DNSGUARD_PRIMARY_ADDRESS=DNS_PRIMARY:53 \
+  DNSGUARD_SECONDARY_ADDRESSES=DNS_SECONDARY_1:53,DNS_SECONDARY_2:53 \
+  DNSGUARD_RPZ_KEY_FILE=PATH_TO_RPZ_KEY \
+  DNSGUARD_RPZ_LOG_FILES=/var/log/named/rpz.log \
+  DNSGUARD_BIND_INTERFACE=BIND_INTERFACE \
+  DNSGUARD_AUTH_USERNAME=admin \
+  ./scripts/setup-dnsguard.sh
+```
+
+无人值守模式不会绕过预检查。TSIG key、节点连通性或 HTTPS 配置不满足条件时，脚本会失败并给出原因。
+
+### Nginx 反向代理
+
+生产推荐由 Nginx 终止 HTTPS，API 只保持回环监听：
+
+```bash
+sudo install -m 0644 deploy/nginx/dnsguard.conf \
+  /etc/nginx/sites-available/dnsguard.conf
+```
+
+编辑文件，将：
+
+- `DNSGUARD_DOMAIN` 替换为实际管理域名。
+- `/etc/dnsguard/tls/fullchain.pem` 替换为证书路径。
+- `/etc/dnsguard/tls/privkey.pem` 替换为私钥路径。
+- Nginx 管理访问控制按现场网段补充。
+
+启用并检查：
+
+```bash
+sudo ln -sf /etc/nginx/sites-available/dnsguard.conf \
+  /etc/nginx/sites-enabled/dnsguard.conf
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Nginx 托管 `/opt/dnsguard/dist`，将 `/api/` 反向代理到本机 API，负责 HTTPS
-终止和安全响应头。启用 Nginx 后不要再用 `start-dnsguard.sh` 启动 Vite Preview，避免
-重复占用 Web 端口；只使用 `dnsguard-api.service` 托管 API。
+Nginx 托管 `/opt/dnsguard/dist`，将 `/api/` 代理到 `127.0.0.1:8080`。启用 Nginx 后不要再使用 Vite Preview 对外提供生产页面。
 
-### 4.3 管理网卡配置
+### HTTPS 配置选择
 
-默认配置：
+默认 setup 使用可信反向代理模式：
 
 ```dotenv
-BIND_INTERFACE=tailscale0
-WEB_BIND_ADDRESS=
+TRUST_PROXY_TLS=true
+TLS_CERT_FILE=
+TLS_KEY_FILE=
 ```
 
-如果服务器网卡名字就是 `tailscale`：
+如果不使用反向代理，由 Go API 直接提供 HTTPS，需要在 `/etc/dnsguard/dnsguard.env` 设置：
 
 ```dotenv
-BIND_INTERFACE=tailscale
-WEB_BIND_ADDRESS=
+TRUST_PROXY_TLS=false
+TLS_CERT_FILE=PATH_TO_TLS_CERT
+TLS_KEY_FILE=PATH_TO_TLS_KEY
 ```
 
-也可以直接指定地址，不依赖网卡名称：
+修改后重新执行：
 
-```dotenv
-WEB_BIND_ADDRESS=192.0.2.20
+```bash
+sudo /opt/dnsguard/scripts/preflight-dnsguard.sh
+sudo systemctl restart dnsguard-api.service
 ```
 
-脚本不会调用或依赖 `tailscale` 命令，只通过 `ip` 读取指定网卡地址。
+## 日常运维
 
-## 5. 配置说明
+### 更新版本
 
-### 5.1 应用和访问
+生产更新建议先备份，再使用主分支的最新代码重新构建：
 
-| 配置 | 示例 | 说明 |
-|---|---|---|
-| `APP_ENV` | `production` | 生产环境必须设置为 `production` |
-| `AUTH_ENABLED` | `true` | 生产必须开启 |
-| `AUTH_USERNAME` | `admin` | 管理用户名 |
-| `AUTH_SECRET` | 32 位以上随机值 | 会话签名密钥 |
-| `AUTH_FILE` | `/etc/dnsguard/auth.json` | bcrypt 密码哈希文件 |
-| `BIND_INTERFACE` | `tailscale0` | 自动获取 Web 绑定地址的网卡名 |
-| `WEB_BIND_ADDRESS` | `192.0.2.20` | 直接指定前端监听地址，优先级高于网卡 |
-| `WEB_MODE` | `preview` | 生产使用 `preview`，开发可使用 `dev` |
-| `LISTEN_ADDR` | `127.0.0.1:8080` | Go API 监听地址，不建议直接暴露 |
-| `TLS_CERT_FILE` | `/etc/dnsguard/tls/fullchain.pem` | API 直出 HTTPS 时使用 |
-| `TLS_KEY_FILE` | `/etc/dnsguard/tls/privkey.pem` | API 直出 HTTPS 时使用 |
-| `TRUST_PROXY_TLS` | `true` | HTTPS 在可信反向代理终止时使用 |
-| `MONITORING_TOKEN` | 随机值 | 监控接口 Bearer Token；为空时仅允许本机回环地址 |
-| `DNS_HEALTH_CACHE_SECONDS` | `5` | 页面读取节点健康缓存的最大新鲜度 |
-| `DNS_HEALTH_INTERVAL_SECONDS` | `10` | 后台 DNS 节点探测间隔 |
-
-### 5.2 DNS 节点配置
-
-节点配置默认文件：`config/dns-nodes.json`。生产建议放在 `/etc/dnsguard/dns-nodes.json`：
-
-```json
-[
-  {
-    "id": "primary-1",
-    "name": "DNS Primary",
-    "role": "primary",
-    "address": "10.0.0.10:53"
-  },
-  {
-    "id": "secondary-1",
-    "name": "DNS Secondary 1",
-    "role": "secondary",
-    "address": "10.0.0.11:53"
-  }
-]
+```bash
+cd PATH_TO_DNSGUARD
+git fetch origin
+git checkout main
+git pull --ff-only
+sudo ./scripts/backup-dnsguard.sh
+sudo ./scripts/install-dnsguard.sh
+sudo /opt/dnsguard/scripts/preflight-dnsguard.sh
+sudo systemctl restart dnsguard-api.service
 ```
 
-页面保存节点地址时会原子写入此文件，服务启动时读取此文件。`DNS_NODE_ADDRESSES` 只作为旧版本兼容和首次迁移入口：
+如果配置文件已经存在，安装脚本不会覆盖 `/etc/dnsguard/dnsguard.env`；需要变更 DNS 节点或 TSIG key 时，再运行：
 
-```dotenv
-DNS_NODE_CONFIG_FILE=/etc/dnsguard/dns-nodes.json
-DNS_NODE_ADDRESSES=primary-1=10.0.0.10:53,secondary-1=10.0.0.11:53
-DNS_NODE_ALLOWED_CIDRS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-DNS_NODE_ALLOWED_HOSTS=
+```bash
+sudo ./scripts/setup-dnsguard.sh
 ```
 
-节点地址默认只允许回环、RFC1918 私网和 ULA 网段。使用主机名时，必须显式加入 `DNS_NODE_ALLOWED_HOSTS`；使用其他网段时，必须显式加入 `DNS_NODE_ALLOWED_CIDRS`。这样页面保存地址和服务端 `dig` 探测使用同一套白名单。
-
-### 5.3 RPZ 发布配置
-
-安全的测试/预览模式：
-
-```dotenv
-RPZ_PUBLISH_MODE=artifact
-RPZ_ARTIFACT_FILE=/var/lib/dnsguard/rpz/rpz.local.db
-```
-
-生产动态更新模式：
-
-```dotenv
-RPZ_PUBLISH_MODE=nsupdate
-RPZ_PRIMARY=10.0.0.10
-RPZ_PRIMARY_PORT=53
-RPZ_ZONE=rpz.local
-RPZ_KEY_FILE=/etc/dnsguard/keys/rpz-manager.key
-```
-
-发布任务默认总超时 15 秒，`nsupdate` 失败后最多重试 2 次，每次间隔 1 秒；可按现场
-网络情况调整：
-
-```dotenv
-RPZ_PUBLISH_TIMEOUT_SECONDS=15
-RPZ_PUBLISH_RETRIES=2
-RPZ_PUBLISH_RETRY_BACKOFF_SECONDS=1
-```
-
-任务接口会返回 `attempts`，最终失败会保留错误信息并触发监控状态为 degraded，便于
-告警系统发现发布异常。
-
-发布链路：
+### RPZ 变更流程
 
 ```text
-页面修改 → 发布预览 → named-checkzone → nsupdate → RPZ Primary → Secondary 同步
+新增/编辑/删除规则
+        ↓
+保存为待发布状态
+        ↓
+查看发布预览
+        ↓
+生成 RPZ 并执行 named-checkzone
+        ↓
+nsupdate 更新 Primary
+        ↓
+BIND NOTIFY / IXFR 同步 Secondary
+        ↓
+dig 查询各节点 SOA Serial 和状态
 ```
 
-生产启动预检会要求 `named-checkzone` 已安装，并检查认证文件、节点配置、TLS 文件、
-RPZ Key、运行数据目录和文件权限。`nsupdate` 发布前后会探测 Primary 的 SOA Serial，
-确保 Serial 不发生回退；Primary 不可达或 Serial 无效时，发布任务会失败并进入监控告警。
+规则修改不会直接写入 BIND Zone 文件，也不会自动发布。只有点击“生成 / 发布 RPZ”后才会进入发布任务。
 
-`baidu.com` 会生成两条 QNAME 触发规则：
+`baidu.com` 规则会生成以下 QNAME 触发器：
 
 ```text
 baidu.com.rpz.local.
 *.baidu.com.rpz.local.
 ```
 
-页面也支持 `A` 类型 RPZ 重定向。选择“A 记录重定向”并填写 IPv4 地址后，系统会为域名
-和其泛域名生成 A 记录，例如 `service.example.com` 与 `*.service.example.com` 都指向
-配置的目标地址。A 记录只接受 IPv4，规则保存后仍需经过发布预览和“生成 / 发布 RPZ”
-才会进入 BIND；不发布不会改变生产 DNS 响应。
-
-### 5.4 运行数据和日志
-
-| 文件/目录 | 用途 |
-|---|---|
-| `DNS_STATE_FILE` | RPZ 规则、已发布快照、版本记录 |
-| `DNS_NODE_CONFIG_FILE` | DNS 节点名称、角色、地址 |
-| `AUDIT_FILE` | 登录、规则、节点、发布审计 |
-| `AUDIT_MAX_ENTRIES` | `2000` | 当前审计文件保留条目数 |
-| `AUDIT_ROTATE_BYTES` | `5242880` | 审计文件达到该字节数后轮转，0 表示关闭 |
-| `AUDIT_ROTATE_BACKUPS` | `3` | 审计轮转文件数量 |
-| `RPZ_ARTIFACT_FILE` | 生成的 RPZ 文件 |
-| `RPZ_LOG_FILES` | BIND RPZ 日志，用于命中统计 |
-| `.run/` | API/Web PID、二进制和启动日志 |
-
-建议权限：
-
-```bash
-sudo install -d -o dnsguard -g dnsguard -m 0750 /etc/dnsguard /var/lib/dnsguard /var/log/dnsguard
-sudo install -o dnsguard -g dnsguard -m 0640 config/dns-nodes.json /etc/dnsguard/dns-nodes.json
-sudo install -o dnsguard -g bind -m 0640 /path/to/rpz-manager.key /etc/dnsguard/keys/rpz-manager.key
-```
-
-TSIG key 只能授予控制面读取权限，不能放入 Git、前端目录或普通用户可读目录。
-
-审计记录包含 SHA-256 哈希链，当前文件达到大小阈值后按 `.1`、`.2` 等文件轮转。
-可以通过接口搜索和分页：
-
-```bash
-curl -b cookies.txt 'http://127.0.0.1:8080/api/audit?q=rpz&page=1&pageSize=50'
-```
-
-## 6. 已有生产 BIND 的接入步骤
-
-1. 在管理节点安装项目和依赖，不修改现有 BIND 配置。
-2. 将 `RPZ_KEY_FILE` 以最小权限挂载到控制面。
-3. 先使用 `RPZ_PUBLISH_MODE=artifact` 验证配置和生成文件。
-4. 使用 `named-checkzone` 检查现有 RPZ Zone 和生成文件。
-5. 在维护窗口切换到 `RPZ_PUBLISH_MODE=nsupdate`。
-6. 添加测试域名并发布，确认 Primary、全部 Secondary 的 SOA Serial 一致。
-7. 验证回滚和删除流程后，再开放给运维人员使用。
-8. 使用 systemd、Nginx 或现有进程管理器托管服务，禁止使用开发模式长期运行。
-
-控制面不应直接覆盖生产 BIND Zone 文件。动态更新、权限和 NOTIFY/IXFR 应由 BIND 的原生机制负责。
-
-### 6.1 运行状态监控和告警
-
-`GET /api/monitoring/status` 返回节点健康数、待发布状态和最近发布任务状态，
-不返回 DNS 节点地址或规则内容。配置 `MONITORING_TOKEN` 后使用 Bearer Token：
-
-```bash
-curl -H "Authorization: Bearer $MONITORING_TOKEN" \
-  http://127.0.0.1:8080/api/monitoring/status
-MONITORING_TOKEN="$MONITORING_TOKEN" ./scripts/check-dnsguard.sh
-```
-
-检查脚本在状态不是 `ok` 时返回非零退出码，可直接接入 Zabbix、Prometheus
-blackbox、Cron 或企业告警平台。systemd 部署可额外启用一分钟一次的检查：
-
-```bash
-sudo install -m 0644 deploy/systemd/dnsguard-monitor.service \
-  deploy/systemd/dnsguard-monitor.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now dnsguard-monitor.timer
-systemctl list-timers dnsguard-monitor.timer
-```
-
-## 7. 认证和生产安全要求
-
-生产 `.env` 至少满足：
-
-```dotenv
-APP_ENV=production
-AUTH_ENABLED=true
-AUTH_USERNAME=admin
-AUTH_SECRET=<at-least-32-random-characters>
-AUTH_FILE=/etc/dnsguard/auth.json
-MONITORING_TOKEN=<at-least-32-random-characters>
-WEB_MODE=preview
-```
-
-密码不写入 `.env`。使用交互式命令生成只保存 bcrypt 哈希的认证文件：
-
-```bash
-sudo env AUTH_FILE=/etc/dnsguard/auth.json AUTH_USERNAME=admin \
-  ./scripts/create-auth-file.sh
-sudo chmod 600 /etc/dnsguard/auth.json
-```
-
-服务启动时会校验 `AUTH_FILE` 中存在 bcrypt 哈希；生产环境没有认证文件时会直接启动失败。登录后也可以通过密码修改接口更新哈希文件。
-通过 `scripts/create-auth-file.sh` 新生成的认证文件会标记为“首次登录必须改密码”；
-旧版本认证文件如果没有该字段，也会在升级后自动进入首次改密流程。首次登录只能进入
-改密码页面，修改成功后才会开放 DNS/RPZ 操作。
-生产环境同时要求 `MONITORING_TOKEN` 为至少 32 位随机值；健康检查和告警脚本必须使用该值访问监控接口。
-
-### 7.1 Telegram 告警
-
-域盾支持通过 Telegram Bot API 发送以下运行告警：
-
-- `publish_failed`：RPZ 发布失败
-- `rpz_rule_create`：新增 RPZ 规则
-- `rpz_rule_update`：编辑 RPZ 规则
-- `rpz_rule_delete`：删除 RPZ 规则
-- `rpz_publish_success`：RPZ 发布完成
-- `rpz_rollback`：RPZ 版本回滚
-- `node_down`：DNS 节点不可达
-- `node_degraded`：辅节点 RPZ Serial 与主节点不一致
-- `node_recovered`：节点从异常状态恢复
-
-登录域盾后，点击右上角 **告警配置**，填写 Bot Token、Chat ID，选择告警事件和冷却时间，保存后可以直接点击“发送测试消息”。Token 只提交到后端并保存到 `TELEGRAM_CONFIG_FILE` 指定的服务端文件，接口不会回显完整 Token。
-
-生产环境只需在 `.env` 指定配置文件路径，不需要把 Token 写入环境变量：
-
-```dotenv
-TELEGRAM_CONFIG_FILE=/var/lib/dnsguard/telegram.json
-```
-
-未保存 Telegram 配置时，告警功能保持关闭，不影响 DNS、RPZ 发布和节点探测。告警发送使用后台异步请求，Telegram 不可用时不会阻塞 DNS 健康检查或 RPZ 发布；相同事件在冷却时间内只发送一次。配置文件由服务自动以 `0600` 权限保存。
-
-HTTPS 任选一种：
-
-**Go API 直出 HTTPS：**
-
-```dotenv
-TLS_CERT_FILE=/etc/dnsguard/tls/fullchain.pem
-TLS_KEY_FILE=/etc/dnsguard/tls/privkey.pem
-TRUST_PROXY_TLS=false
-```
-
-**反向代理终止 HTTPS：**
-
-```dotenv
-TRUST_PROXY_TLS=true
-```
-
-此时必须确保 API 只监听 `127.0.0.1`，反向代理只允许 HTTPS 访问。
-
-前端预览服务和 API 会统一返回 `nosniff`、禁止 iframe、严格 Referrer Policy
-和 Permissions Policy；HTTPS 请求额外返回 HSTS。生产反向代理仍应保留 HTTPS
-跳转、访问控制和日志，不要把开发模式直接暴露到公网。
-
-DNS 节点探测由后台定时任务执行，页面读取最近一次缓存，不再在每次打开概览页时
-同步等待多个 `dig` 请求。首次读取在缓存尚未建立时会执行一次初始化探测；节点配置
-保存后会立即使缓存失效，下一次读取重新建立状态。
-
-## 8. 验证、备份和恢复
-
-构建与单元测试：
-
-```bash
-npm run build
-cd server && go test ./... && go test -race ./... && go vet ./...
-cd ..
-```
-
-本地 BIND 功能测试：
-
-```bash
-./scripts/test-functional.sh
-```
-
-备份至少包含：
+CNAME 白名单示例：
 
 ```text
-DNS_STATE_FILE
-DNS_NODE_CONFIG_FILE
-AUDIT_FILE
-RPZ_KEY_FILE（使用受保护的密钥备份流程）
+example.com  CNAME  rpz-passthru.
 ```
 
-仓库提供不依赖数据库的备份/恢复脚本。脚本生成带 SHA-256 清单的压缩包，默认备份
-状态、节点配置、审计和 RPZ 产物；认证文件和 TSIG Key 只有显式开启敏感文件选项时才会
-加入，并且备份目录和归档使用受限权限：
+A 记录重定向示例：
+
+```text
+example.com  A  192.0.2.10
+```
+
+页面中的 A 记录只接受 IPv4。规则保存后仍需发布，未发布不会改变生产 DNS 响应。
+
+### DNS 节点状态
+
+节点页面使用实时 `dig` / SOA 探测和后台健康缓存：
+
+- **正常**：节点可查询，且 RPZ Serial 与 Primary 一致。
+- **版本不一致**：节点可查询，但 RPZ Serial 不一致。
+- **不可达**：DNS 查询超时或节点地址不允许探测。
+
+节点地址保存到 `DNS_NODE_CONFIG_FILE`，不需要修改主机上的 BIND 配置。删除节点只删除控制面记录，不会删除该节点上的 BIND 配置。
+
+### 审计和告警
+
+审计页面支持搜索、分页和展开规则详情。新增、编辑、删除 RPZ 规则，节点增删改，发布、回滚、密码修改和告警配置变更都会记录。
+
+页面右上角的“告警配置”用于填写 Telegram Bot Token、Chat ID、事件和冷却时间。Token 只保存在服务端文件，不会完整回显到页面。
+
+支持的告警事件包括：
+
+- RPZ 发布失败。
+- 新增、编辑、删除 RPZ 规则。
+- RPZ 发布成功和回滚。
+- DNS 节点不可达。
+- RPZ Serial 不一致。
+- 节点恢复正常。
+
+### 备份和恢复
+
+备份前确认配置文件已经指向生产路径：
 
 ```bash
 sudo install -d -m 0700 /var/backups/dnsguard
 sudo env DNSGUARD_ENV_FILE=/etc/dnsguard/dnsguard.env \
-  BACKUP_DIR=/var/backups/dnsguard BACKUP_INCLUDE_SENSITIVE=true BACKUP_RETENTION_COUNT=14 \
-  ./scripts/backup-dnsguard.sh
+  BACKUP_DIR=/var/backups/dnsguard \
+  BACKUP_INCLUDE_SENSITIVE=true \
+  BACKUP_RETENTION_COUNT=14 \
+  /opt/dnsguard/scripts/backup-dnsguard.sh
 ```
 
-`BACKUP_RETENTION_COUNT` 控制本机备份目录保留的最新归档数量，默认保留 14 份；删除的
-归档不会影响已经交给企业备份系统的异地副本。
+备份内容通常包括：
 
-恢复前必须停止控制面；脚本会拒绝服务运行中恢复、校验归档路径和 SHA-256 清单，
-然后使用临时文件原子替换目标文件：
+- `DNS_STATE_FILE`
+- `DNS_NODE_CONFIG_FILE`
+- `AUDIT_FILE`
+- RPZ 产物
+- 显式开启敏感文件选项后才加入的认证文件和 TSIG key
+
+恢复前必须停止 API：
 
 ```bash
 sudo systemctl stop dnsguard-api.service
 sudo env DNSGUARD_ENV_FILE=/etc/dnsguard/dnsguard.env \
-  ./scripts/restore-dnsguard.sh /var/backups/dnsguard/dnsguard-YYYYMMDDTHHMMSSZ.tar.gz
+  /opt/dnsguard/scripts/restore-dnsguard.sh \
+  /var/backups/dnsguard/dnsguard-TIMESTAMP.tar.gz
+sudo /opt/dnsguard/scripts/preflight-dnsguard.sh
 sudo systemctl start dnsguard-api.service
 ```
 
-恢复后先执行只读验证和 `./scripts/test-functional.sh`，确认 RPZ Serial、节点状态和
-审计文件正常后再发布规则。备份归档必须进入企业受保护的备份系统，不能提交到 Git。
+恢复脚本会校验归档路径和 SHA-256 清单，并使用临时文件原子替换目标文件。备份归档应交给企业备份系统保存，不要提交到 Git。
 
-恢复顺序：
+## 配置文件
+
+生产配置集中在 `/etc/dnsguard/dnsguard.env`。以下是最常用项目：
+
+| 配置 | 生产建议 | 说明 |
+|---|---|---|
+| `APP_ENV` | `production` | 生产校验开关 |
+| `AUTH_ENABLED` | `true` | 生产必须开启 |
+| `AUTH_USERNAME` | `admin` | 登录用户名 |
+| `AUTH_SECRET` | 随机 32 字符以上 | Cookie 会话签名 |
+| `AUTH_FILE` | `/etc/dnsguard/auth.json` | bcrypt 密码文件 |
+| `DNS_NODE_CONFIG_FILE` | `/etc/dnsguard/dns-nodes.json` | 节点配置 |
+| `DNS_NODE_ALLOWED_CIDRS` | 企业管理网段 | 节点地址允许范围 |
+| `RPZ_PUBLISH_MODE` | `nsupdate` | `artifact` 只生成文件，`nsupdate` 更新 Primary |
+| `RPZ_PRIMARY` | `DNS_PRIMARY` | RPZ Primary 地址 |
+| `RPZ_PRIMARY_PORT` | `53` | RPZ 动态更新端口 |
+| `RPZ_ZONE` | `rpz.local` | RPZ Zone 名称 |
+| `RPZ_KEY_FILE` | `/etc/dnsguard/keys/rpz-manager.key` | TSIG key |
+| `RPZ_LOG_FILES` | BIND RPZ 日志 | 命中统计来源 |
+| `LISTEN_ADDR` | `127.0.0.1:8080` | API 监听地址 |
+| `BIND_INTERFACE` | `BIND_INTERFACE` | Web 绑定地址来源 |
+| `WEB_BIND_ADDRESS` | 按现场填写 | 直接指定 Web IPv4 |
+| `TRUST_PROXY_TLS` | `true` | HTTPS 在可信反向代理终止 |
+| `MONITORING_TOKEN` | 随机 32 字符以上 | 监控接口 Bearer Token |
+| `TELEGRAM_CONFIG_FILE` | `/var/lib/dnsguard/telegram.json` | Telegram 服务端配置 |
+| `DNS_STATE_FILE` | `/var/lib/dnsguard/dns-state.json` | 规则和发布状态 |
+| `AUDIT_FILE` | `/var/lib/dnsguard/audit.json` | 审计日志 |
+
+### 文件权限
+
+建议生产文件权限如下：
 
 ```text
-停止控制面 → 恢复节点配置 → 恢复状态文件 → 检查 RPZ 版本 → 启动控制面 → 只读验证 → 再发布
+/etc/dnsguard/                 root:dnsguard 0770
+/etc/dnsguard/dnsguard.env     root:dnsguard 0640
+/etc/dnsguard/dns-nodes.json   root:dnsguard 0640
+/etc/dnsguard/auth.json        dnsguard:dnsguard 0600
+/etc/dnsguard/keys/            root:dnsguard 0750
+/etc/dnsguard/keys/*.key       root:dnsguard 0640
+/var/lib/dnsguard/             dnsguard:dnsguard 0750
+/var/log/dnsguard/             dnsguard:dnsguard 0750
 ```
 
-## 9. 故障排查
+不要把 `.env`、认证文件、Telegram Token、TSIG key 或生产备份提交到 Git。
 
-查看启动日志：
+## 本地开发和 BIND 联调
+
+本地开发环境不需要数据库，BIND 只监听以下地址：
+
+```text
+RPZ Primary:    127.0.0.2:5353
+Secondary 1:    127.0.0.3:5353
+Secondary 2:    127.0.0.4:5353
+RPZ Zone:       rpz.local
+```
+
+启动本地 BIND：
 
 ```bash
-tail -f .run/api.log .run/web.log
+sudo BIND_USER=bind BIND_GROUP=bind ./scripts/start-bind-rpz.sh
 ```
 
-检查端口：
+首次启动会在被 Git 忽略的 `dev/bind-rpz/keys/rpz-manager.key` 生成本地 TSIG key。开发 BIND 的配置、数据和日志分别放在：
+
+```text
+/etc/bind/dnsguard-dev-rpz
+/var/lib/bind/dnsguard-dev-rpz
+/var/log/named/dnsguard-dev-rpz
+```
+
+创建开发配置：
 
 ```bash
-ss -ltnp | grep -E '5173|8080'
+cp .env.example .env
+REPO_DIR="$(pwd)"
+cat >> .env <<EOF
+APP_ENV=development
+AUTH_ENABLED=false
+WEB_MODE=preview
+WEB_BIND_ADDRESS=127.0.0.1
+BIND_INTERFACE=lo
+DNS_NODE_CONFIG_FILE=$REPO_DIR/config/dns-nodes.json
+RPZ_PUBLISH_MODE=nsupdate
+RPZ_PRIMARY=127.0.0.2
+RPZ_PRIMARY_PORT=5353
+RPZ_ZONE=rpz.local
+RPZ_KEY_FILE=$REPO_DIR/dev/bind-rpz/keys/rpz-manager.key
+RPZ_LOG_FILES=/var/log/named/dnsguard-dev-rpz/primary.log,/var/log/named/dnsguard-dev-rpz/secondary.log,/var/log/named/dnsguard-dev-rpz/secondary-2.log
+DNS_NODE_ADDRESSES=primary-1=127.0.0.2:5353,secondary-1=127.0.0.3:5353,secondary-2=127.0.0.4:5353
+EOF
 ```
 
-检查节点 SOA：
+`REPO_DIR` 会自动取当前仓库的绝对路径。
+
+启动域盾并运行完整功能测试：
 
 ```bash
-dig @10.0.0.10 -p 53 rpz.local SOA +short
-dig @10.0.0.11 -p 53 rpz.local SOA +short
+./scripts/start-dnsguard.sh
+./scripts/test-functional.sh
 ```
 
-常见问题：
+测试覆盖 API 健康、设置、认证关闭模式、真实节点状态、节点配置持久化、RPZ 命中、规则新增、发布、Primary/Secondary 同步、删除、批量删除和发布任务。
 
-- 前端地址为空：检查 `BIND_INTERFACE` 是否存在 IPv4，或直接配置 `WEB_BIND_ADDRESS`。
-- 节点不可达：检查控制面到 DNS 节点的 UDP/TCP 53 连通性和防火墙。
-- nsupdate 失败：检查 `RPZ_KEY_FILE` 权限、Key 名称、Primary 地址和 BIND `update-policy`。
-- 辅节点版本不一致：检查 Primary 的 NOTIFY、allow-notify、transfer-source 和 IXFR 日志。
+停止：
+
+```bash
+./scripts/stop-dnsguard.sh
+./scripts/stop-bind-rpz.sh
+```
+
+本地 BIND 开发环境的 key、日志和 PID 文件被 `.gitignore` 忽略；`dev/bind-rpz/` 中的配置和 Zone 文件属于代码，可提交到 GitHub，便于其他人复现联调环境。
+
+## 验证和测试
+
+前端构建：
+
+```bash
+npm run build
+```
+
+Go 测试和静态检查：
+
+```bash
+cd server
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+cd ..
+```
+
+脚本语法和文档差异检查：
+
+```bash
+bash -n scripts/*.sh
+git diff --check
+```
+
+安装脚本只做构建和服务文件渲染测试时，可以使用临时路径：
+
+```bash
+DNSGUARD_SYSTEMD_DIR=PATH_TO_TEMP_SYSTEMD \
+DNSGUARD_INSTALL_DIR=PATH_TO_TEMP_INSTALL \
+DNSGUARD_CONFIG_DIR=PATH_TO_TEMP_CONFIG \
+DNSGUARD_DATA_DIR=PATH_TO_TEMP_DATA \
+DNSGUARD_LOG_DIR=PATH_TO_TEMP_LOG \
+DNSGUARD_USER=root DNSGUARD_GROUP=root \
+./scripts/install-dnsguard.sh
+```
+
+## 故障排查
+
+### 服务没有启动
+
+```bash
+sudo systemctl status dnsguard-api.service --no-pager
+sudo journalctl -u dnsguard-api.service -n 100 --no-pager
+sudo /opt/dnsguard/scripts/preflight-dnsguard.sh
+```
+
+常见原因：
+
+- `AUTH_FILE` 不存在或不是 bcrypt 哈希。
+- `AUTH_SECRET` 或 `MONITORING_TOKEN` 少于 32 个字符。
+- `APP_ENV=production` 但认证未开启。
+- `TRUST_PROXY_TLS=false` 但证书路径不可读。
+- `DNS_NODE_CONFIG_FILE` 不存在或节点地址不可达。
+- `RPZ_KEY_FILE` 权限不足。
+- `named-checkzone` 未安装。
+
+### 节点显示不可达或版本不一致
+
+```bash
+dig +short @DNS_PRIMARY -p 53 rpz.local SOA
+dig +short @DNS_SECONDARY_1 -p 53 rpz.local SOA
+dig +short @DNS_SECONDARY_2 -p 53 rpz.local SOA
+```
+
+然后检查：
+
+- 控制面到 DNS 节点的 UDP/TCP 53 连通性。
+- BIND 的 `allow-query`、`allow-update`、`allow-notify` 和传送 ACL。
+- Primary 是否发送 NOTIFY，Secondary 是否成功 IXFR/AXFR。
+- `rpz.local` 的 SOA Serial 是否一致。
+
+### RPZ 发布失败
+
+查看发布任务和 API 日志：
+
+```bash
+curl -b cookies.txt http://127.0.0.1:8080/api/dns/rpz/preview
+sudo journalctl -u dnsguard-api.service -n 200 --no-pager
+```
+
+重点检查：
+
+- `RPZ_PRIMARY` 和 `RPZ_PRIMARY_PORT` 是否正确。
+- TSIG key 名称、算法和 secret 是否与 BIND 的 `update-policy` 一致。
+- `RPZ_KEY_FILE` 是否能被 `dnsguard` 用户读取。
+- BIND 是否允许来自控制面地址的动态更新。
+- `named-checkzone` 是否能解析生成的 RPZ 文件。
+
+### 页面打不开
+
+```bash
+ss -ltnp | grep -E ':(443|5173|8080)\b'
+sudo nginx -t
+sudo systemctl status nginx --no-pager
+```
+
+生产页面应从 Nginx/HTTPS 入口访问，不要直接把 `8080` 暴露到管理网段之外。
+
+## 目录结构
+
+```text
+.
+├── config/                  示例节点配置
+├── dev/bind-rpz/            可选本地 BIND/RPZ 联调配置
+├── deploy/nginx/            Nginx HTTPS 反向代理模板
+├── deploy/systemd/          API、监控服务和定时器模板
+├── scripts/                 安装、配置、启动、备份、恢复和测试脚本
+├── server/                  Go API、认证、RPZ、审计和监控
+├── src/                     React 前端
+├── .env.example             开发配置示例
+└── README.md                项目说明和部署手册
+```
+
+## 使用边界
+
+本项目用于企业内部 DNS/RPZ 运维管理。部署前请确认对 DNS 节点、RPZ Zone、TSIG key 和管理网络拥有明确授权。生产使用前应在隔离环境完成预检查、发布验证、回滚验证和备份恢复演练。
