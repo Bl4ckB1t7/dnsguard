@@ -1,9 +1,0 @@
-$TTL 60
-@       SOA localhost. hostmaster.localhost. (
-            1
-            1h
-            15m
-            30d
-            60
-        )
-        NS localhost.
