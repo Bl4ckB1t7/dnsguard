@@ -60,6 +60,7 @@ RPZ_PUBLISH_RETRY_BACKOFF_SECONDS=1
 通过 `scripts/create-auth-file.sh` 新生成的认证文件会写入
 `mustChangePassword=true`。首次登录后只允许访问改密码/退出相关接口，页面显示不可关闭的
 首次改密窗口，修改成功后才开放 DNS/RPZ 操作。
+没有该字段的旧认证文件会在加载时按首次改密处理，改密成功后持久化为 `false`。
 
 测试：
 
