@@ -12,6 +12,10 @@ type AuditResponse = { items: AuditEntry[]; total: number; page: number; pageSiz
 type RuleAuditDetail = { domain: string; type: string; value?: string; reason?: string };
 type DashboardView = "overview" | "audit";
 
+function dashboardViewFromURL(): DashboardView {
+  return new URLSearchParams(window.location.search).get("view") === "audit" ? "audit" : "overview";
+}
+
 function csrfHeaders(): Record<string, string> {
   const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("network_csrf="))?.split("=").slice(1).join("=");
   return token ? { "X-CSRF-Token": decodeURIComponent(token) } : {};
@@ -123,7 +127,7 @@ function nodeIsPrimary(node: DnsNode): boolean {
 }
 
 export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword = false }: { onLogout: () => void; authEnabled?: boolean; mustChangePassword?: boolean }) {
-  const [activeView, setActiveView] = useState<DashboardView>("overview");
+  const [activeView, setActiveView] = useState<DashboardView>(dashboardViewFromURL);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [nodes, setNodes] = useState<DnsNode[]>([]);
   const [nodeDrafts, setNodeDrafts] = useState<Record<string, string>>({});
@@ -163,6 +167,14 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [auditPageSize, setAuditPageSize] = useState(20);
   const [auditTotal, setAuditTotal] = useState(0);
   const [expandedAuditKey, setExpandedAuditKey] = useState<string | null>(null);
+
+  const selectView = (view: DashboardView) => {
+    setActiveView(view);
+    const url = new URL(window.location.href);
+    if (view === "audit") url.searchParams.set("view", "audit");
+    else url.searchParams.delete("view");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  };
 
   const load = async () => {
     setLoading(true);
@@ -210,6 +222,12 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
     if (mustChangePassword || activeView !== "audit") return;
     void loadAudit();
   }, [activeView, mustChangePassword]);
+
+  useEffect(() => {
+    const handlePopState = () => setActiveView(dashboardViewFromURL());
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   const addRule = async (event: FormEvent) => {
     event.preventDefault();
@@ -430,7 +448,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   return (
     <main className="dns-shell">
       <header className="dns-header">
-        <div><span className="dns-kicker">DNS OPERATIONS CONTROL</span><h1>企业 DNS / RPZ 管理平台</h1><p>文件型策略控制面，不使用数据库。</p><nav className="dns-nav" aria-label="平台导航"><button className={activeView === "overview" ? "active" : ""} onClick={() => setActiveView("overview")}>运行总览</button><button className={activeView === "audit" ? "active" : ""} onClick={() => setActiveView("audit")}>审计日志</button></nav></div>
+        <div><span className="dns-kicker">DNS OPERATIONS CONTROL</span><h1>企业 DNS / RPZ 管理平台</h1><p>文件型策略控制面，不使用数据库。</p><nav className="dns-nav" aria-label="平台导航"><button className={activeView === "overview" ? "active" : ""} onClick={() => selectView("overview")}>运行总览</button><button className={activeView === "audit" ? "active" : ""} onClick={() => selectView("audit")}>审计日志</button></nav></div>
         <div className="dns-header-actions"><button disabled={loading} onClick={() => void (activeView === "audit" ? loadAudit() : load()).catch(() => undefined)}>{loading ? "加载中…" : "刷新状态"}</button>{authEnabled && <><button className="ghost" onClick={() => setShowPasswordPanel(true)}>修改密码</button><button className="ghost" onClick={() => void logout()}>退出登录</button></>}</div>
       </header>
 
