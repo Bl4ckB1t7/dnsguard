@@ -366,6 +366,10 @@ TRUST_PROXY_TLS=true
 
 此时必须确保 API 只监听 `127.0.0.1`，反向代理只允许 HTTPS 访问。
 
+前端预览服务和 API 会统一返回 `nosniff`、禁止 iframe、严格 Referrer Policy
+和 Permissions Policy；HTTPS 请求额外返回 HSTS。生产反向代理仍应保留 HTTPS
+跳转、访问控制和日志，不要把开发模式直接暴露到公网。
+
 ## 8. 验证、备份和恢复
 
 构建与单元测试：
