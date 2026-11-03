@@ -31,7 +31,7 @@ button, input { font: inherit; }
 .dns-cards .sync-value { font-size: 16px; margin-top: 18px; }
 .dns-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 16px; margin-bottom: 16px; align-items: stretch; }
 .dns-grid > .dns-panel { height: 100%; box-sizing: border-box; margin-bottom: 0; }
-.release-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 1fr); gap: 16px; }
+.release-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 16px; }
 .dns-panel { padding: 20px; margin-bottom: 16px; }
 .dns-panel-wide { margin-bottom: 0; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
