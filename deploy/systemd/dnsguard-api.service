@@ -1,15 +1,15 @@
 [Unit]
-Description=DNS Ops Platform API
+Description=DNSGuard API
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-User=dnsops
-Group=dnsops
-WorkingDirectory=/opt/dns-ops-platform
-EnvironmentFile=-/etc/dns-ops/dns-ops.env
-ExecStart=/opt/dns-ops-platform/.run/dns-ops-api
+User=dnsguard
+Group=dnsguard
+WorkingDirectory=/opt/dnsguard
+EnvironmentFile=-/etc/dnsguard/dnsguard.env
+ExecStart=/opt/dnsguard/.run/dnsguard-api
 Restart=on-failure
 RestartSec=3s
 UMask=0077
@@ -17,7 +17,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/etc/dns-ops /var/lib/dns-ops /var/log/dns-ops
+ReadWritePaths=/etc/dnsguard /var/lib/dnsguard /var/log/dnsguard
 RestrictSUIDSGID=true
 LockPersonality=true
 CapabilityBoundingSet=

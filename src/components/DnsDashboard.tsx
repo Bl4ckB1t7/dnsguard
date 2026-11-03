@@ -29,7 +29,7 @@ function dashboardViewFromURL(): DashboardView {
 }
 
 function csrfHeaders(): Record<string, string> {
-  const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("network_csrf="))?.split("=").slice(1).join("=");
+  const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("dnsguard_csrf="))?.split("=").slice(1).join("=");
   return token ? { "X-CSRF-Token": decodeURIComponent(token) } : {};
 }
 

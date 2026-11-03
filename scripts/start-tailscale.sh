@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec "$ROOT/scripts/start-dns-ops.sh" "$@"
+exec "$ROOT/scripts/start-dnsguard.sh" "$@"

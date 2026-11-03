@@ -1,10 +1,10 @@
 [Unit]
-Description=Run DNS Ops Platform health check every minute
+Description=Run DNSGuard health check every minute
 
 [Timer]
 OnBootSec=1min
 OnUnitActiveSec=1min
-Unit=dns-ops-monitor.service
+Unit=dnsguard-monitor.service
 Persistent=true
 
 [Install]

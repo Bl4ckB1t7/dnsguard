@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AUTH_FILE="${AUTH_FILE:-/etc/dns-ops/auth.json}"
+AUTH_FILE="${AUTH_FILE:-/etc/dnsguard/auth.json}"
 AUTH_USERNAME="${AUTH_USERNAME:-admin}"
 
 if [[ ! -t 0 ]]; then

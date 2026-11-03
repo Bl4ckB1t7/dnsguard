@@ -1,0 +1,19 @@
+[Unit]
+Description=DNSGuard health check
+After=dnsguard-api.service
+Requires=dnsguard-api.service
+
+[Service]
+Type=oneshot
+User=dnsguard
+Group=dnsguard
+WorkingDirectory=/opt/dnsguard
+EnvironmentFile=-/etc/dnsguard/dnsguard.env
+ExecStart=/opt/dnsguard/scripts/check-dnsguard.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/dnsguard
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

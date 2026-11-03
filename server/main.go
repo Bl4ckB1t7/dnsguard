@@ -29,7 +29,7 @@ type Health struct {
 }
 
 func health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, Health{Status: "ok", Service: "dns-ops-api", Time: time.Now().UTC().Format(time.RFC3339)})
+	writeJSON(w, http.StatusOK, Health{Status: "ok", Service: "dnsguard-api", Time: time.Now().UTC().Format(time.RFC3339)})
 }
 
 func settings(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +101,7 @@ func main() {
 		listenAddr = "127.0.0.1:8080"
 	}
 	server := newHTTPServer(listenAddr, authMiddleware(mux))
-	log.Printf("dns ops API listening on %s", server.Addr)
+	log.Printf("DNSGuard API listening on %s", server.Addr)
 	certFile := os.Getenv("TLS_CERT_FILE")
 	keyFile := os.Getenv("TLS_KEY_FILE")
 	if certFile != "" && keyFile != "" {

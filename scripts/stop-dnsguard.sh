@@ -48,4 +48,4 @@ stop_process() {
 for name in api web; do
   stop_process "$name"
 done
-echo "DNS Ops Platform stopped"
+echo "DNSGuard stopped"

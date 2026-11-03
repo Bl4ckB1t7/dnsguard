@@ -3,9 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAB="$ROOT/dns-lab"
-SYSTEM_CONF="/etc/bind/dns-ops-lab"
-SYSTEM_DATA="/var/lib/bind/dns-ops-lab"
-SYSTEM_LOG="/var/log/named/dns-ops-lab"
+SYSTEM_CONF="/etc/bind/dnsguard-lab"
+SYSTEM_DATA="/var/lib/bind/dnsguard-lab"
+SYSTEM_LOG="/var/log/named/dnsguard-lab"
 BIND_USER="${BIND_USER:-}"
 BIND_GROUP="${BIND_GROUP:-}"
 if [[ "$(id -u)" -ne 0 ]]; then

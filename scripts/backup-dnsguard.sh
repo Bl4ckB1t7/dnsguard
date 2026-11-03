@@ -2,14 +2,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -n "${DNS_OPS_ENV_FILE:-}" && -f "$DNS_OPS_ENV_FILE" ]]; then
+if [[ -n "${DNSGUARD_ENV_FILE:-}" && -f "$DNSGUARD_ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
-  source "$DNS_OPS_ENV_FILE"
+  source "$DNSGUARD_ENV_FILE"
   set +a
 fi
 
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/dns-ops}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/dnsguard}"
 DNS_STATE_FILE="${DNS_STATE_FILE:-$ROOT/data/dns-state.json}"
 DNS_NODE_CONFIG_FILE="${DNS_NODE_CONFIG_FILE:-$ROOT/config/dns-nodes.json}"
 AUDIT_FILE="${AUDIT_FILE:-$ROOT/data/audit.json}"
@@ -36,7 +36,7 @@ backup_dir = Path(os.environ["BACKUP_DIR"]).expanduser()
 backup_dir.mkdir(parents=True, exist_ok=True)
 backup_dir.chmod(0o700)
 timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-archive = backup_dir / f"dns-ops-{timestamp}.tar.gz"
+archive = backup_dir / f"dnsguard-{timestamp}.tar.gz"
 files = [
     (os.environ["DNS_STATE_FILE"], False),
     (os.environ["DNS_NODE_CONFIG_FILE"], False),
@@ -47,7 +47,7 @@ if os.environ.get("BACKUP_INCLUDE_SENSITIVE", "false").lower() == "true":
     files.extend([(os.environ["AUTH_FILE"], True), (os.environ.get("RPZ_KEY_FILE", ""), True)])
 
 manifest = {"format": 1, "createdAt": datetime.now(timezone.utc).isoformat(), "files": []}
-with tempfile.TemporaryDirectory(prefix="dns-ops-backup-") as temp:
+with tempfile.TemporaryDirectory(prefix="dnsguard-backup-") as temp:
     stage = Path(temp)
     for raw_path, sensitive in files:
         if not raw_path:
@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix="dns-ops-backup-") as temp:
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
         manifest["files"].append({"path": str(relative), "sha256": digest, "sensitive": sensitive})
     if not manifest["files"]:
-        raise SystemExit("no configured DNS Ops files were found")
+        raise SystemExit("no configured DNSGuard files were found")
     (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     temporary = archive.with_suffix(archive.suffix + ".tmp")
     with tarfile.open(temporary, "w:gz") as bundle:
@@ -77,7 +77,7 @@ with tempfile.TemporaryDirectory(prefix="dns-ops-backup-") as temp:
 retention = int(os.environ.get("BACKUP_RETENTION_COUNT", "14"))
 if retention < 1 or retention > 1000:
     retention = 14
-archives = sorted(backup_dir.glob("dns-ops-*.tar.gz"), key=lambda item: item.stat().st_mtime, reverse=True)
+archives = sorted(backup_dir.glob("dnsguard-*.tar.gz"), key=lambda item: item.stat().st_mtime, reverse=True)
 for old_archive in archives[retention:]:
     old_archive.unlink()
 print(archive)

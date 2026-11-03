@@ -19,8 +19,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const sessionCookie = "network_session"
-const csrfCookie = "network_csrf"
+const sessionCookie = "dnsguard_session"
+const csrfCookie = "dnsguard_csrf"
 
 func authEnabled() bool {
 	value := strings.TrimSpace(os.Getenv("AUTH_ENABLED"))

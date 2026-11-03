@@ -22,6 +22,6 @@ import json, sys
 payload = json.load(sys.stdin)
 status = payload.get("status")
 if status != "ok":
-    print(f"ALERT: DNS Ops status is {status!r}", file=sys.stderr)
+    print(f"ALERT: DNSGuard status is {status!r}", file=sys.stderr)
     raise SystemExit(1)
 '

@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -n "${DNS_OPS_ENV_FILE:-}" && -f "$DNS_OPS_ENV_FILE" ]]; then
+if [[ -n "${DNSGUARD_ENV_FILE:-}" && -f "$DNSGUARD_ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
-  source "$DNS_OPS_ENV_FILE"
+  source "$DNSGUARD_ENV_FILE"
   set +a
 fi
 
@@ -15,11 +15,11 @@ if [[ -z "$ARCHIVE" || ! -f "$ARCHIVE" ]]; then
   exit 2
 fi
 if [[ -f "$ROOT/.run/api.pid" ]] && kill -0 "$(cat "$ROOT/.run/api.pid")" 2>/dev/null; then
-  echo "Stop DNS Ops API before restoring files" >&2
+  echo "Stop DNSGuard API before restoring files" >&2
   exit 1
 fi
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dns-ops-api.service 2>/dev/null; then
-  echo "Stop dns-ops-api.service before restoring files" >&2
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dnsguard-api.service 2>/dev/null; then
+  echo "Stop dnsguard-api.service before restoring files" >&2
   exit 1
 fi
 
@@ -61,7 +61,7 @@ with tarfile.open(archive, "r:gz") as bundle:
     if manifest.get("format") != 1:
         raise SystemExit("unsupported backup format")
     members_by_name = {member.name: member for member in members}
-    with tempfile.TemporaryDirectory(prefix="dns-ops-restore-") as temp:
+    with tempfile.TemporaryDirectory(prefix="dnsguard-restore-") as temp:
         stage = Path(temp)
         for entry in manifest.get("files", []):
             relative = Path(entry["path"])

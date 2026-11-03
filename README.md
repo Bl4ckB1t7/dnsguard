@@ -80,8 +80,8 @@ ip link show
 ### 4.2 首次部署
 
 ```bash
-git clone https://github.com/Bl4ckB1t7/dns-ops-platform.git
-cd dns-ops-platform
+git clone https://github.com/Bl4ckB1t7/dns-ops-platform.git dnsguard
+cd dnsguard
 cp .env.example .env
 ```
 
@@ -96,7 +96,7 @@ cp .env.example .env
 启动：
 
 ```bash
-./scripts/start-dns-ops.sh
+./scripts/start-dnsguard.sh
 ```
 
 脚本会自动完成：
@@ -112,16 +112,16 @@ cp .env.example .env
 停止：
 
 ```bash
-./scripts/stop-dns-ops.sh
+./scripts/stop-dnsguard.sh
 ```
 
-旧的 `start-tailscale.sh` 和 `stop-tailscale.sh` 仅保留为兼容入口，新的部署文档统一使用 `start-dns-ops.sh` 和 `stop-dns-ops.sh`。这里的 `BIND_INTERFACE` 只是服务器网卡名，不依赖某个特定网络产品。
+旧的 `start-tailscale.sh` 和 `stop-tailscale.sh` 仅保留为兼容入口，新的部署文档统一使用 `start-dnsguard.sh` 和 `stop-dnsguard.sh`。这里的 `BIND_INTERFACE` 只是服务器网卡名，不依赖某个特定网络产品。
 
 日常升级：
 
 ```bash
 git pull --ff-only
-./scripts/start-dns-ops.sh
+./scripts/start-dnsguard.sh
 ```
 
 ### 4.4 生产 systemd 部署
@@ -131,49 +131,49 @@ git pull --ff-only
 限制的服务模板：
 
 ```bash
-sudo useradd --system --home /opt/dns-ops-platform --shell /usr/sbin/nologin dnsops || true
-sudo install -d -o dnsops -g dnsops -m 0750 \
-  /opt/dns-ops-platform /etc/dns-ops /var/lib/dns-ops /var/lib/dns-ops/rpz /var/log/dns-ops
-sudo cp -a . /opt/dns-ops-platform/
-sudo chown -R dnsops:dnsops /opt/dns-ops-platform /var/lib/dns-ops /var/log/dns-ops
-sudo install -m 0644 deploy/systemd/dns-ops-api.service \
-  /etc/systemd/system/dns-ops-api.service
+sudo useradd --system --home /opt/dnsguard --shell /usr/sbin/nologin dnsguard || true
+sudo install -d -o dnsguard -g dnsguard -m 0750 \
+  /opt/dnsguard /etc/dnsguard /var/lib/dnsguard /var/lib/dnsguard/rpz /var/log/dnsguard
+sudo cp -a . /opt/dnsguard/
+sudo chown -R dnsguard:dnsguard /opt/dnsguard /var/lib/dnsguard /var/log/dnsguard
+sudo install -m 0644 deploy/systemd/dnsguard-api.service \
+  /etc/systemd/system/dnsguard-api.service
 ```
 
-将生产配置保存为 `/etc/dns-ops/dns-ops.env`，并将 `AUTH_FILE`、
-`DNS_NODE_CONFIG_FILE`、`RPZ_KEY_FILE` 指向 `/etc/dns-ops/` 下的受保护文件。
-状态、审计和 RPZ 产物使用 `/var/lib/dns-ops/`。先在发布目录构建 API 和前端：
+将生产配置保存为 `/etc/dnsguard/dnsguard.env`，并将 `AUTH_FILE`、
+`DNS_NODE_CONFIG_FILE`、`RPZ_KEY_FILE` 指向 `/etc/dnsguard/` 下的受保护文件。
+状态、审计和 RPZ 产物使用 `/var/lib/dnsguard/`。先在发布目录构建 API 和前端：
 
 ```bash
-cd /opt/dns-ops-platform
-sudo -u dnsops npm ci
-sudo -u dnsops npm run build
-sudo -u dnsops mkdir -p .run
-sudo -u dnsops go build -o .run/dns-ops-api ./server
+cd /opt/dnsguard
+sudo -u dnsguard npm ci
+sudo -u dnsguard npm run build
+sudo -u dnsguard mkdir -p .run
+sudo -u dnsguard go build -o .run/dnsguard-api ./server
 sudo systemctl daemon-reload
-sudo systemctl enable --now dns-ops-api.service
-sudo systemctl status dns-ops-api.service --no-pager
+sudo systemctl enable --now dnsguard-api.service
+sudo systemctl status dnsguard-api.service --no-pager
 ```
 
 API 只监听 `127.0.0.1:8080`，Web 代理应仅允许管理网段访问，并将 HTTPS
-终止在反向代理。升级时先执行 `systemctl stop dns-ops-api`，替换构建产物，
-再执行 `systemctl start dns-ops-api`；失败时使用 `journalctl -u dns-ops-api`
-查看日志并回滚上一份 `.run/dns-ops-api`。服务模板使用 `ProtectSystem`、
+终止在反向代理。升级时先执行 `systemctl stop dnsguard-api`，替换构建产物，
+再执行 `systemctl start dnsguard-api`；失败时使用 `journalctl -u dnsguard-api`
+查看日志并回滚上一份 `.run/dnsguard-api`。服务模板使用 `ProtectSystem`、
 `NoNewPrivileges`、独立运行用户和显式可写目录，避免把整个系统目录暴露给 API。
 
-仓库提供 Nginx 配置模板 `deploy/nginx/dns-ops.conf`。将 `DNS_OPS_DOMAIN`、证书路径
+仓库提供 Nginx 配置模板 `deploy/nginx/dnsguard.conf`。将 `DNSGUARD_DOMAIN`、证书路径
 和管理网段 ACL 按现场替换后启用：
 
 ```bash
-sudo install -m 0644 deploy/nginx/dns-ops.conf /etc/nginx/sites-available/dns-ops.conf
-sudo ln -sf /etc/nginx/sites-available/dns-ops.conf /etc/nginx/sites-enabled/dns-ops.conf
+sudo install -m 0644 deploy/nginx/dnsguard.conf /etc/nginx/sites-available/dnsguard.conf
+sudo ln -sf /etc/nginx/sites-available/dnsguard.conf /etc/nginx/sites-enabled/dnsguard.conf
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Nginx 托管 `/opt/dns-ops-platform/dist`，将 `/api/` 反向代理到本机 API，负责 HTTPS
-终止和安全响应头。启用 Nginx 后不要再用 `start-dns-ops.sh` 启动 Vite Preview，避免
-重复占用 Web 端口；只使用 `dns-ops-api.service` 托管 API。
+Nginx 托管 `/opt/dnsguard/dist`，将 `/api/` 反向代理到本机 API，负责 HTTPS
+终止和安全响应头。启用 Nginx 后不要再用 `start-dnsguard.sh` 启动 Vite Preview，避免
+重复占用 Web 端口；只使用 `dnsguard-api.service` 托管 API。
 
 ### 4.3 管理网卡配置
 
@@ -209,13 +209,13 @@ WEB_BIND_ADDRESS=192.0.2.20
 | `AUTH_ENABLED` | `true` | 生产必须开启 |
 | `AUTH_USERNAME` | `admin` | 管理用户名 |
 | `AUTH_SECRET` | 32 位以上随机值 | 会话签名密钥 |
-| `AUTH_FILE` | `/etc/dns-ops/auth.json` | bcrypt 密码哈希文件 |
+| `AUTH_FILE` | `/etc/dnsguard/auth.json` | bcrypt 密码哈希文件 |
 | `BIND_INTERFACE` | `tailscale0` | 自动获取 Web 绑定地址的网卡名 |
 | `WEB_BIND_ADDRESS` | `192.0.2.20` | 直接指定前端监听地址，优先级高于网卡 |
 | `WEB_MODE` | `preview` | 生产使用 `preview`，开发可使用 `dev` |
 | `LISTEN_ADDR` | `127.0.0.1:8080` | Go API 监听地址，不建议直接暴露 |
-| `TLS_CERT_FILE` | `/etc/dns-ops/tls/fullchain.pem` | API 直出 HTTPS 时使用 |
-| `TLS_KEY_FILE` | `/etc/dns-ops/tls/privkey.pem` | API 直出 HTTPS 时使用 |
+| `TLS_CERT_FILE` | `/etc/dnsguard/tls/fullchain.pem` | API 直出 HTTPS 时使用 |
+| `TLS_KEY_FILE` | `/etc/dnsguard/tls/privkey.pem` | API 直出 HTTPS 时使用 |
 | `TRUST_PROXY_TLS` | `true` | HTTPS 在可信反向代理终止时使用 |
 | `MONITORING_TOKEN` | 随机值 | 监控接口 Bearer Token；为空时仅允许本机回环地址 |
 | `DNS_HEALTH_CACHE_SECONDS` | `5` | 页面读取节点健康缓存的最大新鲜度 |
@@ -223,7 +223,7 @@ WEB_BIND_ADDRESS=192.0.2.20
 
 ### 5.2 DNS 节点配置
 
-节点配置默认文件：`config/dns-nodes.json`。生产建议放在 `/etc/dns-ops/dns-nodes.json`：
+节点配置默认文件：`config/dns-nodes.json`。生产建议放在 `/etc/dnsguard/dns-nodes.json`：
 
 ```json
 [
@@ -245,7 +245,7 @@ WEB_BIND_ADDRESS=192.0.2.20
 页面保存节点地址时会原子写入此文件，服务启动时读取此文件。`DNS_NODE_ADDRESSES` 只作为旧版本兼容和首次迁移入口：
 
 ```dotenv
-DNS_NODE_CONFIG_FILE=/etc/dns-ops/dns-nodes.json
+DNS_NODE_CONFIG_FILE=/etc/dnsguard/dns-nodes.json
 DNS_NODE_ADDRESSES=primary-1=10.0.0.10:53,secondary-1=10.0.0.11:53
 DNS_NODE_ALLOWED_CIDRS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 DNS_NODE_ALLOWED_HOSTS=
@@ -259,7 +259,7 @@ DNS_NODE_ALLOWED_HOSTS=
 
 ```dotenv
 RPZ_PUBLISH_MODE=artifact
-RPZ_ARTIFACT_FILE=/var/lib/dns-ops/rpz/rpz.local.db
+RPZ_ARTIFACT_FILE=/var/lib/dnsguard/rpz/rpz.local.db
 ```
 
 生产动态更新模式：
@@ -269,7 +269,7 @@ RPZ_PUBLISH_MODE=nsupdate
 RPZ_PRIMARY=10.0.0.10
 RPZ_PRIMARY_PORT=53
 RPZ_ZONE=rpz.local
-RPZ_KEY_FILE=/etc/dns-ops/keys/rpz-manager.key
+RPZ_KEY_FILE=/etc/dnsguard/keys/rpz-manager.key
 ```
 
 发布任务默认总超时 15 秒，`nsupdate` 失败后最多重试 2 次，每次间隔 1 秒；可按现场
@@ -323,9 +323,9 @@ baidu.com.rpz.local.
 建议权限：
 
 ```bash
-sudo install -d -o dnsops -g dnsops -m 0750 /etc/dns-ops /var/lib/dns-ops /var/log/dns-ops
-sudo install -o dnsops -g dnsops -m 0640 config/dns-nodes.json /etc/dns-ops/dns-nodes.json
-sudo install -o dnsops -g bind -m 0640 /path/to/rpz-manager.key /etc/dns-ops/keys/rpz-manager.key
+sudo install -d -o dnsguard -g dnsguard -m 0750 /etc/dnsguard /var/lib/dnsguard /var/log/dnsguard
+sudo install -o dnsguard -g dnsguard -m 0640 config/dns-nodes.json /etc/dnsguard/dns-nodes.json
+sudo install -o dnsguard -g bind -m 0640 /path/to/rpz-manager.key /etc/dnsguard/keys/rpz-manager.key
 ```
 
 TSIG key 只能授予控制面读取权限，不能放入 Git、前端目录或普通用户可读目录。
@@ -358,18 +358,18 @@ curl -b cookies.txt 'http://127.0.0.1:8080/api/audit?q=rpz&page=1&pageSize=50'
 ```bash
 curl -H "Authorization: Bearer $MONITORING_TOKEN" \
   http://127.0.0.1:8080/api/monitoring/status
-MONITORING_TOKEN="$MONITORING_TOKEN" ./scripts/check-dns-ops.sh
+MONITORING_TOKEN="$MONITORING_TOKEN" ./scripts/check-dnsguard.sh
 ```
 
 检查脚本在状态不是 `ok` 时返回非零退出码，可直接接入 Zabbix、Prometheus
 blackbox、Cron 或企业告警平台。systemd 部署可额外启用一分钟一次的检查：
 
 ```bash
-sudo install -m 0644 deploy/systemd/dns-ops-monitor.service \
-  deploy/systemd/dns-ops-monitor.timer /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/dnsguard-monitor.service \
+  deploy/systemd/dnsguard-monitor.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now dns-ops-monitor.timer
-systemctl list-timers dns-ops-monitor.timer
+sudo systemctl enable --now dnsguard-monitor.timer
+systemctl list-timers dnsguard-monitor.timer
 ```
 
 ## 7. 认证和生产安全要求
@@ -381,7 +381,7 @@ APP_ENV=production
 AUTH_ENABLED=true
 AUTH_USERNAME=admin
 AUTH_SECRET=<at-least-32-random-characters>
-AUTH_FILE=/etc/dns-ops/auth.json
+AUTH_FILE=/etc/dnsguard/auth.json
 MONITORING_TOKEN=<at-least-32-random-characters>
 WEB_MODE=preview
 ```
@@ -389,9 +389,9 @@ WEB_MODE=preview
 密码不写入 `.env`。使用交互式命令生成只保存 bcrypt 哈希的认证文件：
 
 ```bash
-sudo env AUTH_FILE=/etc/dns-ops/auth.json AUTH_USERNAME=admin \
+sudo env AUTH_FILE=/etc/dnsguard/auth.json AUTH_USERNAME=admin \
   ./scripts/create-auth-file.sh
-sudo chmod 600 /etc/dns-ops/auth.json
+sudo chmod 600 /etc/dnsguard/auth.json
 ```
 
 服务启动时会校验 `AUTH_FILE` 中存在 bcrypt 哈希；生产环境没有认证文件时会直接启动失败。登录后也可以通过密码修改接口更新哈希文件。
@@ -419,7 +419,7 @@ sudo chmod 600 /etc/dns-ops/auth.json
 生产环境只需在 `.env` 指定配置文件路径，不需要把 Token 写入环境变量：
 
 ```dotenv
-TELEGRAM_CONFIG_FILE=/var/lib/dns-ops/telegram.json
+TELEGRAM_CONFIG_FILE=/var/lib/dnsguard/telegram.json
 ```
 
 未保存 Telegram 配置时，告警功能保持关闭，不影响 DNS、RPZ 发布和节点探测。告警发送使用后台异步请求，Telegram 不可用时不会阻塞 DNS 健康检查或 RPZ 发布；相同事件在冷却时间内只发送一次。配置文件由服务自动以 `0600` 权限保存。
@@ -429,8 +429,8 @@ HTTPS 任选一种：
 **Go API 直出 HTTPS：**
 
 ```dotenv
-TLS_CERT_FILE=/etc/dns-ops/tls/fullchain.pem
-TLS_KEY_FILE=/etc/dns-ops/tls/privkey.pem
+TLS_CERT_FILE=/etc/dnsguard/tls/fullchain.pem
+TLS_KEY_FILE=/etc/dnsguard/tls/privkey.pem
 TRUST_PROXY_TLS=false
 ```
 
@@ -480,10 +480,10 @@ RPZ_KEY_FILE（使用受保护的密钥备份流程）
 加入，并且备份目录和归档使用受限权限：
 
 ```bash
-sudo install -d -m 0700 /var/backups/dns-ops
-sudo env DNS_OPS_ENV_FILE=/etc/dns-ops/dns-ops.env \
-  BACKUP_DIR=/var/backups/dns-ops BACKUP_INCLUDE_SENSITIVE=true BACKUP_RETENTION_COUNT=14 \
-  ./scripts/backup-dns-ops.sh
+sudo install -d -m 0700 /var/backups/dnsguard
+sudo env DNSGUARD_ENV_FILE=/etc/dnsguard/dnsguard.env \
+  BACKUP_DIR=/var/backups/dnsguard BACKUP_INCLUDE_SENSITIVE=true BACKUP_RETENTION_COUNT=14 \
+  ./scripts/backup-dnsguard.sh
 ```
 
 `BACKUP_RETENTION_COUNT` 控制本机备份目录保留的最新归档数量，默认保留 14 份；删除的
@@ -493,10 +493,10 @@ sudo env DNS_OPS_ENV_FILE=/etc/dns-ops/dns-ops.env \
 然后使用临时文件原子替换目标文件：
 
 ```bash
-sudo systemctl stop dns-ops-api.service
-sudo env DNS_OPS_ENV_FILE=/etc/dns-ops/dns-ops.env \
-  ./scripts/restore-dns-ops.sh /var/backups/dns-ops/dns-ops-YYYYMMDDTHHMMSSZ.tar.gz
-sudo systemctl start dns-ops-api.service
+sudo systemctl stop dnsguard-api.service
+sudo env DNSGUARD_ENV_FILE=/etc/dnsguard/dnsguard.env \
+  ./scripts/restore-dnsguard.sh /var/backups/dnsguard/dnsguard-YYYYMMDDTHHMMSSZ.tar.gz
+sudo systemctl start dnsguard-api.service
 ```
 
 恢复后先执行只读验证和 `./scripts/test-functional.sh`，确认 RPZ Serial、节点状态和
