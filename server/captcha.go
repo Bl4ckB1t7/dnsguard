@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,7 +87,11 @@ func captcha(w http.ResponseWriter, r *http.Request) {
 	}
 	captchaRateMu.Unlock()
 	if blocked {
-		w.Header().Set("Retry-After", "60")
+		retryAfter := int(rate.Started.Add(captchaRateWindow).Sub(now).Seconds())
+		if retryAfter < 1 {
+			retryAfter = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "验证码请求过于频繁，请稍后再试"})
 		return
 	}

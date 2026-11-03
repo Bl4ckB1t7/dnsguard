@@ -8,6 +8,7 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
   const [captchaId, setCaptchaId] = useState("");
   const [captchaSvg, setCaptchaSvg] = useState("");
   const [captchaCode, setCaptchaCode] = useState("");
+  const [captchaError, setCaptchaError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [title, setTitle] = useState("域盾 DNSGuard");
@@ -22,9 +23,11 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
       setCaptchaId(value.id);
       setCaptchaSvg(value.svg);
       setCaptchaCode("");
+      setCaptchaError("");
     } catch {
       setCaptchaId("");
       setCaptchaSvg("");
+      setCaptchaError("验证码加载失败，请点击重新加载");
     }
   };
 
@@ -90,9 +93,10 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
           <label>图形验证码
             <div className="captcha-row">
               <input value={captchaCode} onChange={(event) => setCaptchaCode(event.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 4))} placeholder="请输入验证码" autoComplete="off" maxLength={4} />
-              <button className="captcha-image" type="button" onClick={() => void refreshCaptcha()} aria-label="刷新验证码">{captchaImage ? <img src={captchaImage} alt="验证码" /> : "加载中"}</button>
+              <button className="captcha-image" type="button" onClick={() => void refreshCaptcha()} aria-label="刷新验证码">{captchaImage ? <img src={captchaImage} alt="验证码" /> : captchaError ? "重新加载" : "加载中"}</button>
             </div>
           </label>
+          {captchaError && <p className="login-error">{captchaError}</p>}
           {error && <p className="login-error">{error}</p>}
           <button type="submit" disabled={loading || captchaCode.trim().length !== 4}>{loading ? "认证中…" : "登录 DNS 控制台"}</button>
         </form>
