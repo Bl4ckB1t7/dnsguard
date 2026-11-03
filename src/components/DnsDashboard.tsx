@@ -1,11 +1,12 @@
 import { FormEvent, useEffect, useState } from "react";
 
-type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; lastPublish: string; publishMessage: string };
+type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; lastPublish: string; publishMessage: string; publishJobId: string; publishJobStatus: string };
 type DnsNode = { id: string; name: string; role: string; address: string; status: string; rpzVersion: string; lastSync: string };
 type Rule = { id: string; domain: string; action: string; reason: string; status: string; updatedAt: string };
 type RPZChange = { type: string; domain: string; before: string; after: string };
 type RPZPreview = { pending: boolean; currentCount: number; publishedCount: number; changes: RPZChange[] };
 type RPZVersion = { id: string; createdAt: string; mode: string; ruleCount: number };
+type PublishJob = { id: string; status: string; message?: string; error?: string };
 
 function csrfHeaders(): Record<string, string> {
   const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("network_csrf="))?.split("=").slice(1).join("=");
@@ -16,6 +17,16 @@ async function readJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { credentials: "include", ...init });
   if (!response.ok) throw new Error((await response.json().catch(() => null))?.error ?? "请求失败");
   return response.json() as Promise<T>;
+}
+
+async function waitForPublishJob(id: string): Promise<PublishJob> {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const job = await readJSON<PublishJob>(`/api/dns/rpz/jobs/${encodeURIComponent(id)}`);
+    if (job.status === "succeeded") return job;
+    if (job.status === "failed") throw new Error(job.error ?? "RPZ 发布失败");
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+  }
+  throw new Error("RPZ 发布任务超时，请查看任务状态");
 }
 
 export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () => void; authEnabled?: boolean }) {
@@ -96,8 +107,9 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
     setBusy(true);
     setNotice("");
     try {
-      const result = await readJSON<{ message: string }>("/api/dns/rpz/publish", { method: "POST", headers: csrfHeaders() });
-      setNotice(result.message);
+      const queued = await readJSON<PublishJob>("/api/dns/rpz/publish", { method: "POST", headers: csrfHeaders() });
+      const result = await waitForPublishJob(queued.id);
+      setNotice(result.message ?? "RPZ 发布成功");
       await load();
     } catch (error) { setNotice((error as Error).message); }
     finally { setBusy(false); }
@@ -108,12 +120,13 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
     setBusy(true);
     setNotice("");
     try {
-      const result = await readJSON<{ message: string }>("/api/dns/rpz/rollback", {
+      const queued = await readJSON<PublishJob>("/api/dns/rpz/rollback", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...csrfHeaders() },
         body: JSON.stringify({ versionId }),
       });
-      setNotice(`回滚成功：${result.message}`);
+      const result = await waitForPublishJob(queued.id);
+      setNotice(`回滚成功：${result.message ?? "RPZ 已重新发布"}`);
       await load();
     } catch (error) { setNotice((error as Error).message); }
     finally { setBusy(false); }
@@ -160,7 +173,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
         <section className="dns-panel"><div className="panel-heading"><div><h2>版本记录</h2><span>最多保留 20 个发布版本</span></div></div>{versions.length ? <div className="version-list">{versions.map((version) => <div className="version-item" key={version.id}><div><strong>{version.createdAt}</strong><small>{version.ruleCount} 条规则 · {version.mode}</small></div><button className="table-action" disabled={busy} onClick={() => void rollback(version.id)}>回滚并发布</button></div>)}</div> : <div className="empty">暂无发布版本</div>}</section>
       </section>
 
-      <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU · 显示 {ruleStart}-{ruleEnd} / {filteredRules.length} 条 · 当前模式：{overview?.publisherMode ?? "artifact"}</span></div><div className="record-tools"><input className="record-search" value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="搜索域名 / 原因" aria-label="搜索 RPZ 规则" /><button className="publish-button" disabled={busy || !overview?.pendingPublish} onClick={() => void publish()}>{overview?.pendingPublish ? "生成 / 发布 RPZ" : "已是最新"}</button></div></div><div className="table-wrap"><table><thead><tr><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{visibleRules.map((rule) => <tr key={rule.id}><td className="mono">{rule.domain}</td><td>{rule.action}</td><td>{rule.reason}</td><td><span className={`rule-status ${rule.status}`}>{rule.status === "published" ? "已发布" : rule.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{rule.updatedAt}</td><td><button className="table-action" onClick={() => void removeRule(rule.id)}>删除</button></td></tr>)}</tbody></table>{rules.length === 0 ? <div className="empty">暂无 RPZ 规则</div> : filteredRules.length === 0 ? <div className="empty">没有匹配的 RPZ 规则</div> : null}</div>{filteredRules.length > 0 && <div className="pagination"><span>第 {currentRulePage} / {rulePageCount} 页</span><div className="pagination-actions"><label>每页 <select value={rulePageSize} onChange={(event) => { setRulePageSize(Number(event.target.value)); setRulePage(1); }}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select> 条</label><button disabled={currentRulePage <= 1} onClick={() => setRulePage(Math.max(1, currentRulePage - 1))}>上一页</button><button disabled={currentRulePage >= rulePageCount} onClick={() => setRulePage(Math.min(rulePageCount, currentRulePage + 1))}>下一页</button></div></div>}</section>
+      <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU · 显示 {ruleStart}-{ruleEnd} / {filteredRules.length} 条 · 当前模式：{overview?.publisherMode ?? "artifact"} · 任务：{overview?.publishJobStatus ?? "idle"}</span></div><div className="record-tools"><input className="record-search" value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="搜索域名 / 原因" aria-label="搜索 RPZ 规则" /><button className="publish-button" disabled={busy || !overview?.pendingPublish} onClick={() => void publish()}>{overview?.pendingPublish ? "生成 / 发布 RPZ" : "已是最新"}</button></div></div><div className="table-wrap"><table><thead><tr><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{visibleRules.map((rule) => <tr key={rule.id}><td className="mono">{rule.domain}</td><td>{rule.action}</td><td>{rule.reason}</td><td><span className={`rule-status ${rule.status}`}>{rule.status === "published" ? "已发布" : rule.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{rule.updatedAt}</td><td><button className="table-action" onClick={() => void removeRule(rule.id)}>删除</button></td></tr>)}</tbody></table>{rules.length === 0 ? <div className="empty">暂无 RPZ 规则</div> : filteredRules.length === 0 ? <div className="empty">没有匹配的 RPZ 规则</div> : null}</div>{filteredRules.length > 0 && <div className="pagination"><span>第 {currentRulePage} / {rulePageCount} 页</span><div className="pagination-actions"><label>每页 <select value={rulePageSize} onChange={(event) => { setRulePageSize(Number(event.target.value)); setRulePage(1); }}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select> 条</label><button disabled={currentRulePage <= 1} onClick={() => setRulePage(Math.max(1, currentRulePage - 1))}>上一页</button><button disabled={currentRulePage >= rulePageCount} onClick={() => setRulePage(Math.min(rulePageCount, currentRulePage + 1))}>下一页</button></div></div>}</section>
       <footer className="dns-footer">当前版本：文件型控制面 · DNS 节点状态通过 dig / SOA Serial 实时探测</footer>
     </main>
   );

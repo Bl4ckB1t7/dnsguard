@@ -17,10 +17,25 @@ type rpzRuntime struct {
 	Mode        string
 	LastPublish string
 	Message     string
+	JobID       string
+	JobStatus   string
+}
+
+type PublishJob struct {
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	Message    string `json:"message,omitempty"`
+	Validation string `json:"validation,omitempty"`
+	Error      string `json:"error,omitempty"`
+	CreatedAt  string `json:"createdAt"`
+	StartedAt  string `json:"startedAt,omitempty"`
+	FinishedAt string `json:"finishedAt,omitempty"`
 }
 
 var rpzRuntimeMu sync.RWMutex
-var rpzRuntimeState = rpzRuntime{Mode: "artifact", Message: "尚未发布"}
+var rpzRuntimeState = rpzRuntime{Mode: "artifact", Message: "尚未发布", JobStatus: "idle"}
+var publishJobMu sync.RWMutex
+var publishJobs = map[string]PublishJob{}
 
 func rpzConfig(name, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
@@ -33,6 +48,22 @@ func rpzStatusSnapshot() rpzRuntime {
 	rpzRuntimeMu.RLock()
 	defer rpzRuntimeMu.RUnlock()
 	return rpzRuntimeState
+}
+
+func updatePublishJob(id string, update func(*PublishJob)) PublishJob {
+	publishJobMu.Lock()
+	job := publishJobs[id]
+	update(&job)
+	publishJobs[id] = job
+	publishJobMu.Unlock()
+	return job
+}
+
+func getPublishJob(id string) (PublishJob, bool) {
+	publishJobMu.RLock()
+	job, ok := publishJobs[id]
+	publishJobMu.RUnlock()
+	return job, ok
 }
 
 func rpzZoneName() string {
@@ -131,29 +162,25 @@ func runNSUpdate(ctx context.Context, current, previous []RPZRule) error {
 	return nil
 }
 
-func publishRPZ(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
+type publishResult struct {
+	Status     string
+	Message    string
+	Validation string
+}
+
+func performPublish(ctx context.Context, actor, remoteAddr string) (publishResult, error) {
 	current := activeRPZRules()
 	content, err := compileRPZ(current)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
+		return publishResult{}, err
 	}
 	path, err := writeRPZArtifact(content)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "RPZ 产物写入失败: " + err.Error()})
-		return
+		return publishResult{}, fmt.Errorf("RPZ 产物写入失败: %w", err)
 	}
 	validation := validateRPZ(ctx, path)
 	if strings.HasPrefix(validation, "named-checkzone 失败") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": validation})
-		return
+		return publishResult{}, fmt.Errorf("%s", validation)
 	}
 
 	mode := rpzConfig("RPZ_PUBLISH_MODE", "artifact")
@@ -164,14 +191,12 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 	status := "compiled"
 	if mode == "nsupdate" {
 		if err := runNSUpdate(ctx, current, previous); err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-			return
+			return publishResult{}, err
 		}
 		status = "published"
 		message = "已通过 nsupdate 发布到 RPZ Primary"
 	} else if mode != "artifact" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "RPZ_PUBLISH_MODE 只支持 artifact 或 nsupdate"})
-		return
+		return publishResult{}, fmt.Errorf("RPZ_PUBLISH_MODE 只支持 artifact 或 nsupdate")
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -190,14 +215,87 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 	}
 	dnsMu.Unlock()
 	if err := saveDNSState(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "状态保存失败"})
-		return
+		return publishResult{}, fmt.Errorf("状态保存失败")
 	}
 	rpzRuntimeMu.Lock()
-	rpzRuntimeState = rpzRuntime{Mode: mode, LastPublish: now, Message: message}
+	rpzRuntimeState = rpzRuntime{Mode: mode, LastPublish: now, Message: message, JobStatus: "succeeded"}
 	rpzRuntimeMu.Unlock()
-	auditEvent(r, authUsername(), "rpz.publish", mode+":"+status)
-	writeJSON(w, http.StatusOK, map[string]string{"status": status, "message": message, "validation": validation})
+	auditEvent(&http.Request{RemoteAddr: remoteAddr}, actor, "rpz.publish", mode+":"+status)
+	return publishResult{Status: status, Message: message, Validation: validation}, nil
+}
+
+func runPublishJob(id, actor, remoteAddr string) {
+	started := time.Now().UTC().Format(time.RFC3339)
+	updatePublishJob(id, func(job *PublishJob) { job.Status = "running"; job.StartedAt = started })
+	rpzRuntimeMu.Lock()
+	rpzRuntimeState.JobID = id
+	rpzRuntimeState.JobStatus = "running"
+	rpzRuntimeMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	result, err := performPublish(ctx, actor, remoteAddr)
+	cancel()
+	finished := time.Now().UTC().Format(time.RFC3339)
+	if err != nil {
+		updatePublishJob(id, func(job *PublishJob) { job.Status = "failed"; job.Error = err.Error(); job.FinishedAt = finished })
+		rpzRuntimeMu.Lock()
+		rpzRuntimeState.JobID = id
+		rpzRuntimeState.JobStatus = "failed"
+		rpzRuntimeState.Message = err.Error()
+		rpzRuntimeMu.Unlock()
+		return
+	}
+	updatePublishJob(id, func(job *PublishJob) {
+		job.Status = "succeeded"
+		job.Message = result.Message
+		job.Validation = result.Validation
+		job.FinishedAt = finished
+	})
+	rpzRuntimeMu.Lock()
+	rpzRuntimeState.JobID = id
+	rpzRuntimeState.JobStatus = "succeeded"
+	rpzRuntimeMu.Unlock()
+}
+
+func publishRPZ(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	job := PublishJob{ID: "publish-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10), Status: "queued", CreatedAt: now}
+	publishJobMu.Lock()
+	publishJobs[job.ID] = job
+	if len(publishJobs) > 50 {
+		for id := range publishJobs {
+			if id != job.ID {
+				delete(publishJobs, id)
+				break
+			}
+		}
+	}
+	publishJobMu.Unlock()
+	rpzRuntimeMu.Lock()
+	rpzRuntimeState.JobID = job.ID
+	rpzRuntimeState.JobStatus = "queued"
+	rpzRuntimeMu.Unlock()
+	go runPublishJob(job.ID, authUsername(), requestIP(r))
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func publishJobByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/dns/rpz/jobs/"), "/")
+	job, ok := getPublishJob(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
 }
 
 func rollbackRPZ(w http.ResponseWriter, r *http.Request) {

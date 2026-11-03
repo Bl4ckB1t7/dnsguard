@@ -9,6 +9,7 @@ KEY_FILE="${RPZ_KEY_FILE:-$PWD/dns-lab/keys/rpz-manager.key}"
 ZONE="${RPZ_ZONE:-rpz.local}"
 TEST_DOMAIN="functional-$(date +%s%N).example.com"
 RULE_ID=""
+PUBLISH_JOB_ID=""
 PASSED=0
 
 pass() {
@@ -19,10 +20,27 @@ pass() {
 cleanup() {
   if [[ -n "$RULE_ID" ]]; then
     curl -fsS -X DELETE "$API_URL/api/dns/rpz/$RULE_ID" >/dev/null || true
-    curl -fsS -X POST "$API_URL/api/dns/rpz/publish" >/dev/null || true
+    PUBLISH_JOB_ID=$(curl -fsS -X POST "$API_URL/api/dns/rpz/publish" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])') || true
+    wait_publish_job || true
   fi
 }
 trap cleanup EXIT
+
+wait_publish_job() {
+  for _ in $(seq 1 60); do
+    job=$(curl -fsS "$API_URL/api/dns/rpz/jobs/$PUBLISH_JOB_ID") || return 1
+    status=$(printf '%s' "$job" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
+    if [[ "$status" == "succeeded" ]]; then
+      return 0
+    fi
+    if [[ "$status" == "failed" ]]; then
+      printf '%s\n' "$job" >&2
+      return 1
+    fi
+    sleep 0.25
+  done
+  return 1
+}
 
 curl -fsS "$API_URL/api/health" | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"'
 pass "API health"
@@ -58,7 +76,9 @@ RULE_ID=$(printf '%s' "$create_response" | python3 -c 'import json,sys; print(js
 curl -fsS "$API_URL/api/dns/overview" | python3 -c 'import json,sys; assert json.load(sys.stdin)["pendingPublish"] is True'
 pass "RPZ rule creation marks pending publish"
 
-curl -fsS -X POST "$API_URL/api/dns/rpz/publish" | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "published"'
+PUBLISH_JOB_ID=$(curl -fsS -X POST "$API_URL/api/dns/rpz/publish" | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["status"] == "queued"; print(x["id"])')
+wait_publish_job
+curl -fsS "$API_URL/api/dns/rpz/jobs/$PUBLISH_JOB_ID" | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "succeeded"'
 for node in "$PRIMARY" "${SECONDARIES[@]}"; do
   for trigger in "$TEST_DOMAIN" "*.$TEST_DOMAIN"; do
     for _ in $(seq 1 90); do
@@ -77,7 +97,8 @@ curl -fsS -X DELETE "$API_URL/api/dns/rpz/$RULE_ID" >/dev/null
 curl -fsS "$API_URL/api/dns/overview" | python3 -c 'import json,sys; assert json.load(sys.stdin)["pendingPublish"] is True'
 pass "deletion reopens pending publish"
 
-curl -fsS -X POST "$API_URL/api/dns/rpz/publish" >/dev/null
+PUBLISH_JOB_ID=$(curl -fsS -X POST "$API_URL/api/dns/rpz/publish" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+wait_publish_job
 RULE_ID=""
 printf 'PASS: deletion publish completed\n'
 printf 'Functional tests passed: %d\n' "$((PASSED + 1))"

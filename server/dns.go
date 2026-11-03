@@ -411,18 +411,21 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 			healthy++
 		}
 	}
+	rpzRuntime := rpzStatusSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"nodes":          len(nodes),
-		"healthyNodes":   healthy,
-		"rules":          rules,
-		"publishedRules": published,
-		"pendingPublish": pendingPublish,
-		"rpzHits":        rpzHitsValue,
-		"rpzHitStatus":   map[bool]string{true: "ready", false: "not_configured"}[rpzHitsReady],
-		"lastSync":       time.Now().UTC().Format("15:04:05"),
-		"publisherMode":  rpzStatusSnapshot().Mode,
-		"lastPublish":    rpzStatusSnapshot().LastPublish,
-		"publishMessage": rpzStatusSnapshot().Message,
+		"nodes":            len(nodes),
+		"healthyNodes":     healthy,
+		"rules":            rules,
+		"publishedRules":   published,
+		"pendingPublish":   pendingPublish,
+		"rpzHits":          rpzHitsValue,
+		"rpzHitStatus":     map[bool]string{true: "ready", false: "not_configured"}[rpzHitsReady],
+		"lastSync":         time.Now().UTC().Format("15:04:05"),
+		"publisherMode":    rpzRuntime.Mode,
+		"lastPublish":      rpzRuntime.LastPublish,
+		"publishMessage":   rpzRuntime.Message,
+		"publishJobId":     rpzRuntime.JobID,
+		"publishJobStatus": rpzRuntime.JobStatus,
 	})
 }
 
