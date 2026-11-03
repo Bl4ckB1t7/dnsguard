@@ -400,6 +400,36 @@ sudo chmod 600 /etc/dns-ops/auth.json
 改密码页面，修改成功后才会开放 DNS/RPZ 操作。
 生产环境同时要求 `MONITORING_TOKEN` 为至少 32 位随机值；健康检查和告警脚本必须使用该值访问监控接口。
 
+### 7.1 Telegram 告警
+
+域盾支持通过 Telegram Bot API 发送以下运行告警：
+
+- `publish_failed`：RPZ 发布失败
+- `node_down`：DNS 节点不可达
+- `node_degraded`：辅节点 RPZ Serial 与主节点不一致
+- `node_recovered`：节点从异常状态恢复
+
+在服务端 `.env` 配置，不要把 Bot Token 放到前端或提交到 Git：
+
+```dotenv
+TELEGRAM_BOT_TOKEN=<Telegram BotFather 生成的 Bot Token>
+TELEGRAM_CHAT_ID=<群组或用户 Chat ID>
+TELEGRAM_ALERT_EVENTS=publish_failed,node_down,node_degraded,node_recovered
+TELEGRAM_ALERT_COOLDOWN_SECONDS=300
+```
+
+未配置 `TELEGRAM_BOT_TOKEN` 或 `TELEGRAM_CHAT_ID` 时，告警功能保持关闭，不影响 DNS、RPZ 发布和节点探测。告警发送使用后台异步请求，Telegram 不可用时不会阻塞 DNS 健康检查或 RPZ 发布；相同事件在冷却时间内只发送一次。
+
+配置完成后重启服务，并使用 Telegram API 验证 Bot 和 Chat ID：
+
+```bash
+curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+  -H 'Content-Type: application/json' \
+  -d "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"域盾 DNSGuard Telegram 告警测试\"}"
+```
+
+Bot Token 只允许存放在服务端权限为 `0600` 的环境文件或密钥管理系统中。
+
 HTTPS 任选一种：
 
 **Go API 直出 HTTPS：**

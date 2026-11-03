@@ -252,9 +252,30 @@ func refreshDNSHealth() {
 		}
 	}
 	dnsHealthMu.Lock()
+	previous := append([]DNSNode{}, dnsHealthCache...)
 	dnsHealthCache = append([]DNSNode{}, result...)
 	dnsHealthAt = time.Now()
 	dnsHealthMu.Unlock()
+	previousStatus := make(map[string]string, len(previous))
+	for _, node := range previous {
+		previousStatus[node.ID] = node.Status
+	}
+	for _, node := range result {
+		oldStatus := previousStatus[node.ID]
+		name := node.Name
+		if name == "" {
+			name = node.ID
+		}
+		if node.Status == "down" && oldStatus != "down" {
+			queueTelegramAlert("node_down", fmt.Sprintf("🚨 域盾 DNSGuard 节点不可达\n节点：%s\n地址：%s", name, node.Address))
+		}
+		if node.Status == "degraded" && oldStatus != "degraded" {
+			queueTelegramAlert("node_degraded", fmt.Sprintf("⚠️ 域盾 DNSGuard 节点版本不一致\n节点：%s\nRPZ Serial：%s", name, node.RPZVersion))
+		}
+		if node.Status == "healthy" && (oldStatus == "down" || oldStatus == "degraded") {
+			queueTelegramAlert("node_recovered", fmt.Sprintf("✅ 域盾 DNSGuard 节点已恢复\n节点：%s\nRPZ Serial：%s", name, node.RPZVersion))
+		}
+	}
 }
 
 func startDNSHealthMonitor() {

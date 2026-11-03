@@ -400,6 +400,7 @@ func runPublishJob(id, actor, remoteAddr string) {
 		rpzRuntimeState.JobStatus = "failed"
 		rpzRuntimeState.Message = err.Error()
 		rpzRuntimeMu.Unlock()
+		queueTelegramAlert("publish_failed", fmt.Sprintf("🚨 域盾 DNSGuard RPZ 发布失败\n任务：%s\n原因：%s", id, err.Error()))
 		return
 	}
 	updatePublishJob(id, func(job *PublishJob) {
