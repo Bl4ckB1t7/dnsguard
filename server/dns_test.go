@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,5 +119,36 @@ func TestDNSNodeConfigRoundTrip(t *testing.T) {
 	}
 	if got := state.Nodes[0].Address; got != "127.0.0.2:5353" {
 		t.Fatalf("expected address from config file, got %q", got)
+	}
+}
+
+func TestCaptchaSVGDoesNotExposePlaintextCode(t *testing.T) {
+	code := "A7K4"
+	svg := captchaSVG(code)
+	if strings.Contains(svg, "<text") || strings.Contains(svg, code) {
+		t.Fatalf("captcha SVG exposes plaintext code: %s", svg)
+	}
+}
+
+func TestCaptchaRateLimit(t *testing.T) {
+	const ip = "198.51.100.77:40000"
+	captchaRateMu.Lock()
+	delete(captchaRates, "198.51.100.77")
+	captchaRateMu.Unlock()
+	for attempt := 1; attempt <= captchaRateLimit; attempt++ {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest("GET", "/api/auth/captcha", nil)
+		request.RemoteAddr = ip
+		captcha(recorder, request)
+		if recorder.Code != 200 {
+			t.Fatalf("request %d unexpectedly returned %d", attempt, recorder.Code)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/api/auth/captcha", nil)
+	request.RemoteAddr = ip
+	captcha(recorder, request)
+	if recorder.Code != 429 {
+		t.Fatalf("expected rate limit response 429, got %d", recorder.Code)
 	}
 }
