@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -74,6 +76,7 @@ var dnsHealthMu sync.Mutex
 var dnsHealthCache []DNSNode
 var dnsHealthAt time.Time
 var ruleSequence atomic.Uint64
+var stateFileMu sync.Mutex
 
 func nextRuleID() string {
 	return fmt.Sprintf("rule-%d-%d", time.Now().UTC().UnixNano(), ruleSequence.Add(1))
@@ -289,10 +292,30 @@ func dnsStatePath() string {
 	return "dns-state.json"
 }
 
+func withStateFileLock(action func() error) error {
+	stateFileMu.Lock()
+	defer stateFileMu.Unlock()
+	lock, err := os.OpenFile(dnsStatePath()+".lock", os.O_CREATE|os.O_RDWR, 0o640)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	return action()
+}
+
 func loadDNSState() {
 	content, err := os.ReadFile(dnsStatePath())
 	if err == nil && json.Unmarshal(content, &state) == nil {
 		normalizeRuleIDs()
+		return
+	}
+	backup, backupErr := os.ReadFile(dnsStatePath() + ".bak")
+	if backupErr == nil && json.Unmarshal(backup, &state) == nil {
+		_ = saveDNSState()
 		return
 	}
 	state = dnsState{
@@ -340,11 +363,34 @@ func saveDNSState() error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, 0o640); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return withStateFileLock(func() error {
+		if previous, err := os.Open(path); err == nil {
+			backup, backupErr := os.Create(path + ".bak")
+			if backupErr == nil {
+				_, _ = io.Copy(backup, previous)
+				_ = backup.Sync()
+				_ = backup.Close()
+			}
+			_ = previous.Close()
+		}
+		tmp := path + ".tmp"
+		file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write(content); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := file.Sync(); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		return os.Rename(tmp, path)
+	})
 }
 
 func dnsOverview(w http.ResponseWriter, _ *http.Request) {

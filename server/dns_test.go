@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,5 +71,34 @@ func TestNextRuleIDIsUnique(t *testing.T) {
 	second := nextRuleID()
 	if first == second || first == "" || second == "" {
 		t.Fatalf("rule IDs are not unique: %q and %q", first, second)
+	}
+}
+
+func TestSaveDNSStateCreatesAtomicBackup(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "dns-state.json")
+	t.Setenv("DNS_STATE_FILE", statePath)
+	original := state
+	defer func() { state = original }()
+	state = dnsState{Nodes: []DNSNode{{ID: "test"}}, Rules: []RPZRule{}, Published: []RPZRule{}}
+	if err := saveDNSState(); err != nil {
+		t.Fatal(err)
+	}
+	state.Nodes[0].Name = "updated"
+	if err := saveDNSState(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(statePath + ".bak"); err != nil {
+		t.Fatalf("expected backup file: %v", err)
+	}
+	backup, err := os.ReadFile(statePath + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored dnsState
+	if err := json.Unmarshal(backup, &restored); err != nil {
+		t.Fatalf("backup is not valid JSON: %v", err)
+	}
+	if restored.Nodes[0].Name != "" {
+		t.Fatalf("backup should contain the previous version, got %+v", restored.Nodes[0])
 	}
 }
