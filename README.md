@@ -448,9 +448,12 @@ RPZ_KEY_FILE（使用受保护的密钥备份流程）
 ```bash
 sudo install -d -m 0700 /var/backups/dns-ops
 sudo env DNS_OPS_ENV_FILE=/etc/dns-ops/dns-ops.env \
-  BACKUP_DIR=/var/backups/dns-ops BACKUP_INCLUDE_SENSITIVE=true \
+  BACKUP_DIR=/var/backups/dns-ops BACKUP_INCLUDE_SENSITIVE=true BACKUP_RETENTION_COUNT=14 \
   ./scripts/backup-dns-ops.sh
 ```
+
+`BACKUP_RETENTION_COUNT` 控制本机备份目录保留的最新归档数量，默认保留 14 份；删除的
+归档不会影响已经交给企业备份系统的异地副本。
 
 恢复前必须停止控制面；脚本会拒绝服务运行中恢复、校验归档路径和 SHA-256 清单，
 然后使用临时文件原子替换目标文件：

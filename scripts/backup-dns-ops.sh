@@ -17,7 +17,8 @@ RPZ_ARTIFACT_FILE="${RPZ_ARTIFACT_FILE:-$ROOT/data/rpz/rpz.local.db}"
 AUTH_FILE="${AUTH_FILE:-$ROOT/.run/auth.json}"
 RPZ_KEY_FILE="${RPZ_KEY_FILE:-}"
 BACKUP_INCLUDE_SENSITIVE="${BACKUP_INCLUDE_SENSITIVE:-false}"
-export BACKUP_DIR DNS_STATE_FILE DNS_NODE_CONFIG_FILE AUDIT_FILE RPZ_ARTIFACT_FILE AUTH_FILE RPZ_KEY_FILE BACKUP_INCLUDE_SENSITIVE
+BACKUP_RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-14}"
+export BACKUP_DIR DNS_STATE_FILE DNS_NODE_CONFIG_FILE AUDIT_FILE RPZ_ARTIFACT_FILE AUTH_FILE RPZ_KEY_FILE BACKUP_INCLUDE_SENSITIVE BACKUP_RETENTION_COUNT
 
 command -v python3 >/dev/null 2>&1 || { echo "Missing required command: python3" >&2; exit 2; }
 python3 - <<'PY'
@@ -34,7 +35,7 @@ from pathlib import Path
 backup_dir = Path(os.environ["BACKUP_DIR"]).expanduser()
 backup_dir.mkdir(parents=True, exist_ok=True)
 backup_dir.chmod(0o700)
-timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 archive = backup_dir / f"dns-ops-{timestamp}.tar.gz"
 files = [
     (os.environ["DNS_STATE_FILE"], False),
@@ -73,5 +74,11 @@ with tempfile.TemporaryDirectory(prefix="dns-ops-backup-") as temp:
             bundle.add(stage / item["path"], arcname=item["path"])
     os.replace(temporary, archive)
     archive.chmod(stat.S_IRUSR | stat.S_IWUSR)
+retention = int(os.environ.get("BACKUP_RETENTION_COUNT", "14"))
+if retention < 1 or retention > 1000:
+    retention = 14
+archives = sorted(backup_dir.glob("dns-ops-*.tar.gz"), key=lambda item: item.stat().st_mtime, reverse=True)
+for old_archive in archives[retention:]:
+    old_archive.unlink()
 print(archive)
 PY
