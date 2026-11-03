@@ -82,32 +82,45 @@ ip link show
 ```bash
 git clone https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
-cp .env.example .env
+sudo ./scripts/install-dnsguard.sh
+sudo ./scripts/setup-dnsguard.sh
+sudo systemctl start dnsguard-api.service
+sudo systemctl status dnsguard-api.service --no-pager
 ```
 
-编辑 `.env`，至少修改：
+`install-dnsguard.sh` 会自动创建 `dnsguard` 系统用户、安装到 `/opt/dnsguard`、
+创建 `/etc/dnsguard`、`/var/lib/dnsguard` 和 `/var/log/dnsguard`，构建前端/API，
+并安装 systemd 服务。随后 `setup-dnsguard.sh` 以交互方式只询问现场必需信息，
+生成单一运行配置 `/etc/dnsguard/dnsguard.env`、节点文件和随机安全密钥；登录密码
+单独保存为 `/etc/dnsguard/auth.json`，不会写入配置文件。配置完成后会自动执行
+DNS、RPZ、认证和 TLS 预检查。
 
-- `BIND_INTERFACE` 或 `WEB_BIND_ADDRESS`；
-- `DNS_NODE_CONFIG_FILE`；
-- `RPZ_PUBLISH_MODE`、`RPZ_PRIMARY`、`RPZ_PRIMARY_PORT`；
-- `RPZ_KEY_FILE`；
-- 生产认证和 HTTPS 配置。
+生产部署前，请先把 BIND 动态更新使用的 TSIG key 安全复制到 setup 提示的路径，
+然后重新运行 setup。默认采用 `nsupdate` 发布到 Primary；如果 HTTPS 在现有可信
+反向代理终止，setup 会生成 `TRUST_PROXY_TLS=true`，无需在 DNSGuard 主机上生成证书。
+需要直接由 API 提供 HTTPS 时，再手动填写 `TLS_CERT_FILE` 和 `TLS_KEY_FILE`，并把
+`TRUST_PROXY_TLS` 改为 `false`。
 
-启动：
+也可以使用环境变量进行无人值守安装（示例）：
 
 ```bash
-./scripts/start-dnsguard.sh
+sudo DNSGUARD_NONINTERACTIVE=true \
+  DNSGUARD_PRIMARY_ADDRESS=10.0.0.10:53 \
+  DNSGUARD_SECONDARY_ADDRESSES=10.0.0.11:53,10.0.0.12:53 \
+  DNSGUARD_RPZ_KEY_FILE=/etc/dnsguard/keys/rpz-manager.key \
+  DNSGUARD_BIND_INTERFACE=eth0 \
+  ./scripts/setup-dnsguard.sh
 ```
 
-脚本会自动完成：
+检查安装结果：
 
-1. 从 `.env` 读取配置；
-2. 根据 `BIND_INTERFACE` 获取管理网卡 IPv4，或使用 `WEB_BIND_ADDRESS`；
-3. 首次运行执行 `npm ci`；
-4. 构建 React 前端和 Go API；
-5. 创建数据目录；
-6. 启动 API 和前端预览服务；
-7. 输出访问地址。
+```bash
+sudo /opt/dnsguard/scripts/preflight-dnsguard.sh
+sudo systemctl enable --now dnsguard-monitor.timer
+```
+
+开发验证仍可使用 `start-dnsguard.sh`；生产环境不要再手工复制 `.env` 或以 root
+启动 API，统一由 `/etc/dnsguard/dnsguard.env` 和 systemd 管理。
 
 停止：
 
@@ -139,7 +152,8 @@ sudo BIND_USER=bind BIND_GROUP=bind ./scripts/start-bind-rpz.sh
 
 ### 4.4 生产 systemd 部署
 
-开发启动脚本适合首次验证；生产环境建议让 systemd 托管 API，让 Nginx
+`install-dnsguard.sh` 已经完成以下 systemd 安装步骤。若现场需要手工复核或迁移，
+仍可参考本节。生产环境建议让 systemd 托管 API，让 Nginx
 或现有 HTTPS 反向代理托管 `dist/` 并代理 `/api/`。仓库提供了带最小权限
 限制的服务模板：
 
