@@ -39,6 +39,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
   const [overview, setOverview] = useState<Overview | null>(null);
   const [nodes, setNodes] = useState<DnsNode[]>([]);
   const [nodeDrafts, setNodeDrafts] = useState<Record<string, string>>({});
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [rules, setRules] = useState<Rule[]>([]);
   const [preview, setPreview] = useState<RPZPreview | null>(null);
   const [versions, setVersions] = useState<RPZVersion[]>([]);
@@ -97,9 +98,15 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
         body: JSON.stringify({ id: node.id, address: nodeDrafts[node.id] ?? node.address }),
       });
       setNotice(`${node.name} 配置已保存`);
+      setEditingNodeId(null);
       await load();
     } catch (error) { setNotice((error as Error).message); }
     finally { setBusy(false); }
+  };
+
+  const cancelNodeEdit = (node: DnsNode) => {
+    setNodeDrafts((drafts) => ({ ...drafts, [node.id]: node.address }));
+    setEditingNodeId(null);
   };
 
   const removeRule = async (id: string) => {
@@ -193,7 +200,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
       </section>
 
       <section className="dns-grid">
-        <div className="dns-panel dns-panel-wide"><div className="panel-heading"><h2>DNS 节点</h2><span>LIVE DIG / SOA PROBE</span></div><div className="table-wrap"><table><thead><tr><th>名称</th><th>角色</th><th>地址配置</th><th>状态</th><th>RPZ 版本</th><th>最近同步</th><th /></tr></thead><tbody>{nodes.map((node) => <tr key={node.id}><td>{node.name}</td><td>{node.role}</td><td><input className="node-address" value={nodeDrafts[node.id] ?? node.address} onChange={(event) => setNodeDrafts((drafts) => ({ ...drafts, [node.id]: event.target.value }))} /></td><td><i className={`status-dot ${node.status === "healthy" ? "ok" : "warn"}`} />{node.status === "healthy" ? "正常" : node.status === "degraded" ? "版本不一致" : "不可达"}</td><td className="mono">{node.rpzVersion}</td><td>{node.lastSync}</td><td><button className="table-action node-save" disabled={busy} onClick={() => void saveNode(node)}>保存</button></td></tr>)}</tbody></table></div></div>
+        <div className="dns-panel dns-panel-wide"><div className="panel-heading"><h2>DNS 节点</h2><span>LIVE DIG / SOA PROBE</span></div><div className="table-wrap"><table><thead><tr><th>名称</th><th>角色</th><th>地址配置</th><th>状态</th><th>RPZ 版本</th><th>最近同步</th><th /></tr></thead><tbody>{nodes.map((node) => { const editing = editingNodeId === node.id; return <tr key={node.id}><td>{node.name}</td><td>{node.role}</td><td><input className="node-address" readOnly={!editing} value={nodeDrafts[node.id] ?? node.address} onChange={(event) => setNodeDrafts((drafts) => ({ ...drafts, [node.id]: event.target.value }))} /></td><td><i className={`status-dot ${node.status === "healthy" ? "ok" : "warn"}`} />{node.status === "healthy" ? "正常" : node.status === "degraded" ? "版本不一致" : "不可达"}</td><td className="mono">{node.rpzVersion}</td><td>{node.lastSync}</td><td className="node-actions">{editing ? <><button className="table-action node-save" disabled={busy} onClick={() => void saveNode(node)}>保存</button><button className="table-action node-cancel" disabled={busy} onClick={() => cancelNodeEdit(node)}>取消</button></> : <button className="table-action node-edit" disabled={busy} onClick={() => setEditingNodeId(node.id)}>编辑</button>}</td></tr>; })}</tbody></table></div></div>
 
         <div className="dns-panel"><div className="panel-heading"><h2>添加 RPZ 白名单</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>原因<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="业务系统依赖" required /></label><button disabled={busy}>{busy ? "保存中…" : "保存白名单规则"}</button></form>{notice && <p className="notice">{notice}</p>}</div>
       </section>
