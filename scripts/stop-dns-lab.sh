@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-for name in primary secondary; do
+for name in primary secondary secondary-2; do
   pid_file="$ROOT/dns-lab/run/$name.pid"
   if [[ -f "$pid_file" ]]; then
     pid="$(cat "$pid_file")"

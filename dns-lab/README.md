@@ -5,6 +5,7 @@
 ```text
 RPZ Primary:   127.0.0.2:5353
 DNS Secondary: 127.0.0.3:5353
+DNS Secondary-2: 127.0.0.4:5353
 RPZ Zone:      rpz.local
 ```
 
@@ -17,6 +18,6 @@ RPZ_PUBLISH_MODE=nsupdate \
 RPZ_PRIMARY=127.0.0.2 RPZ_PRIMARY_PORT=5353 \
 RPZ_ZONE=rpz.local \
 RPZ_KEY_FILE=/home/REDACTED/dns-ops-platform/dns-lab/keys/rpz-manager.key \
-DNS_NODE_ADDRESSES=primary-1=127.0.0.2:5353,secondary-1=127.0.0.3:5353 \
+DNS_NODE_ADDRESSES=primary-1=127.0.0.2:5353,secondary-1=127.0.0.3:5353,secondary-2=127.0.0.4:5353 \
 ./scripts/start-tailscale.sh
 ```
