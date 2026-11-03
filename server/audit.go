@@ -19,6 +19,7 @@ type AuditEntry struct {
 
 var auditMu sync.RWMutex
 var auditEntries []AuditEntry
+var auditFileMu sync.Mutex
 
 func auditFilePath() string {
 	if path := os.Getenv("AUDIT_FILE"); path != "" {
@@ -44,6 +45,8 @@ func loadAudit() {
 }
 
 func auditEvent(r *http.Request, actor, action, result string) {
+	auditFileMu.Lock()
+	defer auditFileMu.Unlock()
 	ip := requestIP(r)
 	entry := AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339), Actor: actor, Action: action, Result: result, IP: ip}
 	auditMu.Lock()
@@ -60,10 +63,13 @@ func auditEvent(r *http.Request, actor, action, result string) {
 	if os.MkdirAll(filepath.Dir(path), 0o755) != nil {
 		return
 	}
-	temporary := path + ".tmp"
-	if os.WriteFile(temporary, content, 0o640) == nil {
-		_ = os.Rename(temporary, path)
-	}
+	_ = withFileLock(path, func() error {
+		temporary := path + ".tmp"
+		if err := os.WriteFile(temporary, content, 0o640); err != nil {
+			return err
+		}
+		return os.Rename(temporary, path)
+	})
 }
 
 func audit(w http.ResponseWriter, r *http.Request) {

@@ -84,6 +84,7 @@ var dnsHealthCache []DNSNode
 var dnsHealthAt time.Time
 var ruleSequence atomic.Uint64
 var stateFileMu sync.Mutex
+var nodeConfigFileMu sync.Mutex
 
 func nextRuleID() string {
 	return fmt.Sprintf("rule-%d-%d", time.Now().UTC().UnixNano(), ruleSequence.Add(1))
@@ -334,15 +335,17 @@ func nodeConfigsFromState() []DNSNodeConfig {
 }
 
 func saveDNSNodeConfig() error {
-	content, err := json.MarshalIndent(nodeConfigsFromState(), "", "  ")
-	if err != nil {
-		return err
-	}
 	path := dnsNodeConfigPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	nodeConfigFileMu.Lock()
+	defer nodeConfigFileMu.Unlock()
 	return withFileLock(path, func() error {
+		content, err := json.MarshalIndent(nodeConfigsFromState(), "", "  ")
+		if err != nil {
+			return err
+		}
 		tmp := path + ".tmp"
 		file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 		if err != nil {
@@ -459,17 +462,17 @@ func normalizeRuleIDs() {
 }
 
 func saveDNSState() error {
-	dnsMu.RLock()
-	content, err := json.MarshalIndent(state, "", "  ")
-	dnsMu.RUnlock()
-	if err != nil {
-		return err
-	}
 	path := dnsStatePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	return withStateFileLock(func() error {
+		dnsMu.RLock()
+		content, err := json.MarshalIndent(state, "", "  ")
+		dnsMu.RUnlock()
+		if err != nil {
+			return err
+		}
 		if previous, err := os.Open(path); err == nil {
 			backup, backupErr := os.Create(path + ".bak")
 			if backupErr == nil {
