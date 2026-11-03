@@ -28,7 +28,7 @@ function auditActionLabel(action: string): string {
     login: "登录",
     logout: "退出登录",
     "password.change": "修改密码",
-    "telegram.settings.update": "更新 TG 告警配置",
+    "telegram.settings.update": "更新告警配置",
     "dns.node.create": "增加 DNS 节点",
     "dns.node.update": "更新 DNS 节点",
     "dns.node.delete": "删除 DNS 节点",

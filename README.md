@@ -414,7 +414,7 @@ sudo chmod 600 /etc/dns-ops/auth.json
 - `node_degraded`：辅节点 RPZ Serial 与主节点不一致
 - `node_recovered`：节点从异常状态恢复
 
-登录域盾后，点击右上角 **TG 告警**，填写 Bot Token、Chat ID，选择告警事件和冷却时间，保存后可以直接点击“发送测试消息”。Token 只提交到后端并保存到 `TELEGRAM_CONFIG_FILE` 指定的服务端文件，接口不会回显完整 Token。
+登录域盾后，点击右上角 **告警配置**，填写 Bot Token、Chat ID，选择告警事件和冷却时间，保存后可以直接点击“发送测试消息”。Token 只提交到后端并保存到 `TELEGRAM_CONFIG_FILE` 指定的服务端文件，接口不会回显完整 Token。
 
 生产环境只需在 `.env` 指定配置文件路径，不需要把 Token 写入环境变量：
 
