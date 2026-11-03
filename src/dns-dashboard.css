@@ -116,6 +116,10 @@ td { color: #c9e7ec; }
 .global-notice button { border: 1px solid rgba(83, 233, 255, .5); background: transparent; color: #9ff5ff; padding: 5px 12px; cursor: pointer; }
 .rule-status { color: #f5bf61; }
 .rule-status.published { color: #4ef0ae; }
+.rule-edit-row td { background: #06243a; }
+.rule-edit-input, .rule-edit-type select { width: 100%; min-width: 100px; box-sizing: border-box; padding: 7px 8px; color: #eaffff; background: #031321; border: 1px solid #1a5c70; border-radius: 7px; outline: none; }
+.rule-edit-type { display: grid; gap: 5px; min-width: 125px; }
+.rule-edit-input:focus, .rule-edit-type select:focus { border-color: #2ee6ff; box-shadow: 0 0 10px #1bbdff33; }
 .table-action { padding: 5px 9px; background: transparent; border-color: #6c3b4b; color: #ff9cae; }
 .empty { padding: 25px; text-align: center; color: #6f9da9; }
 .dns-footer { border-top: 1px solid #16445a; padding-top: 18px; margin-top: 8px; }

@@ -26,6 +26,21 @@ func TestDNSNodeCannotDeletePrimary(t *testing.T) {
 	}
 }
 
+func TestRPZRuleUpdateChangesTargetAndRequiresPublish(t *testing.T) {
+	t.Setenv("DNS_STATE_FILE", filepath.Join(t.TempDir(), "dns-state.json"))
+	t.Setenv("AUDIT_FILE", filepath.Join(t.TempDir(), "audit.json"))
+	original := state
+	defer func() { state = original }()
+	state = dnsState{Rules: []RPZRule{{ID: "rule-1", Domain: "old.example.com", Action: "passthru", Type: "CNAME", Reason: "old", Status: "published", UpdatedAt: "2026-01-01T00:00:00Z"}}}
+	request := httptest.NewRequest(http.MethodPut, "/api/dns/rpz/rule-1", strings.NewReader(`{"domain":"new.example.com","type":"A","value":"192.0.2.20","reason":"updated"}`))
+	request.RemoteAddr = "127.0.0.1:1234"
+	recorder := httptest.NewRecorder()
+	dnsRuleByID(recorder, request)
+	if recorder.Code != http.StatusOK || state.Rules[0].Domain != "new.example.com" || state.Rules[0].Type != "A" || state.Rules[0].Value != "192.0.2.20" || state.Rules[0].Status != "draft" {
+		t.Fatalf("rule update failed: status=%d rule=%+v", recorder.Code, state.Rules[0])
+	}
+}
+
 func TestCompileRPZIncludesExactAndWildcardTriggers(t *testing.T) {
 	t.Setenv("RPZ_ZONE", "rpz.local")
 	content, err := compileRPZ([]RPZRule{{Domain: "baidu.com", Reason: "test"}})

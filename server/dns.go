@@ -1023,8 +1023,94 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 
 func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/dns/rpz/"), "/")
-	if id == "" || r.Method != http.MethodDelete {
-		w.Header().Set("Allow", "DELETE")
+	if id == "" {
+		w.Header().Set("Allow", "DELETE, PUT")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if r.Method == http.MethodPut {
+		var request struct {
+			Domain string `json:"domain"`
+			Type   string `json:"type"`
+			Value  string `json:"value"`
+			Reason string `json:"reason"`
+		}
+		if err := decodeJSON(r, &request); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
+			return
+		}
+		request.Domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(request.Domain), "."))
+		request.Type = strings.ToUpper(strings.TrimSpace(request.Type))
+		request.Value = strings.TrimSpace(request.Value)
+		if !domainPattern.MatchString(request.Domain) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请输入合法域名"})
+			return
+		}
+		if request.Type == "" {
+			request.Type = "CNAME"
+		}
+		if request.Type != "CNAME" && request.Type != "A" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "记录类型只支持 CNAME 或 A"})
+			return
+		}
+		if request.Type == "A" {
+			ip := net.ParseIP(request.Value)
+			if ip == nil || ip.To4() == nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "A 记录请输入合法 IPv4 地址"})
+				return
+			}
+			request.Value = ip.To4().String()
+		} else {
+			request.Value = ""
+		}
+		action := "passthru"
+		if request.Type == "A" {
+			action = "redirect"
+		}
+		dnsMu.Lock()
+		index := -1
+		for i, rule := range state.Rules {
+			if rule.ID == id {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			dnsMu.Unlock()
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "规则不存在"})
+			return
+		}
+		for i, rule := range state.Rules {
+			if i != index && rule.Domain == request.Domain {
+				dnsMu.Unlock()
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "该域名已有规则"})
+				return
+			}
+		}
+		previous := state.Rules[index]
+		updated := previous
+		updated.Domain = request.Domain
+		updated.Action = action
+		updated.Type = request.Type
+		updated.Value = request.Value
+		updated.Reason = strings.TrimSpace(request.Reason)
+		updated.Status = "draft"
+		updated.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		state.Rules[index] = updated
+		dnsMu.Unlock()
+		if err := saveDNSState(); err != nil {
+			dnsMu.Lock()
+			state.Rules[index] = previous
+			dnsMu.Unlock()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则保存失败"})
+			return
+		}
+		auditEvent(r, authUsername(), "rpz.rule.update", rpzAuditDetail(updated))
+		writeJSON(w, http.StatusOK, updated)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", "DELETE, PUT")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
