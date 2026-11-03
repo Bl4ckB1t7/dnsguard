@@ -58,7 +58,7 @@ button, input { font: inherit; }
 .audit-row.is-clickable { cursor: pointer; }
 .audit-row.is-clickable:focus-visible { outline: 2px solid #2dd8eb; outline-offset: 2px; }
 .audit-expanded { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: -1px; padding: 11px 14px; border: 1px solid #164b60; border-top: 0; border-radius: 0 0 10px 10px; background: #061c2c; color: #b8dce2; font-size: 12px; }
-.audit-expanded span { display: inline-flex; gap: 6px; }
+.audit-expanded span { display: inline-flex; align-items: center; gap: 6px; line-height: 1.5; }
 .audit-expanded b { color: #72afbd; font-weight: 500; }
 .audit-time { color: #8db8c1; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .audit-event { min-width: 0; }
