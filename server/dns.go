@@ -138,6 +138,22 @@ func liveDNSNodes() []DNSNode {
 	return result
 }
 
+func rpzRulesEqual(current, published []RPZRule) bool {
+	if len(current) != len(published) {
+		return false
+	}
+	currentByDomain := make(map[string]string, len(current))
+	for _, rule := range current {
+		currentByDomain[rule.Domain] = rule.Action + "\x00" + rule.Reason
+	}
+	for _, rule := range published {
+		if currentByDomain[rule.Domain] != rule.Action+"\x00"+rule.Reason {
+			return false
+		}
+	}
+	return true
+}
+
 func dnsStatePath() string {
 	if path := os.Getenv("DNS_STATE_FILE"); path != "" {
 		return path
@@ -185,6 +201,7 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 	dnsMu.RLock()
 	rules := len(state.Rules)
 	published := len(state.Published)
+	pendingPublish := !rpzRulesEqual(state.Rules, state.Published)
 	dnsMu.RUnlock()
 	healthy := 0
 	for _, node := range nodes {
@@ -197,6 +214,7 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 		"healthyNodes":   healthy,
 		"rules":          rules,
 		"publishedRules": published,
+		"pendingPublish": pendingPublish,
 		"rpzHits":        0,
 		"lastSync":       time.Now().UTC().Format("15:04:05"),
 		"publisherMode":  rpzStatusSnapshot().Mode,
