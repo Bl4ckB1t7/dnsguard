@@ -43,6 +43,18 @@ func settings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+}
+
 func main() {
 	if err := validateSecurityConfig(); err != nil {
 		log.Fatal(err)
@@ -87,7 +99,7 @@ func main() {
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:8080"
 	}
-	server := &http.Server{Addr: listenAddr, Handler: authMiddleware(mux), ReadHeaderTimeout: 5 * time.Second}
+	server := newHTTPServer(listenAddr, authMiddleware(mux))
 	log.Printf("dns ops API listening on %s", server.Addr)
 	certFile := os.Getenv("TLS_CERT_FILE")
 	keyFile := os.Getenv("TLS_KEY_FILE")
