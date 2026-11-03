@@ -61,7 +61,10 @@ func main() {
 	mux.HandleFunc("/api/dns/nodes", dnsNodes)
 	mux.HandleFunc("/api/dns/records", dnsRecords)
 	mux.HandleFunc("/api/dns/rpz", dnsRules)
+	mux.HandleFunc("/api/dns/rpz/preview", rpzPreview)
+	mux.HandleFunc("/api/dns/rpz/versions", rpzVersions)
 	mux.HandleFunc("/api/dns/rpz/publish", publishRPZ)
+	mux.HandleFunc("/api/dns/rpz/rollback", rollbackRPZ)
 	mux.HandleFunc("/api/dns/rpz/", dnsRuleByID)
 	mux.HandleFunc("/api/audit", audit)
 

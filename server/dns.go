@@ -47,9 +47,24 @@ type RPZRecord struct {
 }
 
 type dnsState struct {
-	Nodes     []DNSNode `json:"nodes"`
+	Nodes     []DNSNode    `json:"nodes"`
+	Rules     []RPZRule    `json:"rules"`
+	Published []RPZRule    `json:"published"`
+	Versions  []RPZVersion `json:"versions"`
+}
+
+type RPZVersion struct {
+	ID        string    `json:"id"`
+	CreatedAt string    `json:"createdAt"`
+	Mode      string    `json:"mode"`
 	Rules     []RPZRule `json:"rules"`
-	Published []RPZRule `json:"published"`
+}
+
+type RPZChange struct {
+	Type   string `json:"type"`
+	Domain string `json:"domain"`
+	Before string `json:"before"`
+	After  string `json:"after"`
 }
 
 var dnsMu sync.RWMutex
@@ -191,6 +206,42 @@ func rpzRulesEqual(current, published []RPZRule) bool {
 	return true
 }
 
+func copyRPZRules(rules []RPZRule) []RPZRule {
+	return append([]RPZRule{}, rules...)
+}
+
+func rpzPreviewSnapshot() (RPZChangeList []RPZChange, currentCount, publishedCount int) {
+	dnsMu.RLock()
+	current := copyRPZRules(state.Rules)
+	published := copyRPZRules(state.Published)
+	dnsMu.RUnlock()
+	currentByDomain := make(map[string]RPZRule, len(current))
+	publishedByDomain := make(map[string]RPZRule, len(published))
+	for _, rule := range current {
+		currentByDomain[rule.Domain] = rule
+	}
+	for _, rule := range published {
+		publishedByDomain[rule.Domain] = rule
+	}
+	for domain, rule := range currentByDomain {
+		old, exists := publishedByDomain[domain]
+		if !exists {
+			RPZChangeList = append(RPZChangeList, RPZChange{Type: "added", Domain: domain, After: rule.Action + " / " + rule.Reason})
+			continue
+		}
+		if old.Action != rule.Action || old.Reason != rule.Reason {
+			RPZChangeList = append(RPZChangeList, RPZChange{Type: "changed", Domain: domain, Before: old.Action + " / " + old.Reason, After: rule.Action + " / " + rule.Reason})
+		}
+	}
+	for domain, rule := range publishedByDomain {
+		if _, exists := currentByDomain[domain]; !exists {
+			RPZChangeList = append(RPZChangeList, RPZChange{Type: "removed", Domain: domain, Before: rule.Action + " / " + rule.Reason})
+		}
+	}
+	sort.Slice(RPZChangeList, func(i, j int) bool { return RPZChangeList[i].Domain < RPZChangeList[j].Domain })
+	return RPZChangeList, len(current), len(published)
+}
+
 func dnsStatePath() string {
 	if path := os.Getenv("DNS_STATE_FILE"); path != "" {
 		return path
@@ -212,6 +263,7 @@ func loadDNSState() {
 		},
 		Rules:     []RPZRule{},
 		Published: []RPZRule{},
+		Versions:  []RPZVersion{},
 	}
 	_ = saveDNSState()
 }
@@ -286,6 +338,42 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 		"lastPublish":    rpzStatusSnapshot().LastPublish,
 		"publishMessage": rpzStatusSnapshot().Message,
 	})
+}
+
+func rpzPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	changes, currentCount, publishedCount := rpzPreviewSnapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pending":        len(changes) > 0,
+		"currentCount":   currentCount,
+		"publishedCount": publishedCount,
+		"changes":        changes,
+	})
+}
+
+func rpzVersions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	type versionSummary struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"createdAt"`
+		Mode      string `json:"mode"`
+		RuleCount int    `json:"ruleCount"`
+	}
+	dnsMu.RLock()
+	result := make([]versionSummary, 0, len(state.Versions))
+	for _, version := range state.Versions {
+		result = append(result, versionSummary{ID: version.ID, CreatedAt: version.CreatedAt, Mode: version.Mode, RuleCount: len(version.Rules)})
+	}
+	dnsMu.RUnlock()
+	writeJSON(w, http.StatusOK, result)
 }
 
 func dnsNodes(w http.ResponseWriter, r *http.Request) {

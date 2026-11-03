@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -180,7 +181,12 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 		state.Rules[index].UpdatedAt = now
 	}
 	if status == "published" {
-		state.Published = append([]RPZRule{}, current...)
+		snapshot := copyRPZRules(current)
+		state.Published = snapshot
+		state.Versions = append([]RPZVersion{{ID: "version-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10), CreatedAt: now, Mode: mode, Rules: snapshot}}, state.Versions...)
+		if len(state.Versions) > 20 {
+			state.Versions = state.Versions[:20]
+		}
 	}
 	dnsMu.Unlock()
 	if err := saveDNSState(); err != nil {
@@ -192,4 +198,48 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 	rpzRuntimeMu.Unlock()
 	auditEvent(r, authUsername(), "rpz.publish", mode+":"+status)
 	writeJSON(w, http.StatusOK, map[string]string{"status": status, "message": message, "validation": validation})
+}
+
+func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var request struct {
+		VersionID string `json:"versionId"`
+	}
+	if err := decodeJSON(r, &request); err != nil || strings.TrimSpace(request.VersionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "versionId required"})
+		return
+	}
+	dnsMu.RLock()
+	var target *RPZVersion
+	for index := range state.Versions {
+		if state.Versions[index].ID == request.VersionID {
+			copy := state.Versions[index]
+			copy.Rules = copyRPZRules(copy.Rules)
+			target = &copy
+			break
+		}
+	}
+	dnsMu.RUnlock()
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "version not found"})
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	dnsMu.Lock()
+	state.Rules = copyRPZRules(target.Rules)
+	for index := range state.Rules {
+		state.Rules[index].Status = "draft"
+		state.Rules[index].UpdatedAt = now
+	}
+	dnsMu.Unlock()
+	if err := saveDNSState(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "回滚状态保存失败"})
+		return
+	}
+	auditEvent(r, authUsername(), "rpz.rollback", target.ID)
+	publishRPZ(w, r)
 }
