@@ -88,6 +88,10 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [nodes, setNodes] = useState<DnsNode[]>([]);
   const [nodeDrafts, setNodeDrafts] = useState<Record<string, string>>({});
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [showNodeForm, setShowNodeForm] = useState(false);
+  const [nodeName, setNodeName] = useState("");
+  const [nodeRole, setNodeRole] = useState("辅节点");
+  const [nodeAddress, setNodeAddress] = useState("");
   const [rules, setRules] = useState<Rule[]>([]);
   const [preview, setPreview] = useState<RPZPreview | null>(null);
   const [versions, setVersions] = useState<RPZVersion[]>([]);
@@ -197,6 +201,35 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const cancelNodeEdit = (node: DnsNode) => {
     setNodeDrafts((drafts) => ({ ...drafts, [node.id]: node.address }));
     setEditingNodeId(null);
+  };
+
+  const addNode = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setNotice("");
+    try {
+      await readJSON("/api/dns/nodes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({ name: nodeName, role: nodeRole, address: nodeAddress }),
+      });
+      setNodeName(""); setNodeRole("辅节点"); setNodeAddress(""); setShowNodeForm(false);
+      setNotice("DNS 节点已添加");
+      await load();
+    } catch (error) { setNotice(`DNS 节点添加失败：${(error as Error).message}`); }
+    finally { setBusy(false); }
+  };
+
+  const removeNode = async (node: DnsNode) => {
+    if (!window.confirm(`确认删除节点“${node.name}”？删除后不会修改该节点上的 BIND 配置。`)) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await readJSON(`/api/dns/nodes/${encodeURIComponent(node.id)}`, { method: "DELETE", headers: csrfHeaders() });
+      setNotice(`${node.name} 已删除`);
+      await load();
+    } catch (error) { setNotice(`DNS 节点删除失败：${(error as Error).message}`); }
+    finally { setBusy(false); }
   };
 
   const removeRule = async (id: string) => {
@@ -325,7 +358,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       </section>
 
       <section className="dns-grid">
-        <div className="dns-panel dns-panel-wide"><div className="panel-heading"><h2>DNS 节点</h2><span>LIVE DIG / SOA PROBE</span></div><div className="table-wrap"><table><thead><tr><th>名称</th><th>角色</th><th>地址配置</th><th>状态</th><th>RPZ 版本</th><th>最近同步</th><th /></tr></thead><tbody>{nodes.map((node) => { const editing = editingNodeId === node.id; return <tr key={node.id}><td>{node.name}</td><td>{node.role}</td><td><input className="node-address" readOnly={!editing} value={nodeDrafts[node.id] ?? node.address} onChange={(event) => setNodeDrafts((drafts) => ({ ...drafts, [node.id]: event.target.value }))} /></td><td><i className={`status-dot ${node.status === "healthy" ? "ok" : "warn"}`} />{node.status === "healthy" ? "正常" : node.status === "degraded" ? "版本不一致" : "不可达"}</td><td className="mono">{node.rpzVersion}</td><td>{node.lastSync}</td><td className="node-actions">{editing ? <><button className="table-action node-save" disabled={busy} onClick={() => void saveNode(node)}>保存</button><button className="table-action node-cancel" disabled={busy} onClick={() => cancelNodeEdit(node)}>取消</button></> : <button className="table-action node-edit" disabled={busy} onClick={() => setEditingNodeId(node.id)}>编辑</button>}</td></tr>; })}</tbody></table></div></div>
+        <div className="dns-panel dns-panel-wide"><div className="panel-heading"><div><h2>DNS 节点</h2><span>LIVE DIG / SOA PROBE · 共 {nodes.length} 个节点</span></div><button className="table-action node-add" disabled={busy} onClick={() => setShowNodeForm((shown) => !shown)}>{showNodeForm ? "取消添加" : "增加节点"}</button></div>{showNodeForm && <form className="node-create-form" onSubmit={addNode}><label>节点名称<input value={nodeName} onChange={(event) => setNodeName(event.target.value)} placeholder="例如 DNS-SECONDARY-3" required /></label><label>角色<input value={nodeRole} onChange={(event) => setNodeRole(event.target.value)} placeholder="例如 辅节点" required /></label><label>地址<input value={nodeAddress} onChange={(event) => setNodeAddress(event.target.value)} placeholder="例如 192.168.10.13:53" required /></label><button disabled={busy}>{busy ? "保存中…" : "保存节点"}</button></form>}<div className="table-wrap"><table><thead><tr><th>名称</th><th>角色</th><th>地址配置</th><th>状态</th><th>RPZ 版本</th><th>最近同步</th><th /></tr></thead><tbody>{nodes.map((node) => { const editing = editingNodeId === node.id; return <tr key={node.id}><td>{node.name}</td><td>{node.role}</td><td><input className="node-address" readOnly={!editing} value={nodeDrafts[node.id] ?? node.address} onChange={(event) => setNodeDrafts((drafts) => ({ ...drafts, [node.id]: event.target.value }))} /></td><td><i className={`status-dot ${node.status === "healthy" ? "ok" : "warn"}`} />{node.status === "healthy" ? "正常" : node.status === "degraded" ? "版本不一致" : "不可达"}</td><td className="mono">{node.rpzVersion}</td><td>{node.lastSync}</td><td className="node-actions">{editing ? <><button className="table-action node-save" disabled={busy} onClick={() => void saveNode(node)}>保存</button><button className="table-action node-cancel" disabled={busy} onClick={() => cancelNodeEdit(node)}>取消</button></> : <button className="table-action node-edit" disabled={busy} onClick={() => setEditingNodeId(node.id)}>编辑</button>}<button className="table-action node-delete" disabled={busy || nodes.length <= 1} onClick={() => void removeNode(node)}>删除</button></td></tr>; })}</tbody></table></div></div>
 
         <div className="dns-panel"><div className="panel-heading"><h2>添加 RPZ 规则</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>记录类型<select value={ruleType} onChange={(event) => setRuleType(event.target.value as "CNAME" | "A")}><option value="CNAME">白名单（CNAME / passthru）</option><option value="A">A 记录重定向</option></select></label>{ruleType === "A" && <label>目标 IPv4<input value={recordValue} onChange={(event) => setRecordValue(event.target.value)} placeholder="例如 192.0.2.10" inputMode="numeric" pattern="(?:[0-9]{1,3}\.){3}[0-9]{1,3}" required /></label>}<label>原因（可选）<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder={ruleType === "A" ? "业务流量导向指定服务" : "业务系统依赖"} /></label><button disabled={busy}>{busy ? "保存中…" : "保存 RPZ 规则"}</button></form>{notice && <p className="notice">{notice}</p>}</div>
       </section>

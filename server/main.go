@@ -66,6 +66,7 @@ func main() {
 	mux.HandleFunc("/api/auth/password", authPasswordChange)
 	mux.HandleFunc("/api/dns/overview", dnsOverview)
 	mux.HandleFunc("/api/dns/nodes", dnsNodes)
+	mux.HandleFunc("/api/dns/nodes/", dnsNodeByID)
 	mux.HandleFunc("/api/dns/records", dnsRecords)
 	mux.HandleFunc("/api/dns/rpz", dnsRules)
 	mux.HandleFunc("/api/dns/rpz/bulk", dnsBulkRules)

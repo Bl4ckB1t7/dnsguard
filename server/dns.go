@@ -86,11 +86,16 @@ var dnsHealthCache []DNSNode
 var dnsHealthAt time.Time
 var dnsHealthRefreshing atomic.Bool
 var ruleSequence atomic.Uint64
+var nodeSequence atomic.Uint64
 var stateFileMu sync.Mutex
 var nodeConfigFileMu sync.Mutex
 
 func nextRuleID() string {
 	return fmt.Sprintf("rule-%d-%d", time.Now().UTC().UnixNano(), ruleSequence.Add(1))
+}
+
+func nextNodeID() string {
+	return fmt.Sprintf("node-%d-%d", time.Now().UTC().UnixNano(), nodeSequence.Add(1))
 }
 
 func rpzHitCount() (int, bool) {
@@ -654,31 +659,63 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 			Role    string `json:"role"`
 			Address string `json:"address"`
 		}
-		if err := decodeJSON(r, &request); err != nil || strings.TrimSpace(request.ID) == "" || !dnsNodeAddressAllowed(request.Address) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "节点 ID 或地址无效"})
+		if err := decodeJSON(r, &request); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
+			return
+		}
+		request.ID = strings.TrimSpace(request.ID)
+		request.Name = strings.TrimSpace(request.Name)
+		request.Role = strings.TrimSpace(request.Role)
+		request.Address = strings.TrimSpace(request.Address)
+		if !dnsNodeAddressAllowed(request.Address) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "节点地址无效或不在允许范围内"})
+			return
+		}
+		if request.ID == "" && (request.Name == "" || request.Role == "") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "新增节点必须填写名称和角色"})
 			return
 		}
 		dnsMu.Lock()
+		previousNodes := append([]DNSNode(nil), state.Nodes...)
+		created := request.ID == ""
+		if created {
+			request.ID = nextNodeID()
+		}
+		for _, existing := range state.Nodes {
+			if existing.ID != request.ID && strings.EqualFold(existing.Address, request.Address) {
+				dnsMu.Unlock()
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "该节点地址已存在"})
+				return
+			}
+		}
 		updated := false
 		for index := range state.Nodes {
 			if state.Nodes[index].ID == request.ID {
-				state.Nodes[index].Address = strings.TrimSpace(request.Address)
-				if strings.TrimSpace(request.Name) != "" {
-					state.Nodes[index].Name = strings.TrimSpace(request.Name)
+				state.Nodes[index].Address = request.Address
+				if request.Name != "" {
+					state.Nodes[index].Name = request.Name
 				}
-				if strings.TrimSpace(request.Role) != "" {
-					state.Nodes[index].Role = strings.TrimSpace(request.Role)
+				if request.Role != "" {
+					state.Nodes[index].Role = request.Role
 				}
 				updated = true
 				break
 			}
 		}
-		dnsMu.Unlock()
 		if !updated {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "节点不存在"})
-			return
+			if request.Name == "" || request.Role == "" {
+				dnsMu.Unlock()
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "新增节点必须填写名称和角色"})
+				return
+			}
+			state.Nodes = append(state.Nodes, DNSNode{ID: request.ID, Name: request.Name, Role: request.Role, Address: request.Address, Status: "unknown", RPZVersion: "—", LastSync: "未探测"})
+			created = true
 		}
+		dnsMu.Unlock()
 		if err := saveDNSNodeConfig(); err != nil {
+			dnsMu.Lock()
+			state.Nodes = previousNodes
+			dnsMu.Unlock()
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "节点配置保存失败"})
 			return
 		}
@@ -686,12 +723,64 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 		dnsHealthCache = nil
 		dnsHealthAt = time.Time{}
 		dnsHealthMu.Unlock()
-		auditEvent(r, authUsername(), "dns.node.update", request.ID+":"+request.Address)
-		writeJSON(w, http.StatusOK, map[string]any{"updated": true, "nodeId": request.ID, "address": request.Address})
+		action := "dns.node.update"
+		if created {
+			action = "dns.node.create"
+		}
+		auditEvent(r, authUsername(), action, request.ID+":"+request.Address)
+		writeJSON(w, http.StatusOK, map[string]any{"updated": true, "created": created, "nodeId": request.ID, "address": request.Address})
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+func dnsNodeByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", "DELETE")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/dns/nodes/"), "/")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "节点 ID 不能为空"})
+		return
+	}
+	dnsMu.Lock()
+	if len(state.Nodes) <= 1 {
+		dnsMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "至少保留一个 DNS 节点"})
+		return
+	}
+	index := -1
+	for i, node := range state.Nodes {
+		if node.ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		dnsMu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "节点不存在"})
+		return
+	}
+	removed := state.Nodes[index]
+	previousNodes := append([]DNSNode(nil), state.Nodes...)
+	state.Nodes = append(state.Nodes[:index], state.Nodes[index+1:]...)
+	dnsMu.Unlock()
+	if err := saveDNSNodeConfig(); err != nil {
+		dnsMu.Lock()
+		state.Nodes = previousNodes
+		dnsMu.Unlock()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "节点配置保存失败"})
+		return
+	}
+	dnsHealthMu.Lock()
+	dnsHealthCache = nil
+	dnsHealthAt = time.Time{}
+	dnsHealthMu.Unlock()
+	auditEvent(r, authUsername(), "dns.node.delete", removed.ID+":"+removed.Address)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "nodeId": removed.ID})
 }
 
 func validDNSNodeAddress(address string) bool {
