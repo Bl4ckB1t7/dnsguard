@@ -274,6 +274,19 @@ func liveDNSNodes() []DNSNode {
 	cached := append([]DNSNode{}, dnsHealthCache...)
 	refreshedAt := dnsHealthAt
 	dnsHealthMu.Unlock()
+	if len(cached) == 0 && dnsHealthRefreshing.Load() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) && dnsHealthRefreshing.Load() {
+			time.Sleep(10 * time.Millisecond)
+			dnsHealthMu.Lock()
+			cached = append([]DNSNode{}, dnsHealthCache...)
+			refreshedAt = dnsHealthAt
+			dnsHealthMu.Unlock()
+			if len(cached) > 0 {
+				return cached
+			}
+		}
+	}
 	if refreshedAt.IsZero() {
 		refreshDNSHealth()
 		dnsHealthMu.Lock()
