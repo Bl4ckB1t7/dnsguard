@@ -35,6 +35,7 @@ var telegramAlertMu sync.Mutex
 var telegramConfigMu sync.RWMutex
 var telegramConfig = defaultTelegramConfig()
 var telegramLastAlerts = map[string]time.Time{}
+var telegramAlertsInFlight = map[string]bool{}
 
 type telegramSendMessageRequest struct {
 	ChatID                string `json:"chat_id"`
@@ -259,6 +260,12 @@ func telegramAlertCooldown(config TelegramConfig) time.Duration {
 	return time.Duration(config.CooldownSeconds) * time.Second
 }
 
+func telegramEventUsesCooldown(event string) bool {
+	// Every RPZ rule operation is auditable and must reach Telegram. Cooldowns
+	// remain useful for health/publish events that can repeat during an outage.
+	return !strings.HasPrefix(event, "rpz_rule_")
+}
+
 func telegramAlertEnabled(event string) bool {
 	config := currentTelegramConfig()
 	if strings.TrimSpace(config.BotToken) == "" || strings.TrimSpace(config.ChatID) == "" {
@@ -285,14 +292,23 @@ func sendTelegramMessage(config TelegramConfig, message string, useCooldown bool
 		return fmt.Errorf("telegram alert message is empty")
 	}
 	if useCooldown {
-		now := time.Now()
 		telegramAlertMu.Lock()
+		now := time.Now()
+		if telegramAlertsInFlight[cooldownKey] {
+			telegramAlertMu.Unlock()
+			return nil
+		}
 		if last, ok := telegramLastAlerts[cooldownKey]; ok && telegramAlertCooldown(config) > 0 && now.Sub(last) < telegramAlertCooldown(config) {
 			telegramAlertMu.Unlock()
 			return nil
 		}
-		telegramLastAlerts[cooldownKey] = now
+		telegramAlertsInFlight[cooldownKey] = true
 		telegramAlertMu.Unlock()
+		defer func() {
+			telegramAlertMu.Lock()
+			delete(telegramAlertsInFlight, cooldownKey)
+			telegramAlertMu.Unlock()
+		}()
 	}
 	payload, err := json.Marshal(telegramSendMessageRequest{ChatID: strings.TrimSpace(config.ChatID), Text: message, DisableWebPagePreview: true})
 	if err != nil {
@@ -315,6 +331,11 @@ func sendTelegramMessage(config TelegramConfig, message string, useCooldown bool
 	if response.StatusCode < 200 || response.StatusCode >= 300 || !result.OK {
 		return fmt.Errorf("telegram alert rejected: %s", result.Description)
 	}
+	if useCooldown {
+		telegramAlertMu.Lock()
+		telegramLastAlerts[cooldownKey] = time.Now()
+		telegramAlertMu.Unlock()
+	}
 	return nil
 }
 
@@ -323,7 +344,7 @@ func sendTelegramAlert(event, message string) error {
 	if !telegramAlertEnabled(event) {
 		return nil
 	}
-	return sendTelegramMessage(config, message, true, event)
+	return sendTelegramMessage(config, message, telegramEventUsesCooldown(event), event)
 }
 
 func queueTelegramAlert(event, message string) {

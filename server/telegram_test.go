@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -31,6 +32,7 @@ func TestSendTelegramAlert(t *testing.T) {
 	t.Setenv("TELEGRAM_ALERT_COOLDOWN_SECONDS", "0")
 	telegramAlertMu.Lock()
 	telegramLastAlerts = map[string]time.Time{}
+	telegramAlertsInFlight = map[string]bool{}
 	telegramAlertMu.Unlock()
 
 	if err := sendTelegramAlert("publish_failed", "测试告警"); err != nil {
@@ -38,6 +40,74 @@ func TestSendTelegramAlert(t *testing.T) {
 	}
 	if received.ChatID != "-100123" || received.Text != "测试告警" || !received.DisableWebPagePreview {
 		t.Fatalf("unexpected telegram payload: %+v", received)
+	}
+}
+
+func TestRPZRuleAlertsAreNotSuppressedByCooldown(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_CHAT_ID", "-100123")
+	t.Setenv("TELEGRAM_API_URL", server.URL)
+	telegramConfigMu.Lock()
+	original := telegramConfig
+	telegramConfig = TelegramConfig{BotToken: "test-token", ChatID: "-100123", Events: []string{"rpz_rule_create"}, CooldownSeconds: 300}
+	telegramConfigMu.Unlock()
+	defer func() {
+		telegramConfigMu.Lock()
+		telegramConfig = original
+		telegramConfigMu.Unlock()
+	}()
+	telegramAlertMu.Lock()
+	telegramLastAlerts = map[string]time.Time{}
+	telegramAlertsInFlight = map[string]bool{}
+	telegramAlertMu.Unlock()
+
+	if err := sendTelegramAlert("rpz_rule_create", "规则一"); err != nil {
+		t.Fatalf("first RPZ alert returned error: %v", err)
+	}
+	if err := sendTelegramAlert("rpz_rule_create", "规则二"); err != nil {
+		t.Fatalf("second RPZ alert returned error: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected both RPZ operations to be delivered, got %d requests", got)
+	}
+}
+
+func TestFailedTelegramDeliveryDoesNotConsumeCooldown(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"ok":false,"description":"temporary failure"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_CHAT_ID", "-100123")
+	t.Setenv("TELEGRAM_API_URL", server.URL)
+	config := TelegramConfig{BotToken: "test-token", ChatID: "-100123", CooldownSeconds: 300}
+	telegramAlertMu.Lock()
+	telegramLastAlerts = map[string]time.Time{}
+	telegramAlertsInFlight = map[string]bool{}
+	telegramAlertMu.Unlock()
+
+	if err := sendTelegramMessage(config, "第一次发送", true, "publish_failed"); err == nil {
+		t.Fatal("expected the first Telegram delivery to fail")
+	}
+	if err := sendTelegramMessage(config, "第二次发送", true, "publish_failed"); err != nil {
+		t.Fatalf("second Telegram delivery should retry after failure: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected a retry after failed delivery, got %d requests", got)
 	}
 }
 
