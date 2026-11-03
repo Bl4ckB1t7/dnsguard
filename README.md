@@ -290,6 +290,10 @@ RPZ_PUBLISH_RETRY_BACKOFF_SECONDS=1
 页面修改 → 发布预览 → named-checkzone → nsupdate → RPZ Primary → Secondary 同步
 ```
 
+生产启动预检会要求 `named-checkzone` 已安装，并检查认证文件、节点配置、TLS 文件、
+RPZ Key、运行数据目录和文件权限。`nsupdate` 发布前后会探测 Primary 的 SOA Serial，
+确保 Serial 不发生回退；Primary 不可达或 Serial 无效时，发布任务会失败并进入监控告警。
+
 `baidu.com` 会生成两条 QNAME 触发规则：
 
 ```text
