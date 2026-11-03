@@ -36,6 +36,8 @@ var rpzRuntimeMu sync.RWMutex
 var rpzRuntimeState = rpzRuntime{Mode: "artifact", Message: "尚未发布", JobStatus: "idle"}
 var publishJobMu sync.RWMutex
 var publishJobs = map[string]PublishJob{}
+var publishExecutionMu sync.Mutex
+var activePublishID string
 
 func rpzConfig(name, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
@@ -64,6 +66,30 @@ func getPublishJob(id string) (PublishJob, bool) {
 	job, ok := publishJobs[id]
 	publishJobMu.RUnlock()
 	return job, ok
+}
+
+func activePublishJob() string {
+	publishExecutionMu.Lock()
+	defer publishExecutionMu.Unlock()
+	return activePublishID
+}
+
+func reservePublishJob(id string) bool {
+	publishExecutionMu.Lock()
+	defer publishExecutionMu.Unlock()
+	if activePublishID != "" {
+		return false
+	}
+	activePublishID = id
+	return true
+}
+
+func releasePublishJob(id string) {
+	publishExecutionMu.Lock()
+	if activePublishID == id {
+		activePublishID = ""
+	}
+	publishExecutionMu.Unlock()
 }
 
 func rpzZoneName() string {
@@ -225,6 +251,7 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 }
 
 func runPublishJob(id, actor, remoteAddr string) {
+	defer releasePublishJob(id)
 	started := time.Now().UTC().Format(time.RFC3339)
 	updatePublishJob(id, func(job *PublishJob) { job.Status = "running"; job.StartedAt = started })
 	rpzRuntimeMu.Lock()
@@ -264,6 +291,10 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	job := PublishJob{ID: "publish-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10), Status: "queued", CreatedAt: now}
+	if !reservePublishJob(job.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "已有 RPZ 发布任务正在执行", "activeJobId": activePublishJob()})
+		return
+	}
 	publishJobMu.Lock()
 	publishJobs[job.ID] = job
 	if len(publishJobs) > 50 {
@@ -302,6 +333,10 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if active := activePublishJob(); active != "" {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "已有 RPZ 发布任务正在执行", "activeJobId": active})
 		return
 	}
 	var request struct {
