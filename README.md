@@ -161,6 +161,20 @@ API 只监听 `127.0.0.1:8080`，Web 代理应仅允许管理网段访问，并�
 查看日志并回滚上一份 `.run/dns-ops-api`。服务模板使用 `ProtectSystem`、
 `NoNewPrivileges`、独立运行用户和显式可写目录，避免把整个系统目录暴露给 API。
 
+仓库提供 Nginx 配置模板 `deploy/nginx/dns-ops.conf`。将 `DNS_OPS_DOMAIN`、证书路径
+和管理网段 ACL 按现场替换后启用：
+
+```bash
+sudo install -m 0644 deploy/nginx/dns-ops.conf /etc/nginx/sites-available/dns-ops.conf
+sudo ln -sf /etc/nginx/sites-available/dns-ops.conf /etc/nginx/sites-enabled/dns-ops.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Nginx 托管 `/opt/dns-ops-platform/dist`，将 `/api/` 反向代理到本机 API，负责 HTTPS
+终止和安全响应头。启用 Nginx 后不要再用 `start-dns-ops.sh` 启动 Vite Preview，避免
+重复占用 Web 端口；只使用 `dns-ops-api.service` 托管 API。
+
 ### 4.3 管理网卡配置
 
 默认配置：
