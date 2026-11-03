@@ -11,6 +11,15 @@ button, input { font: inherit; }
 .dns-header button, .rule-form button, .table-action { border: 1px solid #27d4eb; border-radius: 8px; background: #07506c; color: #e7fdff; padding: 9px 15px; cursor: pointer; transition: .18s ease; }
 .dns-header button:hover, .rule-form button:hover { background: #087d8d; }
 .dns-header .ghost { background: transparent; color: #86b8c4; border-color: #2b5665; }
+.password-overlay { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: #010812b8; backdrop-filter: blur(5px); }
+.password-panel { width: min(440px, 100%); padding: 22px; border: 1px solid #23728a; border-radius: 16px; background: linear-gradient(145deg, #08283eeF, #03121ffF); box-shadow: 0 24px 80px #00000066; }
+.password-close { border: 0; background: transparent; color: #8cb7c2; font-size: 24px; line-height: 1; cursor: pointer; }
+.password-form label { display: block; margin: 14px 0; color: #91c2cc; font-size: 12px; }
+.password-form input { display: block; width: 100%; margin-top: 7px; padding: 10px; color: #eaffff; background: #031321; border: 1px solid #1a5c70; border-radius: 8px; outline: none; }
+.password-form input:focus { border-color: #2ee6ff; box-shadow: 0 0 10px #1bbdff33; }
+.password-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.password-actions button { border: 1px solid #27d4eb; border-radius: 8px; background: #07506c; color: #e7fdff; padding: 9px 15px; cursor: pointer; }
+.password-actions .password-cancel { border-color: #526778; background: transparent; color: #a8c0c8; }
 .dns-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 24px 0; }
 .dns-cards article, .dns-panel { border: 1px solid #164b60; border-radius: 14px; background: linear-gradient(145deg, #062139e8, #03111df2); box-shadow: 0 14px 34px #00000024, inset 0 0 24px #08779518; }
 .dns-cards article { padding: 18px; min-height: 90px; }

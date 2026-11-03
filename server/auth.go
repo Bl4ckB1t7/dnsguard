@@ -270,6 +270,39 @@ func clearAuthFailures(ip string) {
 	authAttemptsMu.Unlock()
 }
 
+func saveAuthFile(updated authStore) error {
+	content, err := json.MarshalIndent(updated, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := authFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".auth-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
+}
+
 func authPasswordChange(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -296,9 +329,7 @@ func authPasswordChange(w http.ResponseWriter, r *http.Request) {
 	authMu.Lock()
 	updatedAuth := authStore{Username: authUsername(), PasswordHash: string(hash)}
 	authMu.Unlock()
-	content, _ := json.MarshalIndent(updatedAuth, "", "  ")
-	path := authFilePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil || os.WriteFile(path+".tmp", content, 0o640) != nil || os.Rename(path+".tmp", path) != nil {
+	if err := saveAuthFile(updatedAuth); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "密码保存失败"})
 		return
 	}

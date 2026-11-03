@@ -51,6 +51,10 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
   const [reason, setReason] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showPasswordPanel, setShowPasswordPanel] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   const load = async () => {
     const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions] = await Promise.all([
@@ -164,6 +168,34 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
     finally { setBusy(false); }
   };
 
+  const changePassword = async (event: FormEvent) => {
+    event.preventDefault();
+    if (newPassword.length < 8) {
+      setNotice("新密码至少需要 8 位");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setNotice("两次输入的新密码不一致");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      await readJSON<{ changed: boolean }>("/api/auth/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setShowPasswordPanel(false);
+      setNotice("密码已修改，请使用新密码重新登录");
+      onLogout();
+    } catch (error) { setNotice((error as Error).message); }
+    finally { setBusy(false); }
+  };
+
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
     onLogout();
@@ -189,8 +221,10 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
     <main className="dns-shell">
       <header className="dns-header">
         <div><span className="dns-kicker">DNS OPERATIONS CONTROL</span><h1>企业 DNS / RPZ 管理平台</h1><p>文件型策略控制面，不使用数据库。</p></div>
-        <div className="dns-header-actions"><button onClick={() => void load()}>刷新状态</button>{authEnabled && <button className="ghost" onClick={() => void logout()}>退出登录</button>}</div>
+        <div className="dns-header-actions"><button onClick={() => void load()}>刷新状态</button>{authEnabled && <><button className="ghost" onClick={() => setShowPasswordPanel(true)}>修改密码</button><button className="ghost" onClick={() => void logout()}>退出登录</button></>}</div>
       </header>
+
+      {showPasswordPanel && <div className="password-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setShowPasswordPanel(false); }}><section className="password-panel" role="dialog" aria-modal="true" aria-labelledby="password-title"><div className="panel-heading"><div><h2 id="password-title">修改密码</h2><span>修改成功后当前会话将退出</span></div><button className="password-close" type="button" disabled={busy} onClick={() => setShowPasswordPanel(false)} aria-label="关闭">×</button></div><form className="password-form" onSubmit={changePassword}><label>当前密码<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" required /></label><label>新密码<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><label>确认新密码<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><p className="form-hint">新密码至少 8 位，修改后需要重新登录。</p><div className="password-actions"><button type="button" className="password-cancel" disabled={busy} onClick={() => setShowPasswordPanel(false)}>取消</button><button type="submit" disabled={busy}>{busy ? "保存中…" : "保存新密码"}</button></div></form></section></div>}
 
       <section className="dns-cards">
         <article><span>DNS 节点</span><strong>{overview ? `${overview.healthyNodes}/${overview.nodes}` : "—"}</strong><small>健康节点</small></article>
