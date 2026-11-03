@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +54,89 @@ type dnsState struct {
 var dnsMu sync.RWMutex
 var state = dnsState{}
 var domainPattern = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))+$`)
+var dnsHealthMu sync.Mutex
+var dnsHealthCache []DNSNode
+var dnsHealthAt time.Time
+
+func configuredDNSAddress(node DNSNode) string {
+	for _, item := range strings.Split(os.Getenv("DNS_NODE_ADDRESSES"), ",") {
+		parts := strings.SplitN(strings.TrimSpace(item), "=", 2)
+		if len(parts) == 2 && strings.TrimSpace(parts[0]) == node.ID && strings.TrimSpace(parts[1]) != "" {
+			return strings.TrimSpace(parts[1])
+		}
+	}
+	return node.Address
+}
+
+func probeDNSNode(ctx context.Context, address string) (string, error) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return "", fmt.Errorf("DNS 节点地址为空")
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		host = strings.Trim(address, "[]")
+		port = "53"
+	}
+	if host == "" {
+		return "", fmt.Errorf("DNS 节点地址无效")
+	}
+	command := exec.CommandContext(ctx, "dig", "@"+host, "-p", port, rpzZoneName(), "SOA", "+short", "+time=2", "+tries=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("dig 失败: %s", strings.TrimSpace(string(output)))
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) < 3 {
+		return "", fmt.Errorf("SOA 响应格式无效")
+	}
+	if _, err := strconv.ParseInt(fields[2], 10, 64); err != nil {
+		return "", fmt.Errorf("SOA Serial 无效")
+	}
+	return fields[2], nil
+}
+
+func liveDNSNodes() []DNSNode {
+	dnsHealthMu.Lock()
+	defer dnsHealthMu.Unlock()
+	if len(dnsHealthCache) > 0 && time.Since(dnsHealthAt) < 5*time.Second {
+		return append([]DNSNode{}, dnsHealthCache...)
+	}
+	dnsMu.RLock()
+	result := append([]DNSNode{}, state.Nodes...)
+	dnsMu.RUnlock()
+	now := time.Now().UTC().Format("2006-01-02 15:04:05Z")
+	primarySerial := ""
+	for index := range result {
+		result[index].Address = configuredDNSAddress(result[index])
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		serial, err := probeDNSNode(ctx, result[index].Address)
+		cancel()
+		if err != nil {
+			result[index].Status = "down"
+			result[index].RPZVersion = "-"
+			result[index].LastSync = "探测失败"
+			continue
+		}
+		result[index].Status = "healthy"
+		result[index].RPZVersion = serial
+		result[index].LastSync = now
+		if strings.Contains(result[index].Role, "主") || result[index].ID == "primary-1" {
+			primarySerial = serial
+		}
+	}
+	if primarySerial != "" {
+		for index := range result {
+			if strings.Contains(result[index].Role, "辅") && result[index].Status == "healthy" && result[index].RPZVersion != primarySerial {
+				result[index].Status = "degraded"
+				result[index].LastSync = "RPZ Serial 不一致"
+			}
+		}
+	}
+	dnsHealthCache = append([]DNSNode{}, result...)
+	dnsHealthAt = time.Now()
+	return result
+}
 
 func dnsStatePath() string {
 	if path := os.Getenv("DNS_STATE_FILE"); path != "" {
@@ -93,22 +181,24 @@ func saveDNSState() error {
 }
 
 func dnsOverview(w http.ResponseWriter, _ *http.Request) {
+	nodes := liveDNSNodes()
 	dnsMu.RLock()
-	defer dnsMu.RUnlock()
+	rules := len(state.Rules)
+	published := len(state.Published)
+	dnsMu.RUnlock()
 	healthy := 0
-	for _, node := range state.Nodes {
+	for _, node := range nodes {
 		if node.Status == "healthy" {
 			healthy++
 		}
 	}
-	published := len(state.Published)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"nodes":          len(state.Nodes),
+		"nodes":          len(nodes),
 		"healthyNodes":   healthy,
-		"rules":          len(state.Rules),
+		"rules":          rules,
 		"publishedRules": published,
 		"rpzHits":        0,
-		"lastSync":       "刚刚",
+		"lastSync":       time.Now().UTC().Format("15:04:05Z"),
 		"publisherMode":  rpzStatusSnapshot().Mode,
 		"lastPublish":    rpzStatusSnapshot().LastPublish,
 		"publishMessage": rpzStatusSnapshot().Message,
@@ -121,10 +211,7 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	dnsMu.RLock()
-	result := append([]DNSNode(nil), state.Nodes...)
-	dnsMu.RUnlock()
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, liveDNSNodes())
 }
 
 func dnsRecords(w http.ResponseWriter, r *http.Request) {
