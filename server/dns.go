@@ -341,6 +341,17 @@ func rpzRuleSummary(rule RPZRule) string {
 	return "白名单 / " + reason
 }
 
+func rpzAuditDetail(rule RPZRule) string {
+	detail := struct {
+		Domain string `json:"domain"`
+		Type   string `json:"type"`
+		Value  string `json:"value,omitempty"`
+		Reason string `json:"reason,omitempty"`
+	}{Domain: rule.Domain, Type: rpzRuleType(rule), Value: rule.Value, Reason: rule.Reason}
+	content, _ := json.Marshal(detail)
+	return string(content)
+}
+
 func copyRPZRules(rules []RPZRule) []RPZRule {
 	return append([]RPZRule{}, rules...)
 }
@@ -948,7 +959,7 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则保存失败"})
 			return
 		}
-		auditEvent(r, authUsername(), "rpz.rule.create", rule.Domain)
+		auditEvent(r, authUsername(), "rpz.rule.create", rpzAuditDetail(rule))
 		writeJSON(w, http.StatusCreated, rule)
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -1000,7 +1011,7 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, rule := range deleted {
-		auditEvent(r, authUsername(), "rpz.rule.delete", rule.Domain)
+		auditEvent(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(rule))
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(deleted)})
 }
@@ -1034,6 +1045,6 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则删除失败"})
 		return
 	}
-	auditEvent(r, authUsername(), "rpz.rule.delete", removed.Domain)
+	auditEvent(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(removed))
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }

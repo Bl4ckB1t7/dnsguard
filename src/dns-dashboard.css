@@ -51,9 +51,15 @@ button, input { font: inherit; }
 .pagination button { border: 1px solid #2b7080; background: transparent; color: #a6dce4; padding: 6px 11px; cursor: pointer; }
 .pagination button:disabled { opacity: .4; cursor: not-allowed; }
 .audit-list { display: grid; gap: 8px; max-height: 520px; overflow-y: auto; padding-right: 3px; }
+.audit-entry-wrap { display: grid; gap: 0; }
 .audit-page { margin-top: 24px; }
 .audit-row { display: grid; grid-template-columns: 158px minmax(0, 1fr) auto auto; align-items: center; gap: 16px; padding: 13px 14px; border: 1px solid #123f50; border-radius: 10px; background: #031522; }
 .audit-row:hover { border-color: #20738a; background: #06243a; }
+.audit-row.is-clickable { cursor: pointer; }
+.audit-row.is-clickable:focus-visible { outline: 2px solid #2dd8eb; outline-offset: 2px; }
+.audit-expanded { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: -1px; padding: 11px 14px; border: 1px solid #164b60; border-top: 0; border-radius: 0 0 10px 10px; background: #061c2c; color: #b8dce2; font-size: 12px; }
+.audit-expanded span { display: inline-flex; gap: 6px; }
+.audit-expanded b { color: #72afbd; font-weight: 500; }
 .audit-time { color: #8db8c1; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .audit-event { min-width: 0; }
 .audit-event > div { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
