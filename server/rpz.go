@@ -135,8 +135,20 @@ func compileRPZ(rules []RPZRule) (string, error) {
 		if !domainPattern.MatchString(domain) {
 			return "", fmt.Errorf("invalid RPZ domain: %s", rule.Domain)
 		}
+		recordType := rpzRuleType(rule)
+		recordValue := "rpz-passthru."
+		if recordType == "A" {
+			ip := net.ParseIP(strings.TrimSpace(rule.Value))
+			if ip == nil || ip.To4() == nil {
+				return "", fmt.Errorf("invalid A record address for %s: %s", rule.Domain, rule.Value)
+			}
+			recordValue = ip.To4().String()
+			recordType = "A"
+		} else {
+			recordType = "CNAME"
+		}
 		for _, trigger := range rpzQNAMETriggers(domain) {
-			fmt.Fprintf(&builder, "%s.%s. 60 CNAME rpz-passthru. ; %s\n", trigger, zone, strings.ReplaceAll(rule.Reason, "\n", " "))
+			fmt.Fprintf(&builder, "%s.%s. 60 %s %s ; %s\n", trigger, zone, recordType, recordValue, strings.ReplaceAll(rule.Reason, "\n", " "))
 		}
 	}
 	return builder.String(), nil
@@ -205,14 +217,23 @@ func runNSUpdate(ctx context.Context, current, previous []RPZRule) error {
 	for _, rule := range current {
 		currentDomains[rule.Domain] = true
 		for _, trigger := range rpzQNAMETriggers(rule.Domain) {
-			fmt.Fprintf(&input, "update delete %s.%s. CNAME\n", trigger, rpzZoneName())
-			fmt.Fprintf(&input, "update add %s.%s. 60 CNAME rpz-passthru.\n", trigger, rpzZoneName())
+			name := trigger + "." + rpzZoneName() + "."
+			fmt.Fprintf(&input, "update delete %s\n", name)
+			if rpzRuleType(rule) == "A" {
+				ip := net.ParseIP(strings.TrimSpace(rule.Value))
+				if ip == nil || ip.To4() == nil {
+					return fmt.Errorf("invalid A record address for %s: %s", rule.Domain, rule.Value)
+				}
+				fmt.Fprintf(&input, "update add %s 60 A %s\n", name, ip.To4().String())
+			} else {
+				fmt.Fprintf(&input, "update add %s 60 CNAME rpz-passthru.\n", name)
+			}
 		}
 	}
 	for _, rule := range previous {
 		if !currentDomains[rule.Domain] {
 			for _, trigger := range rpzQNAMETriggers(rule.Domain) {
-				fmt.Fprintf(&input, "update delete %s.%s. CNAME\n", trigger, rpzZoneName())
+				fmt.Fprintf(&input, "update delete %s.%s.\n", trigger, rpzZoneName())
 			}
 		}
 	}

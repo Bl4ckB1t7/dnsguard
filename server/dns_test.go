@@ -23,8 +23,24 @@ func TestCompileRPZIncludesExactAndWildcardTriggers(t *testing.T) {
 	}
 }
 
+func TestCompileRPZSupportsARecordRedirect(t *testing.T) {
+	t.Setenv("RPZ_ZONE", "rpz.local")
+	content, err := compileRPZ([]RPZRule{{Type: "A", Domain: "example.com", Value: "192.0.2.10", Reason: "test redirect"}})
+	if err != nil {
+		t.Fatalf("compileRPZ returned error: %v", err)
+	}
+	for _, trigger := range []string{"example.com.rpz.local.", "*.example.com.rpz.local."} {
+		if !strings.Contains(content, trigger+" 60 A 192.0.2.10") {
+			t.Fatalf("missing A trigger %q in RPZ output:\n%s", trigger, content)
+		}
+	}
+	if _, err := compileRPZ([]RPZRule{{Type: "A", Domain: "example.com", Value: "not-an-ip", Reason: "invalid"}}); err == nil {
+		t.Fatal("invalid A address should fail RPZ compilation")
+	}
+}
+
 func TestRPZRulesEqualIgnoresRuntimeStatus(t *testing.T) {
-	current := []RPZRule{{ID: "current", Domain: "example.com", Action: "passthru", Reason: "approved", Status: "published"}}
+	current := []RPZRule{{ID: "current", Domain: "example.com", Action: "passthru", Type: "CNAME", Reason: "approved", Status: "published"}}
 	published := []RPZRule{{ID: "published", Domain: "example.com", Action: "passthru", Reason: "approved", Status: "draft"}}
 	if !rpzRulesEqual(current, published) {
 		t.Fatal("equivalent rules with different runtime status should compare equal")
@@ -32,6 +48,12 @@ func TestRPZRulesEqualIgnoresRuntimeStatus(t *testing.T) {
 	published[0].Reason = "changed"
 	if rpzRulesEqual(current, published) {
 		t.Fatal("changed rule reason should require a new publish")
+	}
+	published[0].Reason = "approved"
+	published[0].Type = "A"
+	published[0].Value = "192.0.2.10"
+	if rpzRulesEqual(current, published) {
+		t.Fatal("changed rule type/value should require a new publish")
 	}
 }
 

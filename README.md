@@ -301,6 +301,11 @@ baidu.com.rpz.local.
 *.baidu.com.rpz.local.
 ```
 
+页面也支持 `A` 类型 RPZ 重定向。选择“A 记录重定向”并填写 IPv4 地址后，系统会为域名
+和其泛域名生成 A 记录，例如 `service.example.com` 与 `*.service.example.com` 都指向
+配置的目标地址。A 记录只接受 IPv4，规则保存后仍需经过发布预览和“生成 / 发布 RPZ”
+才会进入 BIND；不发布不会改变生产 DNS 响应。
+
 ### 5.4 运行数据和日志
 
 | 文件/目录 | 用途 |

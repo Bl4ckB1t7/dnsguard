@@ -94,8 +94,8 @@ td { color: #c9e7ec; }
 .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; background: #f4b94f; box-shadow: 0 0 8px #f4b94f; }
 .status-dot.ok { background: #2cf0ab; box-shadow: 0 0 8px #2cf0ab; }
 .rule-form label { display: block; color: #91c2cc; font-size: 12px; margin-bottom: 13px; }
-.rule-form input { display: block; box-sizing: border-box; width: 100%; margin-top: 7px; padding: 10px; color: #eaffff; background: #031321; border: 1px solid #1a5c70; border-radius: 8px; outline: none; }
-.rule-form input:focus { border-color: #2ee6ff; box-shadow: 0 0 10px #1bbdff33; }
+.rule-form input, .rule-form select { display: block; box-sizing: border-box; width: 100%; margin-top: 7px; padding: 10px; color: #eaffff; background: #031321; border: 1px solid #1a5c70; border-radius: 8px; outline: none; }
+.rule-form input:focus, .rule-form select:focus { border-color: #2ee6ff; box-shadow: 0 0 10px #1bbdff33; }
 .rule-form button { width: 100%; margin-top: 3px; }
 .notice { color: #53f0b4; font-size: 12px; }
 .global-notice { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 16px; padding: 10px 14px; border: 1px solid rgba(255, 168, 92, .45); background: rgba(72, 37, 17, .42); color: #ffd0a3; font-size: 13px; }

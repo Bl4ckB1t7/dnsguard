@@ -41,6 +41,8 @@ type RPZRule struct {
 	ID        string `json:"id"`
 	Domain    string `json:"domain"`
 	Action    string `json:"action"`
+	Type      string `json:"type,omitempty"`
+	Value     string `json:"value,omitempty"`
 	Reason    string `json:"reason"`
 	Status    string `json:"status"`
 	UpdatedAt string `json:"updatedAt"`
@@ -286,14 +288,32 @@ func rpzRulesEqual(current, published []RPZRule) bool {
 	}
 	currentByDomain := make(map[string]string, len(current))
 	for _, rule := range current {
-		currentByDomain[rule.Domain] = rule.Action + "\x00" + rule.Reason
+		currentByDomain[rule.Domain] = rpzRuleFingerprint(rule)
 	}
 	for _, rule := range published {
-		if currentByDomain[rule.Domain] != rule.Action+"\x00"+rule.Reason {
+		if currentByDomain[rule.Domain] != rpzRuleFingerprint(rule) {
 			return false
 		}
 	}
 	return true
+}
+
+func rpzRuleType(rule RPZRule) string {
+	if strings.EqualFold(strings.TrimSpace(rule.Type), "A") {
+		return "A"
+	}
+	return "CNAME"
+}
+
+func rpzRuleFingerprint(rule RPZRule) string {
+	return rule.Action + "\x00" + rpzRuleType(rule) + "\x00" + rule.Value + "\x00" + rule.Reason
+}
+
+func rpzRuleSummary(rule RPZRule) string {
+	if rpzRuleType(rule) == "A" {
+		return "A → " + rule.Value + " / " + rule.Reason
+	}
+	return "白名单 / " + rule.Reason
 }
 
 func copyRPZRules(rules []RPZRule) []RPZRule {
@@ -317,16 +337,16 @@ func rpzPreviewSnapshot() (RPZChangeList []RPZChange, currentCount, publishedCou
 	for domain, rule := range currentByDomain {
 		old, exists := publishedByDomain[domain]
 		if !exists {
-			RPZChangeList = append(RPZChangeList, RPZChange{Type: "added", Domain: domain, After: rule.Action + " / " + rule.Reason})
+			RPZChangeList = append(RPZChangeList, RPZChange{Type: "added", Domain: domain, After: rpzRuleSummary(rule)})
 			continue
 		}
-		if old.Action != rule.Action || old.Reason != rule.Reason {
-			RPZChangeList = append(RPZChangeList, RPZChange{Type: "changed", Domain: domain, Before: old.Action + " / " + old.Reason, After: rule.Action + " / " + rule.Reason})
+		if rpzRuleFingerprint(old) != rpzRuleFingerprint(rule) {
+			RPZChangeList = append(RPZChangeList, RPZChange{Type: "changed", Domain: domain, Before: rpzRuleSummary(old), After: rpzRuleSummary(rule)})
 		}
 	}
 	for domain, rule := range publishedByDomain {
 		if _, exists := currentByDomain[domain]; !exists {
-			RPZChangeList = append(RPZChangeList, RPZChange{Type: "removed", Domain: domain, Before: rule.Action + " / " + rule.Reason})
+			RPZChangeList = append(RPZChangeList, RPZChange{Type: "removed", Domain: domain, Before: rpzRuleSummary(rule)})
 		}
 	}
 	sort.Slice(RPZChangeList, func(i, j int) bool { return RPZChangeList[i].Domain < RPZChangeList[j].Domain })
@@ -727,11 +747,18 @@ func dnsRecords(w http.ResponseWriter, r *http.Request) {
 	records := make([]RPZRecord, 0, len(state.Rules))
 	for _, rule := range state.Rules {
 		for _, trigger := range rpzQNAMETriggers(rule.Domain) {
+			recordType := rpzRuleType(rule)
+			recordValue := "rpz-passthru."
+			policy := "QNAME / 白名单例外"
+			if recordType == "A" {
+				recordValue = rule.Value
+				policy = "QNAME / A 记录重定向"
+			}
 			records = append(records, RPZRecord{
 				Name:      trigger + "." + rpzZoneName() + ".",
-				Type:      "CNAME",
-				Value:     "rpz-passthru.",
-				Policy:    "QNAME / 白名单例外",
+				Type:      recordType,
+				Value:     recordValue,
+				Policy:    policy,
 				Status:    rule.Status,
 				UpdatedAt: rule.UpdatedAt,
 			})
@@ -757,6 +784,8 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var request struct {
 			Domain string `json:"domain"`
+			Type   string `json:"type"`
+			Value  string `json:"value"`
 			Reason string `json:"reason"`
 		}
 		if err := decodeJSON(r, &request); err != nil {
@@ -768,12 +797,35 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请输入合法域名"})
 			return
 		}
+		request.Type = strings.ToUpper(strings.TrimSpace(request.Type))
+		if request.Type == "" {
+			request.Type = "CNAME"
+		}
+		if request.Type != "CNAME" && request.Type != "A" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "记录类型只支持 CNAME 或 A"})
+			return
+		}
+		request.Value = strings.TrimSpace(request.Value)
+		if request.Type == "A" {
+			ip := net.ParseIP(request.Value)
+			if ip == nil || ip.To4() == nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "A 记录请输入合法 IPv4 地址"})
+				return
+			}
+			request.Value = ip.To4().String()
+		} else {
+			request.Value = ""
+		}
 		if strings.TrimSpace(request.Reason) == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请填写加白原因"})
 			return
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
-		rule := RPZRule{ID: nextRuleID(), Domain: request.Domain, Action: "passthru", Reason: strings.TrimSpace(request.Reason), Status: "draft", UpdatedAt: now}
+		action := "passthru"
+		if request.Type == "A" {
+			action = "redirect"
+		}
+		rule := RPZRule{ID: nextRuleID(), Domain: request.Domain, Action: action, Type: request.Type, Value: request.Value, Reason: strings.TrimSpace(request.Reason), Status: "draft", UpdatedAt: now}
 		dnsMu.Lock()
 		for _, existing := range state.Rules {
 			if existing.Domain == rule.Domain {
