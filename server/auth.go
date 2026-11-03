@@ -34,7 +34,7 @@ func authEnabled() bool {
 type authStore struct {
 	Username           string `json:"username"`
 	PasswordHash       string `json:"passwordHash"`
-	MustChangePassword bool   `json:"mustChangePassword,omitempty"`
+	MustChangePassword bool   `json:"mustChangePassword"`
 }
 
 var storedAuth authStore
@@ -86,6 +86,12 @@ func loadAuth() {
 	if err == nil {
 		var loaded authStore
 		if json.Unmarshal(content, &loaded) == nil {
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(content, &fields) == nil {
+				if _, exists := fields["mustChangePassword"]; !exists {
+					loaded.MustChangePassword = true
+				}
+			}
 			authMu.Lock()
 			storedAuth = loaded
 			authMu.Unlock()
