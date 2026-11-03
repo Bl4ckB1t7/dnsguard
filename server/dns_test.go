@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -9,6 +10,21 @@ import (
 	"testing"
 	"time"
 )
+
+func TestDNSNodeCannotDeletePrimary(t *testing.T) {
+	original := state
+	defer func() { state = original }()
+	state = dnsState{Nodes: []DNSNode{
+		{ID: "primary-1", Role: "主节点", Address: "127.0.0.2:5353"},
+		{ID: "secondary-1", Role: "辅节点", Address: "127.0.0.3:5353"},
+	}}
+	request := httptest.NewRequest(http.MethodDelete, "/api/dns/nodes/primary-1", nil)
+	recorder := httptest.NewRecorder()
+	dnsNodeByID(recorder, request)
+	if recorder.Code != http.StatusConflict || len(state.Nodes) != 2 {
+		t.Fatalf("primary deletion should be rejected, status=%d nodes=%d", recorder.Code, len(state.Nodes))
+	}
+}
 
 func TestCompileRPZIncludesExactAndWildcardTriggers(t *testing.T) {
 	t.Setenv("RPZ_ZONE", "rpz.local")

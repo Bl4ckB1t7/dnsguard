@@ -792,6 +792,11 @@ func dnsNodeByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	removed := state.Nodes[index]
+	if strings.Contains(removed.Role, "主") || removed.ID == "primary-1" {
+		dnsMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "主节点不能直接删除，请先切换主节点角色"})
+		return
+	}
 	previousNodes := append([]DNSNode(nil), state.Nodes...)
 	state.Nodes = append(state.Nodes[:index], state.Nodes[index+1:]...)
 	dnsMu.Unlock()
