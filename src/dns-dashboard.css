@@ -23,6 +23,11 @@ button, input { font: inherit; }
 .password-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .password-actions button { border: 1px solid #27d4eb; border-radius: 8px; background: #07506c; color: #e7fdff; padding: 9px 15px; cursor: pointer; }
 .password-actions .password-cancel { border-color: #526778; background: transparent; color: #a8c0c8; }
+.telegram-panel { width: min(520px, 100%); }
+.telegram-events { display: grid; gap: 8px; margin: 14px 0; padding: 12px; border: 1px solid #1a5c70; border-radius: 8px; color: #91c2cc; }
+.telegram-events legend { padding: 0 5px; color: #91c2cc; font-size: 12px; }
+.telegram-events label { display: flex; align-items: center; gap: 8px; margin: 0; }
+.telegram-events input { width: auto; margin: 0; }
 .dns-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 24px 0; }
 .dns-cards article, .dns-panel { border: 1px solid #164b60; border-radius: 14px; background: linear-gradient(145deg, #062139e8, #03111df2); box-shadow: 0 14px 34px #00000024, inset 0 0 24px #08779518; }
 .dns-cards article { padding: 18px; min-height: 90px; }

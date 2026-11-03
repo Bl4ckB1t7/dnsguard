@@ -9,7 +9,15 @@ type RPZPreview = { pending: boolean; currentCount: number; publishedCount: numb
 type RPZVersion = { id: string; createdAt: string; mode: string; ruleCount: number };
 type PublishJob = { id: string; status: string; message?: string; error?: string };
 type AuditResponse = { items: AuditEntry[]; total: number; page: number; pageSize: number };
+type TelegramSettings = { enabled: boolean; botTokenSet: boolean; botTokenHint?: string; chatId: string; events: string[]; cooldownSeconds: number };
 type DashboardView = "overview" | "audit";
+
+const telegramEventOptions = [
+  { value: "publish_failed", label: "RPZ 发布失败" },
+  { value: "node_down", label: "DNS 节点不可达" },
+  { value: "node_degraded", label: "RPZ Serial 不一致" },
+  { value: "node_recovered", label: "节点恢复正常" },
+];
 
 function dashboardViewFromURL(): DashboardView {
   return new URLSearchParams(window.location.search).get("view") === "audit" ? "audit" : "overview";
@@ -96,6 +104,12 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [auditPage, setAuditPage] = useState(1);
   const [auditPageSize, setAuditPageSize] = useState(20);
   const [auditTotal, setAuditTotal] = useState(0);
+  const [showTelegramPanel, setShowTelegramPanel] = useState(false);
+  const [telegramSettings, setTelegramSettings] = useState<TelegramSettings | null>(null);
+  const [telegramToken, setTelegramToken] = useState("");
+  const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramEvents, setTelegramEvents] = useState<string[]>([]);
+  const [telegramCooldown, setTelegramCooldown] = useState(300);
   const selectView = (view: DashboardView) => {
     setActiveView(view);
     const url = new URL(window.location.href);
@@ -138,6 +152,83 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setAuditPage(result.page ?? page);
     } catch (error) {
       setLoadError(`审计日志加载失败：${(error as Error).message}。`);
+    }
+  };
+
+  const openTelegramPanel = async () => {
+    setShowTelegramPanel(true);
+    setNotice("");
+    try {
+      const result = await readJSON<TelegramSettings>("/api/settings/telegram");
+      setTelegramSettings(result);
+      setTelegramToken("");
+      setTelegramChatId(result.chatId);
+      setTelegramEvents(result.events ?? telegramEventOptions.map((event) => event.value));
+      setTelegramCooldown(result.cooldownSeconds ?? 300);
+    } catch (error) {
+      setNotice(`Telegram 配置加载失败：${(error as Error).message}`);
+    }
+  };
+
+  const saveTelegramSettings = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!telegramChatId.trim()) {
+      setNotice("请填写 Telegram Chat ID");
+      return;
+    }
+    if (telegramEvents.length === 0) {
+      setNotice("至少选择一项告警事件");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await readJSON<TelegramSettings>("/api/settings/telegram", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({ botToken: telegramToken.trim(), chatId: telegramChatId.trim(), events: telegramEvents, cooldownSeconds: telegramCooldown }),
+      });
+      setTelegramSettings(result);
+      setTelegramToken("");
+      setNotice("Telegram 告警配置已保存");
+    } catch (error) {
+      setNotice(`Telegram 配置保存失败：${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendTelegramTest = async () => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await readJSON("/api/settings/telegram/test", { method: "POST", headers: csrfHeaders() });
+      setNotice("Telegram 测试消息已发送");
+    } catch (error) {
+      setNotice(`Telegram 测试失败：${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearTelegramSettings = async () => {
+    if (!window.confirm("确认清除 Telegram Bot 配置？清除后将停止告警。")) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await readJSON<TelegramSettings>("/api/settings/telegram", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({ clearToken: true, chatId: "", events: telegramEvents, cooldownSeconds: telegramCooldown }),
+      });
+      setTelegramSettings(result);
+      setTelegramChatId("");
+      setTelegramToken("");
+      setNotice("Telegram 告警已停用");
+    } catch (error) {
+      setNotice(`Telegram 配置清除失败：${(error as Error).message}`);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -377,12 +468,14 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
     <main className="dns-shell">
       <header className="dns-header">
         <div><span className="dns-kicker">DNSGUARD OPERATIONS</span><h1>域盾 DNSGuard</h1><nav className="dns-nav" aria-label="平台导航"><button className={activeView === "overview" ? "active" : ""} onClick={() => selectView("overview")}>运行总览</button><button className={activeView === "audit" ? "active" : ""} onClick={() => selectView("audit")}>审计日志</button></nav></div>
-        <div className="dns-header-actions"><button disabled={loading} onClick={() => void (activeView === "audit" ? loadAudit() : load()).catch(() => undefined)}>{loading ? "加载中…" : "刷新状态"}</button>{authEnabled && <><button className="ghost" onClick={() => setShowPasswordPanel(true)}>修改密码</button><button className="ghost" onClick={() => void logout()}>退出登录</button></>}</div>
+        <div className="dns-header-actions"><button disabled={loading} onClick={() => void (activeView === "audit" ? loadAudit() : load()).catch(() => undefined)}>{loading ? "加载中…" : "刷新状态"}</button>{!mustChangePassword && <button className="ghost" onClick={() => void openTelegramPanel()}>TG 告警</button>}{authEnabled && <><button className="ghost" onClick={() => setShowPasswordPanel(true)}>修改密码</button><button className="ghost" onClick={() => void logout()}>退出登录</button></>}</div>
       </header>
 
       {loadError && <div className="global-notice" role="alert"><span>{loadError}</span><button onClick={() => void load().catch(() => undefined)}>重试</button></div>}
 
       {showPasswordPanel && <div className="password-overlay" role="presentation" onMouseDown={(event) => { if (!mustChangePassword && event.target === event.currentTarget && !busy) setShowPasswordPanel(false); }}><section className="password-panel" role="dialog" aria-modal="true" aria-labelledby="password-title"><div className="panel-heading"><div><h2 id="password-title">{mustChangePassword ? "首次登录请修改密码" : "修改密码"}</h2><span>{mustChangePassword ? "为保障生产安全，修改密码后才能继续使用" : "修改成功后当前会话将退出"}</span></div>{!mustChangePassword && <button className="password-close" type="button" disabled={busy} onClick={() => setShowPasswordPanel(false)} aria-label="关闭">×</button>}</div><form className="password-form" onSubmit={changePassword}><label>当前密码<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" required /></label><label>新密码<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><label>确认新密码<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><p className="form-hint">新密码至少 8 位，修改后需要重新登录。</p><div className="password-actions">{!mustChangePassword && <button type="button" className="password-cancel" disabled={busy} onClick={() => setShowPasswordPanel(false)}>取消</button>}<button type="submit" disabled={busy}>{busy ? "保存中…" : "保存新密码"}</button></div></form></section></div>}
+
+      {showTelegramPanel && <div className="password-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setShowTelegramPanel(false); }}><section className="password-panel telegram-panel" role="dialog" aria-modal="true" aria-labelledby="telegram-title"><div className="panel-heading"><div><h2 id="telegram-title">TG 告警配置</h2><span>{telegramSettings?.enabled ? "已启用 · 配置保存在服务端" : "未启用 · 配置保存在服务端"}</span></div><button className="password-close" type="button" disabled={busy} onClick={() => setShowTelegramPanel(false)} aria-label="关闭">×</button></div><form className="password-form" onSubmit={saveTelegramSettings}><label>Bot Token<input type="password" value={telegramToken} onChange={(event) => setTelegramToken(event.target.value)} placeholder={telegramSettings?.botTokenSet ? `已保存 ${telegramSettings.botTokenHint ?? "Token"}，留空保持不变` : "请输入 BotFather 生成的 Token"} autoComplete="new-password" /></label><label>Chat ID<input value={telegramChatId} onChange={(event) => setTelegramChatId(event.target.value)} placeholder="例如 -1001234567890" /></label><fieldset className="telegram-events"><legend>告警事件</legend>{telegramEventOptions.map((event) => <label key={event.value}><input type="checkbox" checked={telegramEvents.includes(event.value)} onChange={() => setTelegramEvents((selected) => selected.includes(event.value) ? selected.filter((item) => item !== event.value) : [...selected, event.value])} />{event.label}</label>)}</fieldset><label>重复告警冷却时间（秒）<input type="number" min={0} max={86400} value={telegramCooldown} onChange={(event) => setTelegramCooldown(Number(event.target.value))} /></label><p className="form-hint">Token 只会提交到后端，页面不会回显完整 Token。</p><div className="password-actions"><button type="button" className="password-cancel" disabled={busy || !telegramSettings?.enabled} onClick={() => void clearTelegramSettings()}>停用并清除</button><button type="button" className="password-cancel" disabled={busy || !telegramSettings?.enabled} onClick={() => void sendTelegramTest()}>发送测试</button><button type="submit" disabled={busy}>{busy ? "保存中…" : "保存配置"}</button></div></form></section></div>}
 
       {activeView === "overview" ? <>
       <section className="dns-cards">

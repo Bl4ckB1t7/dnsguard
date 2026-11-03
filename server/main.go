@@ -53,12 +53,17 @@ func main() {
 	}
 	loadAudit()
 	loadAuth()
+	if err := loadTelegramConfig(); err != nil {
+		log.Fatal(err)
+	}
 	startDNSHealthMonitor()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", health)
 	mux.HandleFunc("/api/monitoring/status", monitoringStatus)
 	mux.HandleFunc("/api/settings", settings)
+	mux.HandleFunc("/api/settings/telegram", telegramSettings)
+	mux.HandleFunc("/api/settings/telegram/test", telegramTest)
 	mux.HandleFunc("/api/auth/login", authLogin)
 	mux.HandleFunc("/api/auth/captcha", captcha)
 	mux.HandleFunc("/api/auth/me", authMe)

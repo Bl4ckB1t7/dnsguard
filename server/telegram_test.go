@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,5 +46,45 @@ func TestSendTelegramAlertSkipsUnconfigured(t *testing.T) {
 	t.Setenv("TELEGRAM_CHAT_ID", "")
 	if err := sendTelegramAlert("publish_failed", strings.Repeat("x", 3)); err != nil {
 		t.Fatalf("unconfigured Telegram should be a no-op: %v", err)
+	}
+}
+
+func TestTelegramSettingsCanBeSavedFromAPI(t *testing.T) {
+	t.Setenv("TELEGRAM_CONFIG_FILE", filepath.Join(t.TempDir(), "telegram.json"))
+	t.Setenv("AUDIT_FILE", filepath.Join(t.TempDir(), "audit.json"))
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	t.Setenv("TELEGRAM_CHAT_ID", "")
+	telegramConfigMu.Lock()
+	original := telegramConfig
+	telegramConfig = defaultTelegramConfig()
+	telegramConfigMu.Unlock()
+	defer func() {
+		telegramConfigMu.Lock()
+		telegramConfig = original
+		telegramConfigMu.Unlock()
+	}()
+
+	request := httptest.NewRequest(http.MethodPut, "/api/settings/telegram", strings.NewReader(`{"botToken":"secret-token","chatId":"-100123","events":["publish_failed"],"cooldownSeconds":60}`))
+	recorder := httptest.NewRecorder()
+	telegramSettings(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected settings save to succeed, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "secret-token") {
+		t.Fatal("Telegram API response must not expose the bot token")
+	}
+	var response telegramSettingsResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Enabled || !response.BotTokenSet || response.ChatID != "-100123" {
+		t.Fatalf("unexpected Telegram settings response: %+v", response)
+	}
+	info, err := os.Stat(telegramConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("Telegram config should be owner-readable only, mode=%o", info.Mode().Perm())
 	}
 }
