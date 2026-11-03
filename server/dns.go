@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -57,6 +58,11 @@ var domainPattern = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])
 var dnsHealthMu sync.Mutex
 var dnsHealthCache []DNSNode
 var dnsHealthAt time.Time
+var ruleSequence atomic.Uint64
+
+func nextRuleID() string {
+	return fmt.Sprintf("rule-%d-%d", time.Now().UTC().UnixNano(), ruleSequence.Add(1))
+}
 
 func rpzHitCount() (int, bool) {
 	files := make([]string, 0)
@@ -195,6 +201,7 @@ func dnsStatePath() string {
 func loadDNSState() {
 	content, err := os.ReadFile(dnsStatePath())
 	if err == nil && json.Unmarshal(content, &state) == nil {
+		normalizeRuleIDs()
 		return
 	}
 	state = dnsState{
@@ -207,6 +214,27 @@ func loadDNSState() {
 		Published: []RPZRule{},
 	}
 	_ = saveDNSState()
+}
+
+func normalizeRuleIDs() {
+	seen := make(map[string]bool)
+	changed := false
+	for index := range state.Rules {
+		if state.Rules[index].ID == "" || seen[state.Rules[index].ID] {
+			state.Rules[index].ID = nextRuleID()
+			changed = true
+		}
+		seen[state.Rules[index].ID] = true
+	}
+	for index := range state.Published {
+		if state.Published[index].ID == "" {
+			state.Published[index].ID = nextRuleID()
+			changed = true
+		}
+	}
+	if changed {
+		_ = saveDNSState()
+	}
 }
 
 func saveDNSState() error {
@@ -299,7 +327,12 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 		dnsMu.RLock()
 		result := append([]RPZRule{}, state.Rules...)
 		dnsMu.RUnlock()
-		sort.Slice(result, func(i, j int) bool { return result[i].UpdatedAt > result[j].UpdatedAt })
+		sort.SliceStable(result, func(i, j int) bool {
+			if result[i].UpdatedAt != result[j].UpdatedAt {
+				return result[i].UpdatedAt > result[j].UpdatedAt
+			}
+			return result[i].Domain < result[j].Domain
+		})
 		writeJSON(w, http.StatusOK, result)
 	case http.MethodPost:
 		var request struct {
@@ -320,7 +353,7 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
-		rule := RPZRule{ID: "rule-" + strings.ReplaceAll(now, ":", ""), Domain: request.Domain, Action: "passthru", Reason: strings.TrimSpace(request.Reason), Status: "draft", UpdatedAt: now}
+		rule := RPZRule{ID: nextRuleID(), Domain: request.Domain, Action: "passthru", Reason: strings.TrimSpace(request.Reason), Status: "draft", UpdatedAt: now}
 		dnsMu.Lock()
 		for _, existing := range state.Rules {
 			if existing.Domain == rule.Domain {
