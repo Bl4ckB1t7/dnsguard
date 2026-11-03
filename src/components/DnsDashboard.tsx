@@ -1,15 +1,14 @@
 import { FormEvent, useEffect, useState } from "react";
+import { AuditPanel, type AuditEntry } from "./AuditPanel";
+import { DnsNodePanel, type DnsNode } from "./DnsNodePanel";
 
 type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; lastPublish: string; publishMessage: string; publishJobId: string; publishJobStatus: string };
-type DnsNode = { id: string; name: string; role: string; address: string; status: string; rpzVersion: string; lastSync: string; lastChecked?: string };
 type Rule = { id: string; domain: string; action: string; type?: string; value?: string; reason: string; status: string; updatedAt: string };
 type RPZChange = { type: string; domain: string; before: string; after: string };
 type RPZPreview = { pending: boolean; currentCount: number; publishedCount: number; changes: RPZChange[] };
 type RPZVersion = { id: string; createdAt: string; mode: string; ruleCount: number };
 type PublishJob = { id: string; status: string; message?: string; error?: string };
-type AuditEntry = { timestamp: string; actor: string; action: string; result: string; ip?: string; hash?: string };
 type AuditResponse = { items: AuditEntry[]; total: number; page: number; pageSize: number };
-type RuleAuditDetail = { domain: string; type: string; value?: string; reason?: string };
 type DashboardView = "overview" | "audit";
 
 function dashboardViewFromURL(): DashboardView {
@@ -52,78 +51,9 @@ function formatDateTime(value: string): string {
   return date.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
-function auditActionLabel(action: string): string {
-  const labels: Record<string, string> = {
-    login: "登录",
-    logout: "退出登录",
-    "password.change": "修改密码",
-    "dns.node.create": "增加 DNS 节点",
-    "dns.node.update": "更新 DNS 节点",
-    "dns.node.delete": "删除 DNS 节点",
-    "rpz.rule.create": "新增 RPZ 规则",
-    "rpz.rule.update": "编辑 RPZ 规则",
-    "rpz.rule.delete": "删除 RPZ 规则",
-    "rpz.publish": "发布 RPZ",
-    "rpz.rollback": "回滚 RPZ",
-  };
-  return labels[action] ?? action;
-}
-
-function parseRuleAuditDetail(entry: AuditEntry): RuleAuditDetail | null {
-  if (entry.action !== "rpz.rule.create" && entry.action !== "rpz.rule.update" && entry.action !== "rpz.rule.delete") return null;
-  try {
-    const parsed = JSON.parse(entry.result) as RuleAuditDetail;
-    if (parsed && typeof parsed.domain === "string" && typeof parsed.type === "string") return parsed;
-  } catch {
-    // Older entries stored only the domain and remain readable in the summary.
-  }
-  return entry.result ? { domain: entry.result, type: "未知" } : null;
-}
-
-function auditRuleTypeLabel(type: string): string {
-  return type === "CNAME" || type === "PASSTHRU" ? "白名单（PASSTHRU）" : type;
-}
-
-function auditDetail(entry: AuditEntry): string {
-  const readableNodeDetail = (verb: string): string => {
-    if (entry.result.includes(" / ")) return `${verb}：${entry.result}`;
-    const separator = entry.result.indexOf(":");
-    return separator > 0 ? `${verb}：节点 ID ${entry.result.slice(0, separator)} · 地址 ${entry.result.slice(separator + 1)}` : `${verb}：${entry.result}`;
-  };
-  if (entry.action === "login") return entry.result === "success" ? "登录成功" : "登录失败";
-  if (entry.action === "logout") return "会话已退出";
-  if (entry.action === "password.change") return "账户密码已更新";
-  if (entry.action === "dns.node.create") return readableNodeDetail("已添加");
-  if (entry.action === "dns.node.update") return readableNodeDetail("已更新");
-  if (entry.action === "dns.node.delete") return readableNodeDetail("已删除");
-  const ruleDetail = parseRuleAuditDetail(entry);
-  if (ruleDetail) return `域名：${ruleDetail.domain}`;
-  if (entry.action === "rpz.publish") {
-    const status = entry.result.includes(":") ? entry.result.split(":").slice(1).join(":") : entry.result;
-    return status === "published" ? "发布成功" : status === "compiled" ? "RPZ 文件已生成" : status;
-  }
-  if (entry.action === "rpz.rollback") return `版本 ${entry.result}`;
-  return entry.result;
-}
-
-function auditResult(entry: AuditEntry): { label: string; tone: "success" | "failure" | "info" } {
-  if (entry.action === "login" && entry.result === "failure") return { label: "失败", tone: "failure" };
-  if (entry.result.toLowerCase().includes("fail")) return { label: "失败", tone: "failure" };
-  if (entry.action === "rpz.publish") return { label: "已发布", tone: "success" };
-  return { label: "已完成", tone: "success" };
-}
-
 function ruleActionLabel(rule: Rule): string {
   if (rule.type === "A" || rule.action === "redirect") return `A → ${rule.value || "未配置"}`;
   return "白名单";
-}
-
-function nodeRoleLabel(role: string): string {
-  return role.includes("主") && !role.includes("辅") ? "主节点" : "辅节点";
-}
-
-function nodeIsPrimary(node: DnsNode): boolean {
-  return node.id === "primary-1" || node.role.includes("主");
 }
 
 export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword = false }: { onLogout: () => void; authEnabled?: boolean; mustChangePassword?: boolean }) {
@@ -166,8 +96,6 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [auditPage, setAuditPage] = useState(1);
   const [auditPageSize, setAuditPageSize] = useState(20);
   const [auditTotal, setAuditTotal] = useState(0);
-  const [expandedAuditKey, setExpandedAuditKey] = useState<string | null>(null);
-
   const selectView = (view: DashboardView) => {
     setActiveView(view);
     const url = new URL(window.location.href);
@@ -465,7 +393,26 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       </section>
 
       <section className="dns-grid">
-        <div className="dns-panel dns-panel-wide"><div className="panel-heading"><div><h2>DNS 节点</h2><span>LIVE DIG / SOA PROBE · 共 {nodes.length} 个节点</span></div><button className="table-action node-add" disabled={busy} onClick={() => setShowNodeForm((shown) => !shown)}>{showNodeForm ? "取消添加" : "增加节点"}</button></div>{showNodeForm && <form className="node-create-form" onSubmit={addNode}><label>节点名称<input value={nodeName} onChange={(event) => setNodeName(event.target.value)} placeholder="例如 DNS-SECONDARY-3" required /></label><label>角色<select value={nodeRole} onChange={(event) => setNodeRole(event.target.value)}><option value="主节点">主节点</option><option value="辅节点">辅节点</option></select></label><label>地址<input value={nodeAddress} onChange={(event) => setNodeAddress(event.target.value)} placeholder="例如 192.168.10.13:53" required /></label><button disabled={busy}>{busy ? "保存中…" : "保存节点"}</button></form>}<div className="table-wrap"><table><thead><tr><th>名称</th><th>角色</th><th>地址配置</th><th>状态</th><th>RPZ 版本</th><th>最近检测</th><th /></tr></thead><tbody>{nodes.map((node) => { const editing = editingNodeId === node.id; const primary = nodeIsPrimary(node); return <tr key={node.id}><td>{node.name}</td><td>{nodeRoleLabel(node.role)}</td><td><input className="node-address" readOnly={!editing} value={nodeDrafts[node.id] ?? node.address} onChange={(event) => setNodeDrafts((drafts) => ({ ...drafts, [node.id]: event.target.value }))} /></td><td><i className={`status-dot ${node.status === "healthy" ? "ok" : "warn"}`} />{node.status === "healthy" ? "正常" : node.status === "degraded" ? "版本不一致" : "不可达"}</td><td className="mono">{node.rpzVersion}</td><td>{node.lastChecked || node.lastSync}</td><td className="node-actions">{editing ? <><button className="table-action node-save" disabled={busy} onClick={() => void saveNode(node)}>保存</button><button className="table-action node-cancel" disabled={busy} onClick={() => cancelNodeEdit(node)}>取消</button></> : <button className="table-action node-edit" disabled={busy} onClick={() => setEditingNodeId(node.id)}>编辑</button>}<button className="table-action node-delete" disabled={busy || nodes.length <= 1 || primary} title={primary ? "主节点不能直接删除" : "删除节点"} onClick={() => void removeNode(node)}>删除</button></td></tr>; })}</tbody></table></div></div>
+        <DnsNodePanel
+          nodes={nodes}
+          nodeDrafts={nodeDrafts}
+          editingNodeId={editingNodeId}
+          showNodeForm={showNodeForm}
+          nodeName={nodeName}
+          nodeRole={nodeRole}
+          nodeAddress={nodeAddress}
+          busy={busy}
+          onToggleForm={() => setShowNodeForm((shown) => !shown)}
+          onNodeNameChange={setNodeName}
+          onNodeRoleChange={setNodeRole}
+          onNodeAddressChange={setNodeAddress}
+          onAddNode={addNode}
+          onDraftChange={(id, value) => setNodeDrafts((drafts) => ({ ...drafts, [id]: value }))}
+          onEdit={setEditingNodeId}
+          onSave={(node) => { void saveNode(node); }}
+          onCancel={cancelNodeEdit}
+          onRemove={(node) => { void removeNode(node); }}
+        />
 
         <div className="dns-panel"><div className="panel-heading"><h2>添加 RPZ 规则</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>记录类型<select value={ruleType} onChange={(event) => setRuleType(event.target.value as "CNAME" | "A")}><option value="CNAME">白名单（CNAME / passthru）</option><option value="A">A 记录重定向</option></select></label>{ruleType === "A" && <label>目标 IPv4<input value={recordValue} onChange={(event) => setRecordValue(event.target.value)} placeholder="例如 192.0.2.10" inputMode="numeric" pattern="(?:[0-9]{1,3}\.){3}[0-9]{1,3}" required /></label>}<label>原因（可选）<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder={ruleType === "A" ? "业务流量导向指定服务" : "业务系统依赖"} /></label><button disabled={busy}>{busy ? "保存中…" : "保存 RPZ 规则"}</button></form>{notice && <p className="notice">{notice}</p>}</div>
       </section>
@@ -476,7 +423,27 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       </section>
 
         <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU / A · 显示 {ruleStart}-{ruleEnd} / {filteredRules.length} 条 · 当前模式：{overview?.publisherMode ?? "artifact"} · 任务：{overview?.publishJobStatus ?? "idle"}</span></div><div className="record-tools"><input className="record-search" value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="搜索域名 / 原因" aria-label="搜索 RPZ 规则" /><button className="table-action bulk-action" disabled={busy || selectedRuleIds.length === 0} onClick={() => void bulkRemoveRules()}>批量删除{selectedRuleIds.length ? `（${selectedRuleIds.length}）` : ""}</button><button className="publish-button" disabled={busy || !overview?.pendingPublish} onClick={() => void publish()}>{overview?.pendingPublish ? "生成 / 发布 RPZ" : "已是最新"}</button></div></div><div className="table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="选择当前页规则" checked={allVisibleSelected} onChange={toggleVisibleRules} /></th><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{visibleRules.map(renderRuleRow)}</tbody></table>{rules.length === 0 ? <div className="empty">暂无 RPZ 规则</div> : filteredRules.length === 0 ? <div className="empty">没有匹配的 RPZ 规则</div> : null}</div>{filteredRules.length > 0 && <div className="pagination"><span>第 {currentRulePage} / {rulePageCount} 页</span><div className="pagination-actions"><label>每页 <select value={rulePageSize} onChange={(event) => { setRulePageSize(Number(event.target.value)); setRulePage(1); }}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select> 条</label><button disabled={currentRulePage <= 1} onClick={() => setRulePage(Math.max(1, currentRulePage - 1))}>上一页</button><button disabled={currentRulePage >= rulePageCount} onClick={() => setRulePage(Math.min(rulePageCount, currentRulePage + 1))}>下一页</button></div></div>}</section>
-      </> : <section className="dns-panel audit-page audit-panel"><div className="panel-heading"><div><h2>审计日志</h2><span>共 {auditTotal} 条 · 最新操作优先</span></div><div className="record-tools"><input className="record-search" value={auditSearchDraft} onChange={(event) => setAuditSearchDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setAuditSearch(auditSearchDraft); setAuditPage(1); void loadAudit(auditSearchDraft, 1, auditPageSize); } }} placeholder="搜索日志" aria-label="搜索审计日志" /><button className="table-action" onClick={() => { setAuditSearch(auditSearchDraft); setAuditPage(1); void loadAudit(auditSearchDraft, 1, auditPageSize); }}>搜索</button></div></div><div className="audit-list">{auditEntries.map((entry, index) => { const result = auditResult(entry); const entryKey = `${entry.timestamp}-${entry.action}-${index}`; const ruleDetail = parseRuleAuditDetail(entry); const expanded = expandedAuditKey === entryKey; const toggle = () => { if (ruleDetail) setExpandedAuditKey(expanded ? null : entryKey); }; return <div className="audit-entry-wrap" key={entryKey}><article className={`audit-row ${ruleDetail ? "is-clickable" : ""}`} onClick={toggle} onKeyDown={(event) => { if (ruleDetail && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); toggle(); } }} role={ruleDetail ? "button" : undefined} tabIndex={ruleDetail ? 0 : undefined} aria-expanded={ruleDetail ? expanded : undefined}><time className="audit-time" dateTime={entry.timestamp}>{formatDateTime(entry.timestamp)}</time><div className="audit-event"><div><strong className="audit-action">{auditActionLabel(entry.action)}</strong><span className="audit-detail">{auditDetail(entry)}</span></div><small>{entry.actor || "系统"} · 来源 {entry.ip || "未知"}</small></div><span className={`audit-result ${result.tone}`}>{result.label}</span><span className="audit-verified" title={entry.hash || "无哈希校验"}>{entry.hash ? "日志校验通过" : "未校验"}</span></article>{expanded && ruleDetail && <div className="audit-expanded"><span><b>域名</b>{ruleDetail.domain}</span><span><b>类型</b>{auditRuleTypeLabel(ruleDetail.type)}</span>{ruleDetail.value && <span><b>目标</b>{ruleDetail.value}</span>}<span><b>原因</b>{ruleDetail.reason || "未填写"}</span></div>}</div>; })}{auditEntries.length === 0 && <div className="empty">暂无匹配的审计日志</div>}</div>{auditTotal > 0 && <div className="pagination"><span>第 {currentAuditPage} / {auditPageCount} 页</span><div className="pagination-actions"><label>每页 <select value={auditPageSize} onChange={(event) => { const size = Number(event.target.value); setAuditPageSize(size); setAuditPage(1); void loadAudit(auditSearch, 1, size); }}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select> 条</label><button disabled={currentAuditPage <= 1} onClick={() => void loadAudit(auditSearch, currentAuditPage - 1, auditPageSize)}>上一页</button><button disabled={currentAuditPage >= auditPageCount} onClick={() => void loadAudit(auditSearch, currentAuditPage + 1, auditPageSize)}>下一页</button></div></div>}</section>}
+      </> : <AuditPanel
+        entries={auditEntries}
+        total={auditTotal}
+        pageSize={auditPageSize}
+        pageCount={auditPageCount}
+        currentPage={currentAuditPage}
+        searchDraft={auditSearchDraft}
+        onSearchDraftChange={setAuditSearchDraft}
+        onSearch={() => {
+          setAuditSearch(auditSearchDraft);
+          setAuditPage(1);
+          void loadAudit(auditSearchDraft, 1, auditPageSize);
+        }}
+        onPageSizeChange={(size) => {
+          setAuditPageSize(size);
+          setAuditPage(1);
+          void loadAudit(auditSearch, 1, size);
+        }}
+        onPrevious={() => void loadAudit(auditSearch, currentAuditPage - 1, auditPageSize)}
+        onNext={() => void loadAudit(auditSearch, currentAuditPage + 1, auditPageSize)}
+      />}
       <footer className="dns-footer">当前版本：文件型控制面 · DNS 节点状态通过 dig / SOA Serial 实时探测</footer>
     </main>
   );
