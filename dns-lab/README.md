@@ -17,8 +17,20 @@ RPZ Zone:      rpz.local
 RPZ_PUBLISH_MODE=nsupdate \
 RPZ_PRIMARY=127.0.0.2 RPZ_PRIMARY_PORT=5353 \
 RPZ_ZONE=rpz.local \
-RPZ_KEY_FILE=/home/REDACTED/dns-ops-platform/dns-lab/keys/rpz-manager.key \
+RPZ_KEY_FILE="$PWD/dns-lab/keys/rpz-manager.key" \
 DNS_NODE_ADDRESSES=primary-1=127.0.0.2:5353,secondary-1=127.0.0.3:5353,secondary-2=127.0.0.4:5353 \
 RPZ_LOG_FILES=/var/log/named/dns-ops-lab/primary.log,/var/log/named/dns-ops-lab/secondary.log,/var/log/named/dns-ops-lab/secondary-2.log \
 ./scripts/start-tailscale.sh
 ```
+
+启动本地 BIND 实验室需要 root 权限。脚本会优先使用 `BIND_USER`/`BIND_GROUP`，未设置时
+自动探测系统中的 `bind` 或 `named` 账号，不再依赖某个固定用户名：
+
+```bash
+sudo BIND_USER=bind BIND_GROUP=bind ./scripts/start-dns-lab.sh
+./scripts/stop-dns-lab.sh
+```
+
+如果目标系统使用其他专用账号，替换这两个变量即可。实验室目录默认使用
+Debian/Ubuntu 的 BIND 布局：`/etc/bind/dns-ops-lab`、`/var/lib/bind/dns-ops-lab` 和
+`/var/log/named/dns-ops-lab`。

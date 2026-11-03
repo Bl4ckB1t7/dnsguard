@@ -10,5 +10,5 @@ for name in primary secondary secondary-2; do
     rm -f "$pid_file"
   fi
 done
-pkill -TERM -f 'named -u kali -c /etc/bind/dns-ops-lab/' 2>/dev/null || true
+pkill -TERM -f 'named .* -c /etc/bind/dns-ops-lab/' 2>/dev/null || true
 echo "BIND lab stopped"
