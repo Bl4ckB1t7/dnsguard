@@ -6,6 +6,7 @@ PRIMARY="${PRIMARY:-127.0.0.2}"
 SECONDARIES=("${SECONDARY_1:-127.0.0.3}" "${SECONDARY_2:-127.0.0.4}")
 DNS_PORT="${DNS_PORT:-5353}"
 KEY_FILE="${RPZ_KEY_FILE:-$PWD/dns-lab/keys/rpz-manager.key}"
+NODE_CONFIG_FILE="${DNS_NODE_CONFIG_FILE:-$PWD/config/dns-nodes.json}"
 ZONE="${RPZ_ZONE:-rpz.local}"
 TEST_DOMAIN="functional-$(date +%s%N).example.com"
 RULE_ID=""
@@ -66,6 +67,11 @@ assert len({node["rpzVersion"] for node in x}) == 1, x
 pass "live DNS node status and RPZ Serial comparison"
 
 curl -fsS -H 'Content-Type: application/json' -d '{"id":"primary-1","address":"127.0.0.2:5353"}' "$API_URL/api/dns/nodes" | python3 -c 'import json,sys; assert json.load(sys.stdin)["updated"] is True'
+python3 - "$NODE_CONFIG_FILE" <<'PY'
+import json,sys
+nodes=json.load(open(sys.argv[1]))
+assert next(node for node in nodes if node["id"] == "primary-1")["address"] == "127.0.0.2:5353"
+PY
 pass "DNS node configuration persistence"
 
 curl -fsS "$API_URL/api/dns/overview" | python3 -c '

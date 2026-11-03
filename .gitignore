@@ -6,6 +6,10 @@ data/*.bak
 data/*.lock
 data/*.tmp
 data/rpz/
+config/dns-nodes.json
+config/dns-nodes.json.bak
+config/dns-nodes.json.lock
+config/dns-nodes.json.tmp
 dns-lab/logs/
 dns-lab/run/
 dns-lab/keys/*.key

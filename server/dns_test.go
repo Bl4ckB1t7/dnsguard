@@ -102,3 +102,21 @@ func TestSaveDNSStateCreatesAtomicBackup(t *testing.T) {
 		t.Fatalf("backup should contain the previous version, got %+v", restored.Nodes[0])
 	}
 }
+
+func TestDNSNodeConfigRoundTrip(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "dns-nodes.json")
+	t.Setenv("DNS_NODE_CONFIG_FILE", configPath)
+	original := state
+	defer func() { state = original }()
+	state = dnsState{Nodes: []DNSNode{{ID: "primary-1", Name: "Primary", Role: "primary", Address: "127.0.0.2:5353"}}}
+	if err := saveDNSNodeConfig(); err != nil {
+		t.Fatal(err)
+	}
+	state.Nodes[0].Address = "127.0.0.9:5353"
+	if err := loadDNSNodeConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Nodes[0].Address; got != "127.0.0.2:5353" {
+		t.Fatalf("expected address from config file, got %q", got)
+	}
+}

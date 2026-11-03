@@ -1,0 +1,20 @@
+[
+  {
+    "id": "primary-1",
+    "name": "DNS Primary",
+    "role": "primary",
+    "address": "DNS_PRIMARY:53"
+  },
+  {
+    "id": "secondary-1",
+    "name": "DNS Secondary 1",
+    "role": "secondary",
+    "address": "DNS_SECONDARY_1:53"
+  },
+  {
+    "id": "secondary-2",
+    "name": "DNS Secondary 2",
+    "role": "secondary",
+    "address": "DNS_SECONDARY_2:53"
+  }
+]

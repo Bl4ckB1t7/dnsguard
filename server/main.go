@@ -46,6 +46,9 @@ func main() {
 		log.Fatal(err)
 	}
 	loadDNSState()
+	if err := loadDNSNodeConfig(); err != nil {
+		log.Fatal(err)
+	}
 	loadAudit()
 	loadAuth()
 

@@ -6,7 +6,7 @@
 
 - 登录页直接复用了 `network-ops-platform` 的雷达式登录界面。
 - Go API 提供 Cookie 会话、图形验证码、登录限速、CSRF 和审计。
-- DNS 节点和 RPZ 规则使用 JSON 文件保存，不使用数据库。
+- DNS 节点配置和 RPZ 规则使用 JSON 文件保存，不使用数据库；节点地址配置与运行状态分离。
 - 前端提供 DNS 节点实时状态、RPZ 白名单新增和删除页面，规则不设置过期时间。
 - DNS 节点状态通过 `dig` 查询 RPZ Zone 的 SOA Serial；辅节点会与 Primary Serial 比对，显示正常、版本不一致或不可达。
 - 当前 RPZ 页面是策略控制面，后续可以接入 `named-checkzone`、`rndc reload` 或 `nsupdate` 发布器。
@@ -48,7 +48,18 @@ API:      http://127.0.0.1:8080
 
 生产环境可让 Go API 直接提供 HTTPS：设置 `APP_ENV=production`、`AUTH_ENABLED=true`、`TLS_CERT_FILE` 和 `TLS_KEY_FILE`。如果 HTTPS 由 Nginx、Traefik 或 Tailscale Funnel 等反向代理终止，则设置 `TRUST_PROXY_TLS=true`，并确保代理只允许 HTTPS 访问。
 
-节点地址通过 `DNS_NODE_ADDRESSES` 配置，格式为 `节点ID=host:port`，例如：
+节点地址运行时从 `DNS_NODE_CONFIG_FILE` 读取，默认是 `config/dns-nodes.json`。页面修改节点地址后会原子写入该文件，程序启动时自动读取。首次启动如果配置文件不存在，会从旧状态文件和兼容用的 `DNS_NODE_ADDRESSES` 自动迁移。
+
+配置示例：
+
+```json
+[
+  {"id":"primary-1","name":"DNS Primary","role":"primary","address":"10.0.0.10:53"},
+  {"id":"secondary-1","name":"DNS Secondary 1","role":"secondary","address":"10.0.0.11:53"}
+]
+```
+
+旧版环境仍可通过 `DNS_NODE_ADDRESSES` 配置，格式为 `节点ID=host:port`，例如：
 
 ```bash
 DNS_NODE_ADDRESSES=primary-1=10.0.0.10:53,secondary-1=10.0.0.11:53
@@ -60,6 +71,7 @@ DNS_NODE_ADDRESSES=primary-1=10.0.0.10:53,secondary-1=10.0.0.11:53
 
 ```text
 DNS_STATE_FILE   DNS 节点和 RPZ 规则
+DNS_NODE_CONFIG_FILE DNS 节点名称、角色和地址配置
 AUDIT_FILE       操作审计记录
 ```
 

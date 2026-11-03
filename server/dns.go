@@ -30,6 +30,13 @@ type DNSNode struct {
 	LastSync   string `json:"lastSync"`
 }
 
+type DNSNodeConfig struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Role    string `json:"role"`
+	Address string `json:"address"`
+}
+
 type RPZRule struct {
 	ID        string `json:"id"`
 	Domain    string `json:"domain"`
@@ -154,12 +161,6 @@ func rpzHitFingerprint(line string, window int) (string, bool) {
 }
 
 func configuredDNSAddress(node DNSNode) string {
-	for _, item := range strings.Split(os.Getenv("DNS_NODE_ADDRESSES"), ",") {
-		parts := strings.SplitN(strings.TrimSpace(item), "=", 2)
-		if len(parts) == 2 && strings.TrimSpace(parts[0]) == node.ID && strings.TrimSpace(parts[1]) != "" {
-			return strings.TrimSpace(parts[1])
-		}
-	}
 	return node.Address
 }
 
@@ -293,10 +294,15 @@ func dnsStatePath() string {
 	return "dns-state.json"
 }
 
-func withStateFileLock(action func() error) error {
-	stateFileMu.Lock()
-	defer stateFileMu.Unlock()
-	lock, err := os.OpenFile(dnsStatePath()+".lock", os.O_CREATE|os.O_RDWR, 0o640)
+func dnsNodeConfigPath() string {
+	if path := os.Getenv("DNS_NODE_CONFIG_FILE"); path != "" {
+		return path
+	}
+	return filepath.Join("config", "dns-nodes.json")
+}
+
+func withFileLock(path string, action func() error) error {
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o640)
 	if err != nil {
 		return err
 	}
@@ -306,6 +312,102 @@ func withStateFileLock(action func() error) error {
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	return action()
+}
+
+func withStateFileLock(action func() error) error {
+	stateFileMu.Lock()
+	defer stateFileMu.Unlock()
+	return withFileLock(dnsStatePath(), action)
+}
+
+func nodeConfigsFromState() []DNSNodeConfig {
+	dnsMu.RLock()
+	defer dnsMu.RUnlock()
+	configs := make([]DNSNodeConfig, 0, len(state.Nodes))
+	for _, node := range state.Nodes {
+		configs = append(configs, DNSNodeConfig{ID: node.ID, Name: node.Name, Role: node.Role, Address: node.Address})
+	}
+	return configs
+}
+
+func saveDNSNodeConfig() error {
+	content, err := json.MarshalIndent(nodeConfigsFromState(), "", "  ")
+	if err != nil {
+		return err
+	}
+	path := dnsNodeConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return withFileLock(path, func() error {
+		tmp := path + ".tmp"
+		file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write(content); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := file.Sync(); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		return os.Rename(tmp, path)
+	})
+}
+
+func loadDNSNodeConfig() error {
+	path := dnsNodeConfigPath()
+	content, err := os.ReadFile(path)
+	if err == nil {
+		var configs []DNSNodeConfig
+		if err := json.Unmarshal(content, &configs); err != nil || len(configs) == 0 {
+			if err == nil {
+				err = fmt.Errorf("节点配置为空")
+			}
+			return fmt.Errorf("读取 DNS 节点配置失败: %w", err)
+		}
+		previous := make(map[string]DNSNode)
+		dnsMu.RLock()
+		for _, node := range state.Nodes {
+			previous[node.ID] = node
+		}
+		dnsMu.RUnlock()
+		nodes := make([]DNSNode, 0, len(configs))
+		for _, config := range configs {
+			if config.ID == "" || !validDNSNodeAddress(config.Address) {
+				return fmt.Errorf("读取 DNS 节点配置失败: 节点 %q 地址无效", config.ID)
+			}
+			node := previous[config.ID]
+			node.ID, node.Name, node.Role, node.Address = config.ID, config.Name, config.Role, config.Address
+			nodes = append(nodes, node)
+		}
+		dnsMu.Lock()
+		state.Nodes = nodes
+		dnsMu.Unlock()
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("读取 DNS 节点配置失败: %w", err)
+	}
+	for _, item := range strings.Split(os.Getenv("DNS_NODE_ADDRESSES"), ",") {
+		parts := strings.SplitN(strings.TrimSpace(item), "=", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !validDNSNodeAddress(parts[1]) {
+			continue
+		}
+		dnsMu.Lock()
+		for index := range state.Nodes {
+			if state.Nodes[index].ID == strings.TrimSpace(parts[0]) {
+				state.Nodes[index].Address = strings.TrimSpace(parts[1])
+			}
+		}
+		dnsMu.Unlock()
+	}
+	return saveDNSNodeConfig()
 }
 
 func loadDNSState() {
@@ -501,7 +603,7 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "节点不存在"})
 			return
 		}
-		if err := saveDNSState(); err != nil {
+		if err := saveDNSNodeConfig(); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "节点配置保存失败"})
 			return
 		}
