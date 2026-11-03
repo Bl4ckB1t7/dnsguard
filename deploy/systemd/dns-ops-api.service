@@ -1,0 +1,27 @@
+[Unit]
+Description=DNS Ops Platform API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=dnsops
+Group=dnsops
+WorkingDirectory=/opt/dns-ops-platform
+EnvironmentFile=-/etc/dns-ops/dns-ops.env
+ExecStart=/opt/dns-ops-platform/.run/dns-ops-api
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/dns-ops /var/lib/dns-ops /var/log/dns-ops
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -124,6 +124,43 @@ git pull --ff-only
 ./scripts/start-dns-ops.sh
 ```
 
+### 4.4 生产 systemd 部署
+
+开发启动脚本适合首次验证；生产环境建议让 systemd 托管 API，让 Nginx
+或现有 HTTPS 反向代理托管 `dist/` 并代理 `/api/`。仓库提供了带最小权限
+限制的服务模板：
+
+```bash
+sudo useradd --system --home /opt/dns-ops-platform --shell /usr/sbin/nologin dnsops || true
+sudo install -d -o dnsops -g dnsops -m 0750 \
+  /opt/dns-ops-platform /etc/dns-ops /var/lib/dns-ops /var/lib/dns-ops/rpz /var/log/dns-ops
+sudo cp -a . /opt/dns-ops-platform/
+sudo chown -R dnsops:dnsops /opt/dns-ops-platform /var/lib/dns-ops /var/log/dns-ops
+sudo install -m 0644 deploy/systemd/dns-ops-api.service \
+  /etc/systemd/system/dns-ops-api.service
+```
+
+将生产配置保存为 `/etc/dns-ops/dns-ops.env`，并将 `AUTH_FILE`、
+`DNS_NODE_CONFIG_FILE`、`RPZ_KEY_FILE` 指向 `/etc/dns-ops/` 下的受保护文件。
+状态、审计和 RPZ 产物使用 `/var/lib/dns-ops/`。先在发布目录构建 API 和前端：
+
+```bash
+cd /opt/dns-ops-platform
+sudo -u dnsops npm ci
+sudo -u dnsops npm run build
+sudo -u dnsops mkdir -p .run
+sudo -u dnsops go build -o .run/dns-ops-api ./server
+sudo systemctl daemon-reload
+sudo systemctl enable --now dns-ops-api.service
+sudo systemctl status dns-ops-api.service --no-pager
+```
+
+API 只监听 `127.0.0.1:8080`，Web 代理应仅允许管理网段访问，并将 HTTPS
+终止在反向代理。升级时先执行 `systemctl stop dns-ops-api`，替换构建产物，
+再执行 `systemctl start dns-ops-api`；失败时使用 `journalctl -u dns-ops-api`
+查看日志并回滚上一份 `.run/dns-ops-api`。服务模板使用 `ProtectSystem`、
+`NoNewPrivileges`、独立运行用户和显式可写目录，避免把整个系统目录暴露给 API。
+
 ### 4.3 管理网卡配置
 
 默认配置：
