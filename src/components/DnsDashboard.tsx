@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useState } from "react";
 type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number; lastSync: string; publisherMode: string; lastPublish: string; publishMessage: string };
 type DnsNode = { id: string; name: string; role: string; address: string; status: string; rpzVersion: string; lastSync: string };
 type Rule = { id: string; domain: string; action: string; reason: string; status: string; updatedAt: string };
+const RULE_PAGE_SIZE = 10;
 
 function csrfHeaders(): Record<string, string> {
   const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("network_csrf="))?.split("=").slice(1).join("=");
@@ -20,6 +21,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
   const [nodes, setNodes] = useState<DnsNode[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
   const [ruleSearch, setRuleSearch] = useState("");
+  const [rulePage, setRulePage] = useState(1);
   const [domain, setDomain] = useState("");
   const [reason, setReason] = useState("");
   const [notice, setNotice] = useState("");
@@ -85,6 +87,9 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
     if (!query) return true;
     return [rule.domain, rule.action, rule.reason, rule.status].some((value) => value.toLowerCase().includes(query));
   });
+  const rulePageCount = Math.max(1, Math.ceil(filteredRules.length / RULE_PAGE_SIZE));
+  const currentRulePage = Math.min(rulePage, rulePageCount);
+  const visibleRules = filteredRules.slice((currentRulePage - 1) * RULE_PAGE_SIZE, currentRulePage * RULE_PAGE_SIZE);
 
   return (
     <main className="dns-shell">
@@ -106,7 +111,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
         <div className="dns-panel"><div className="panel-heading"><h2>添加 RPZ 白名单</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>原因<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="业务系统依赖" required /></label><button disabled={busy}>{busy ? "保存中…" : "保存白名单规则"}</button></form>{notice && <p className="notice">{notice}</p>}</div>
       </section>
 
-      <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU · {filteredRules.length}/{rules.length} 条 · 当前模式：{overview?.publisherMode ?? "artifact"}</span></div><div className="record-tools"><input className="record-search" value={ruleSearch} onChange={(event) => setRuleSearch(event.target.value)} placeholder="搜索域名 / 原因" aria-label="搜索 RPZ 规则" /><button className="publish-button" disabled={busy || !overview?.pendingPublish} onClick={() => void publish()}>{overview?.pendingPublish ? "生成 / 发布 RPZ" : "已是最新"}</button></div></div><div className="table-wrap"><table><thead><tr><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{filteredRules.map((rule) => <tr key={rule.id}><td className="mono">{rule.domain}</td><td>{rule.action}</td><td>{rule.reason}</td><td><span className={`rule-status ${rule.status}`}>{rule.status === "published" ? "已发布" : rule.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{rule.updatedAt}</td><td><button className="table-action" onClick={() => void removeRule(rule.id)}>删除</button></td></tr>)}</tbody></table>{rules.length === 0 ? <div className="empty">暂无 RPZ 规则</div> : filteredRules.length === 0 ? <div className="empty">没有匹配的 RPZ 规则</div> : null}</div></section>
+      <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU · {filteredRules.length}/{rules.length} 条 · 当前模式：{overview?.publisherMode ?? "artifact"}</span></div><div className="record-tools"><input className="record-search" value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="搜索域名 / 原因" aria-label="搜索 RPZ 规则" /><button className="publish-button" disabled={busy || !overview?.pendingPublish} onClick={() => void publish()}>{overview?.pendingPublish ? "生成 / 发布 RPZ" : "已是最新"}</button></div></div><div className="table-wrap"><table><thead><tr><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{visibleRules.map((rule) => <tr key={rule.id}><td className="mono">{rule.domain}</td><td>{rule.action}</td><td>{rule.reason}</td><td><span className={`rule-status ${rule.status}`}>{rule.status === "published" ? "已发布" : rule.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{rule.updatedAt}</td><td><button className="table-action" onClick={() => void removeRule(rule.id)}>删除</button></td></tr>)}</tbody></table>{rules.length === 0 ? <div className="empty">暂无 RPZ 规则</div> : filteredRules.length === 0 ? <div className="empty">没有匹配的 RPZ 规则</div> : null}</div>{filteredRules.length > 0 && <div className="pagination"><span>第 {currentRulePage} / {rulePageCount} 页</span><div><button disabled={currentRulePage <= 1} onClick={() => setRulePage((page) => Math.max(1, page - 1))}>上一页</button><button disabled={currentRulePage >= rulePageCount} onClick={() => setRulePage((page) => Math.min(rulePageCount, page + 1))}>下一页</button></div></div>}</section>
       <footer className="dns-footer">当前版本：文件型控制面 · DNS 节点状态通过 dig / SOA Serial 实时探测</footer>
     </main>
   );
