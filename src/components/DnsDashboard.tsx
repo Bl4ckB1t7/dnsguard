@@ -39,6 +39,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
   const [ruleSearch, setRuleSearch] = useState("");
   const [rulePage, setRulePage] = useState(1);
   const [rulePageSize, setRulePageSize] = useState(20);
+  const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
   const [domain, setDomain] = useState("");
   const [reason, setReason] = useState("");
   const [notice, setNotice] = useState("");
@@ -56,6 +57,7 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
     setNodes(nextNodes ?? []);
     setNodeDrafts(Object.fromEntries((nextNodes ?? []).map((node) => [node.id, node.address])));
     setRules(nextRules ?? []);
+    setSelectedRuleIds((selected) => selected.filter((id) => (nextRules ?? []).some((rule) => rule.id === id)));
     setPreview(nextPreview);
     setVersions(nextVersions ?? []);
   };
@@ -103,6 +105,23 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
     } catch (error) { setNotice((error as Error).message); }
   };
 
+  const bulkRemoveRules = async () => {
+    if (selectedRuleIds.length === 0 || !window.confirm(`确认批量删除 ${selectedRuleIds.length} 条 RPZ 规则？`)) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await readJSON<{ deleted: number }>("/api/dns/rpz/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({ ids: selectedRuleIds }),
+      });
+      setSelectedRuleIds([]);
+      setNotice(`已批量删除 ${result.deleted} 条规则`);
+      await load();
+    } catch (error) { setNotice((error as Error).message); }
+    finally { setBusy(false); }
+  };
+
   const publish = async () => {
     setBusy(true);
     setNotice("");
@@ -147,6 +166,11 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
   const visibleRules = filteredRules.slice((currentRulePage - 1) * rulePageSize, currentRulePage * rulePageSize);
   const ruleStart = filteredRules.length === 0 ? 0 : (currentRulePage - 1) * rulePageSize + 1;
   const ruleEnd = Math.min(currentRulePage * rulePageSize, filteredRules.length);
+  const visibleRuleIds = visibleRules.map((rule) => rule.id);
+  const allVisibleSelected = visibleRuleIds.length > 0 && visibleRuleIds.every((id) => selectedRuleIds.includes(id));
+  const toggleVisibleRules = () => {
+    setSelectedRuleIds((selected) => allVisibleSelected ? selected.filter((id) => !visibleRuleIds.includes(id)) : Array.from(new Set([...selected, ...visibleRuleIds])));
+  };
 
   return (
     <main className="dns-shell">
@@ -169,11 +193,11 @@ export function DnsDashboard({ onLogout, authEnabled = true }: { onLogout: () =>
       </section>
 
       <section className="release-grid">
-        <section className="dns-panel"><div className="panel-heading"><div><h2>发布预览</h2><span>{preview?.pending ? `${preview.changes.length} 项待发布变更` : "当前版本已同步"}</span></div><span>{preview?.currentCount ?? 0} / {preview?.publishedCount ?? 0} 条</span></div>{preview?.changes.length ? <div className="change-list">{preview.changes.slice(0, 20).map((change) => <div className="change-item" key={`${change.type}-${change.domain}`}><strong className={`change-${change.type}`}>{change.type === "added" ? "新增" : change.type === "removed" ? "删除" : "变更"}</strong><span className="mono">{change.domain}</span><small>{change.after || change.before}</small></div>)}{preview.changes.length > 20 && <p className="notice">仅显示前 20 项变更。</p>}</div> : <div className="empty">暂无待发布变更</div>}</section>
+        <section className="dns-panel"><div className="panel-heading"><div><h2>发布预览</h2><span>{preview?.pending ? `${preview.changes?.length ?? 0} 项待发布变更` : "当前版本已同步"}</span></div><span>{preview?.currentCount ?? 0} / {preview?.publishedCount ?? 0} 条</span></div>{preview?.changes?.length ? <div className="change-list">{preview.changes.slice(0, 20).map((change) => <div className="change-item" key={`${change.type}-${change.domain}`}><strong className={`change-${change.type}`}>{change.type === "added" ? "新增" : change.type === "removed" ? "删除" : "变更"}</strong><span className="mono">{change.domain}</span><small>{change.after || change.before}</small></div>)}{preview.changes.length > 20 && <p className="notice">仅显示前 20 项变更。</p>}</div> : <div className="empty">暂无待发布变更</div>}</section>
         <section className="dns-panel"><div className="panel-heading"><div><h2>版本记录</h2><span>最多保留 20 个发布版本</span></div></div>{versions.length ? <div className="version-list">{versions.map((version) => <div className="version-item" key={version.id}><div><strong>{version.createdAt}</strong><small>{version.ruleCount} 条规则 · {version.mode}</small></div><button className="table-action" disabled={busy} onClick={() => void rollback(version.id)}>回滚并发布</button></div>)}</div> : <div className="empty">暂无发布版本</div>}</section>
       </section>
 
-      <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU · 显示 {ruleStart}-{ruleEnd} / {filteredRules.length} 条 · 当前模式：{overview?.publisherMode ?? "artifact"} · 任务：{overview?.publishJobStatus ?? "idle"}</span></div><div className="record-tools"><input className="record-search" value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="搜索域名 / 原因" aria-label="搜索 RPZ 规则" /><button className="publish-button" disabled={busy || !overview?.pendingPublish} onClick={() => void publish()}>{overview?.pendingPublish ? "生成 / 发布 RPZ" : "已是最新"}</button></div></div><div className="table-wrap"><table><thead><tr><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{visibleRules.map((rule) => <tr key={rule.id}><td className="mono">{rule.domain}</td><td>{rule.action}</td><td>{rule.reason}</td><td><span className={`rule-status ${rule.status}`}>{rule.status === "published" ? "已发布" : rule.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{rule.updatedAt}</td><td><button className="table-action" onClick={() => void removeRule(rule.id)}>删除</button></td></tr>)}</tbody></table>{rules.length === 0 ? <div className="empty">暂无 RPZ 规则</div> : filteredRules.length === 0 ? <div className="empty">没有匹配的 RPZ 规则</div> : null}</div>{filteredRules.length > 0 && <div className="pagination"><span>第 {currentRulePage} / {rulePageCount} 页</span><div className="pagination-actions"><label>每页 <select value={rulePageSize} onChange={(event) => { setRulePageSize(Number(event.target.value)); setRulePage(1); }}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select> 条</label><button disabled={currentRulePage <= 1} onClick={() => setRulePage(Math.max(1, currentRulePage - 1))}>上一页</button><button disabled={currentRulePage >= rulePageCount} onClick={() => setRulePage(Math.min(rulePageCount, currentRulePage + 1))}>下一页</button></div></div>}</section>
+      <section className="dns-panel"><div className="panel-heading"><div><h2>RPZ 规则</h2><span>ALLOW / PASSTHRU · 显示 {ruleStart}-{ruleEnd} / {filteredRules.length} 条 · 当前模式：{overview?.publisherMode ?? "artifact"} · 任务：{overview?.publishJobStatus ?? "idle"}</span></div><div className="record-tools"><input className="record-search" value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="搜索域名 / 原因" aria-label="搜索 RPZ 规则" /><button className="table-action bulk-action" disabled={busy || selectedRuleIds.length === 0} onClick={() => void bulkRemoveRules()}>批量删除{selectedRuleIds.length ? `（${selectedRuleIds.length}）` : ""}</button><button className="publish-button" disabled={busy || !overview?.pendingPublish} onClick={() => void publish()}>{overview?.pendingPublish ? "生成 / 发布 RPZ" : "已是最新"}</button></div></div><div className="table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="选择当前页规则" checked={allVisibleSelected} onChange={toggleVisibleRules} /></th><th>域名</th><th>动作</th><th>原因</th><th>状态</th><th>更新时间</th><th /></tr></thead><tbody>{visibleRules.map((rule) => <tr key={rule.id}><td><input type="checkbox" aria-label={`选择 ${rule.domain}`} checked={selectedRuleIds.includes(rule.id)} onChange={() => setSelectedRuleIds((selected) => selected.includes(rule.id) ? selected.filter((id) => id !== rule.id) : [...selected, rule.id])} /></td><td className="mono">{rule.domain}</td><td>{rule.action}</td><td>{rule.reason}</td><td><span className={`rule-status ${rule.status}`}>{rule.status === "published" ? "已发布" : rule.status === "compiled" ? "已生成" : "待发布"}</span></td><td>{rule.updatedAt}</td><td><button className="table-action" onClick={() => void removeRule(rule.id)}>删除</button></td></tr>)}</tbody></table>{rules.length === 0 ? <div className="empty">暂无 RPZ 规则</div> : filteredRules.length === 0 ? <div className="empty">没有匹配的 RPZ 规则</div> : null}</div>{filteredRules.length > 0 && <div className="pagination"><span>第 {currentRulePage} / {rulePageCount} 页</span><div className="pagination-actions"><label>每页 <select value={rulePageSize} onChange={(event) => { setRulePageSize(Number(event.target.value)); setRulePage(1); }}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select> 条</label><button disabled={currentRulePage <= 1} onClick={() => setRulePage(Math.max(1, currentRulePage - 1))}>上一页</button><button disabled={currentRulePage >= rulePageCount} onClick={() => setRulePage(Math.min(rulePageCount, currentRulePage + 1))}>下一页</button></div></div>}</section>
       <footer className="dns-footer">当前版本：文件型控制面 · DNS 节点状态通过 dig / SOA Serial 实时探测</footer>
     </main>
   );

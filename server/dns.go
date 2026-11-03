@@ -254,6 +254,7 @@ func copyRPZRules(rules []RPZRule) []RPZRule {
 }
 
 func rpzPreviewSnapshot() (RPZChangeList []RPZChange, currentCount, publishedCount int) {
+	RPZChangeList = make([]RPZChange, 0)
 	dnsMu.RLock()
 	current := copyRPZRules(state.Rules)
 	published := copyRPZRules(state.Published)
@@ -609,6 +610,55 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var request struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeJSON(r, &request); err != nil || len(request.IDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ids required"})
+		return
+	}
+	selected := make(map[string]struct{}, len(request.IDs))
+	for _, id := range request.IDs {
+		if id = strings.TrimSpace(id); id != "" {
+			selected[id] = struct{}{}
+		}
+	}
+	if len(selected) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ids required"})
+		return
+	}
+	dnsMu.Lock()
+	kept := make([]RPZRule, 0, len(state.Rules))
+	deleted := make([]string, 0, len(selected))
+	for _, rule := range state.Rules {
+		if _, ok := selected[rule.ID]; ok {
+			deleted = append(deleted, rule.ID)
+			continue
+		}
+		kept = append(kept, rule)
+	}
+	state.Rules = kept
+	dnsMu.Unlock()
+	if len(deleted) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "规则不存在"})
+		return
+	}
+	if err := saveDNSState(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量删除失败"})
+		return
+	}
+	for _, id := range deleted {
+		auditEvent(r, authUsername(), "rpz.rule.delete", id)
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(deleted)})
 }
 
 func dnsRuleByID(w http.ResponseWriter, r *http.Request) {

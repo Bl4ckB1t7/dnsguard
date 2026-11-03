@@ -10,6 +10,7 @@ ZONE="${RPZ_ZONE:-rpz.local}"
 TEST_DOMAIN="functional-$(date +%s%N).example.com"
 RULE_ID=""
 PUBLISH_JOB_ID=""
+BULK_IDS=()
 PASSED=0
 
 pass() {
@@ -18,6 +19,10 @@ pass() {
 }
 
 cleanup() {
+  if ((${#BULK_IDS[@]} > 0)); then
+    bulk_json=$(printf '%s\n' "${BULK_IDS[@]}" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')
+    curl -fsS -H 'Content-Type: application/json' -d "{\"ids\":$bulk_json}" "$API_URL/api/dns/rpz/bulk" >/dev/null || true
+  fi
   if [[ -n "$RULE_ID" ]]; then
     curl -fsS -X DELETE "$API_URL/api/dns/rpz/$RULE_ID" >/dev/null || true
     PUBLISH_JOB_ID=$(curl -fsS -X POST "$API_URL/api/dns/rpz/publish" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])') || true
@@ -101,4 +106,17 @@ PUBLISH_JOB_ID=$(curl -fsS -X POST "$API_URL/api/dns/rpz/publish" | python3 -c '
 wait_publish_job
 RULE_ID=""
 printf 'PASS: deletion publish completed\n'
+
+for suffix in one two three; do
+  bulk_response=$(curl -fsS -H 'Content-Type: application/json' -d "{\"domain\":\"bulk-$suffix-$(date +%s%N).example.com\",\"reason\":\"bulk test\"}" "$API_URL/api/dns/rpz")
+  BULK_IDS+=("$(printf '%s' "$bulk_response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')")
+done
+bulk_json=$(printf '%s\n' "${BULK_IDS[@]}" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')
+deleted=$(curl -fsS -H 'Content-Type: application/json' -d "{\"ids\":$bulk_json}" "$API_URL/api/dns/rpz/bulk" | python3 -c 'import json,sys; print(json.load(sys.stdin)["deleted"])')
+[[ "$deleted" == "3" ]]
+BULK_IDS=()
+PUBLISH_JOB_ID=$(curl -fsS -X POST "$API_URL/api/dns/rpz/publish" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+wait_publish_job
+pass "RPZ bulk delete and publish task"
+
 printf 'Functional tests passed: %d\n' "$((PASSED + 1))"
