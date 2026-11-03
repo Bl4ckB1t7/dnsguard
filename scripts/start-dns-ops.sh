@@ -9,7 +9,7 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
-for command_name in ip npm go dig; do
+for command_name in ip npm go dig curl ss; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Missing required command: $command_name" >&2
     exit 1
@@ -74,17 +74,74 @@ else
   echo $! >"$RUN_DIR/api.pid"
 fi
 
-if [[ -f "$RUN_DIR/web.pid" ]] && kill -0 "$(cat "$RUN_DIR/web.pid")" 2>/dev/null; then
+wait_for_http() {
+  local url="$1"
+  local pid_file="$2"
+  for _ in $(seq 1 20); do
+    if [[ -f "$pid_file" ]] && ! process_is_running "$(cat "$pid_file")"; then
+      return 1
+    fi
+    if curl --fail --silent --show-error --max-time 2 "$url" >/dev/null 2>&1; then
+      sleep 0.1
+      process_is_running "$(cat "$pid_file")" && return 0
+      return 1
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+process_is_running() {
+  local pid="$1"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [[ "$(ps -p "$pid" -o stat= 2>/dev/null | tr -d ' ')" != Z* ]]
+}
+
+web_process_is_expected() {
+  local pid="$1"
+  process_is_running "$pid" || return 1
+  [[ "$(ps -p "$pid" -o args= 2>/dev/null)" == *"$ROOT/node_modules/.bin/vite"* ]]
+}
+
+web_port_is_owned() {
+  local pid="$1"
+  ss -ltnp 2>/dev/null | grep -Eq "pid=${pid}[,)]"
+}
+
+if ! wait_for_http "http://127.0.0.1:8080/api/health" "$RUN_DIR/api.pid"; then
+  echo "DNS API failed readiness check" >&2
+  [[ -f "$RUN_DIR/api.log" ]] && tail -n 40 "$RUN_DIR/api.log" >&2
+  exit 1
+fi
+
+if [[ -f "$RUN_DIR/web.pid" ]] && web_process_is_expected "$(cat "$RUN_DIR/web.pid")"; then
   echo "DNS Web already running: $(cat "$RUN_DIR/web.pid")"
 else
   cd "$ROOT"
   case "$WEB_MODE" in
-    preview) web_command=(npm run preview -- --host "$WEB_BIND_ADDRESS" --port 5173 --strictPort) ;;
+    preview) web_command=("$ROOT/node_modules/.bin/vite" preview --host "$WEB_BIND_ADDRESS" --port 5173 --strictPort) ;;
     dev) web_command=("$ROOT/node_modules/.bin/vite" --host "$WEB_BIND_ADDRESS" --port 5173 --strictPort) ;;
     *) echo "WEB_MODE must be preview or dev" >&2; exit 1 ;;
   esac
   setsid "${web_command[@]}" >"$RUN_DIR/web.log" 2>&1 < /dev/null &
   echo $! >"$RUN_DIR/web.pid"
+fi
+
+if ! web_process_is_expected "$(cat "$RUN_DIR/web.pid" 2>/dev/null || true)"; then
+  echo "DNS Web process failed to start" >&2
+  [[ -f "$RUN_DIR/web.log" ]] && tail -n 40 "$RUN_DIR/web.log" >&2
+  exit 1
+fi
+if ! wait_for_http "http://$WEB_BIND_ADDRESS:5173/" "$RUN_DIR/web.pid"; then
+  echo "DNS Web failed readiness check on http://$WEB_BIND_ADDRESS:5173" >&2
+  [[ -f "$RUN_DIR/web.log" ]] && tail -n 40 "$RUN_DIR/web.log" >&2
+  exit 1
+fi
+if ! web_port_is_owned "$(cat "$RUN_DIR/web.pid")"; then
+  echo "DNS Web process does not own port 5173" >&2
+  [[ -f "$RUN_DIR/web.log" ]] && tail -n 40 "$RUN_DIR/web.log" >&2
+  exit 1
 fi
 
 echo "DNS Ops Platform: http://$WEB_BIND_ADDRESS:5173"
