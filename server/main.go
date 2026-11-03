@@ -91,7 +91,8 @@ func validateSecurityConfig() error {
 	if os.Getenv("APP_ENV") != "production" {
 		return nil
 	}
-	if len(os.Getenv("AUTH_SECRET")) < 32 {
+	secret := os.Getenv("AUTH_SECRET")
+	if len(secret) < 32 || secret == "replace-with-a-random-secret-at-least-32-characters" || secret == "change-this-network-visualizer-secret" {
 		return fmt.Errorf("AUTH_SECRET must be at least 32 characters in production")
 	}
 	if !authEnabled() {
