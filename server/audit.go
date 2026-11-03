@@ -178,17 +178,23 @@ func audit(w http.ResponseWriter, r *http.Request) {
 		filtered = append(filtered, entry)
 	}
 	auditMu.RUnlock()
+	// The audit file is append-only, but operators need the newest event first
+	// when opening page 1 after a change is made.
+	ordered := make([]AuditEntry, 0, len(filtered))
+	for index := len(filtered) - 1; index >= 0; index-- {
+		ordered = append(ordered, filtered[index])
+	}
 	start := (page - 1) * pageSize
-	if start > len(filtered) {
-		start = len(filtered)
+	if start > len(ordered) {
+		start = len(ordered)
 	}
 	end := start + pageSize
-	if end > len(filtered) {
-		end = len(filtered)
+	if end > len(ordered) {
+		end = len(ordered)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":    filtered[start:end],
-		"total":    len(filtered),
+		"items":    ordered[start:end],
+		"total":    len(ordered),
 		"page":     page,
 		"pageSize": pageSize,
 	})

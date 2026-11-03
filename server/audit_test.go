@@ -63,7 +63,7 @@ func TestAuditSearchAndPagination(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Total != 2 || len(response.Items) != 1 || response.Items[0].Actor != "alice" {
+	if response.Total != 2 || len(response.Items) != 1 || response.Items[0].Actor != "alice" || response.Items[0].Action != "rule.delete" {
 		t.Fatalf("unexpected search result: %+v", response)
 	}
 }
