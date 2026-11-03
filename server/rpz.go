@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +41,9 @@ var publishJobMu sync.RWMutex
 var publishJobs = map[string]PublishJob{}
 var publishExecutionMu sync.Mutex
 var activePublishID string
+var rpzSerialMu sync.Mutex
+var lastRPZSerial int64
+var rpzSerialPattern = regexp.MustCompile(`SOA[^\(]*\(\s*([0-9]+)`)
 
 func rpzConfig(name, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
@@ -101,8 +106,27 @@ func rpzQNAMETriggers(domain string) []string {
 	return []string{domain, "*." + domain}
 }
 
-func compileRPZ(rules []RPZRule) (string, error) {
+func nextRPZSerial() int64 {
+	rpzSerialMu.Lock()
+	defer rpzSerialMu.Unlock()
 	serial := time.Now().UTC().Unix()
+	path := rpzConfig("RPZ_ARTIFACT_FILE", filepath.Join("data", "rpz", rpzZoneName()+".db"))
+	if content, err := os.ReadFile(path); err == nil {
+		if match := rpzSerialPattern.FindSubmatch(content); len(match) == 2 {
+			if previous, parseErr := strconv.ParseInt(string(match[1]), 10, 64); parseErr == nil && previous >= serial {
+				serial = previous + 1
+			}
+		}
+	}
+	if serial <= lastRPZSerial {
+		serial = lastRPZSerial + 1
+	}
+	lastRPZSerial = serial
+	return serial
+}
+
+func compileRPZ(rules []RPZRule) (string, error) {
+	serial := nextRPZSerial()
 	zone := rpzZoneName()
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "$TTL 60\n$ORIGIN %s.\n@ SOA localhost. hostmaster.localhost. (%d 1h 15m 30d 60)\n  NS localhost.\n\n", zone, serial)
@@ -150,6 +174,19 @@ func validateRPZ(ctx context.Context, path string) string {
 		return fmt.Sprintf("named-checkzone 失败: %s", strings.TrimSpace(string(output)))
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func verifyRPZPrimarySerial(ctx context.Context, previous int64) error {
+	address := net.JoinHostPort(rpzConfig("RPZ_PRIMARY", "RPZ_PRIMARY"), rpzConfig("RPZ_PRIMARY_PORT", "53"))
+	actual, err := probeDNSNode(ctx, address)
+	if err != nil {
+		return fmt.Errorf("RPZ Primary SOA 探测失败: %w", err)
+	}
+	serial, err := strconv.ParseInt(actual, 10, 64)
+	if err != nil || serial < previous {
+		return fmt.Errorf("RPZ Primary SOA Serial 发生回退: previous=%d actual=%s", previous, actual)
+	}
+	return nil
 }
 
 func runNSUpdate(ctx context.Context, current, previous []RPZRule) error {
@@ -271,9 +308,20 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 	status := "compiled"
 	attempts := 1
 	if mode == "nsupdate" {
-		var err error
+		address := net.JoinHostPort(rpzConfig("RPZ_PRIMARY", "RPZ_PRIMARY"), rpzConfig("RPZ_PRIMARY_PORT", "53"))
+		before, err := probeDNSNode(ctx, address)
+		if err != nil {
+			return publishResult{Status: status}, fmt.Errorf("发布前 RPZ Primary SOA 探测失败: %w", err)
+		}
+		previousSerial, err := strconv.ParseInt(before, 10, 64)
+		if err != nil {
+			return publishResult{Status: status}, fmt.Errorf("发布前 RPZ Primary SOA Serial 无效: %s", before)
+		}
 		attempts, err = runNSUpdateWithRetry(ctx, current, previous)
 		if err != nil {
+			return publishResult{Status: status, Attempts: attempts}, err
+		}
+		if err := verifyRPZPrimarySerial(ctx, previousSerial); err != nil {
 			return publishResult{Status: status, Attempts: attempts}, err
 		}
 		status = "published"

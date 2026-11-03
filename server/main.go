@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -118,6 +119,9 @@ func validateSecurityConfig() error {
 }
 
 func validateProductionRuntimeFiles() error {
+	if _, err := exec.LookPath("named-checkzone"); err != nil {
+		return fmt.Errorf("named-checkzone is required in production: %w", err)
+	}
 	for _, item := range []struct {
 		path  string
 		label string
