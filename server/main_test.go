@@ -28,3 +28,13 @@ func TestProductionSecurityRequiresBcryptAuthFile(t *testing.T) {
 		t.Fatalf("test auth file unexpectedly exists: %v", err)
 	}
 }
+
+func TestProductionSecurityRequiresMonitoringToken(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("AUTH_ENABLED", "true")
+	t.Setenv("AUTH_SECRET", "a-long-random-secret-for-production-tests-2026")
+	t.Setenv("MONITORING_TOKEN", "")
+	if err := validateSecurityConfig(); err == nil {
+		t.Fatal("expected missing MONITORING_TOKEN to be rejected")
+	}
+}

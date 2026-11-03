@@ -99,6 +99,10 @@ func validateSecurityConfig() error {
 	if !authEnabled() {
 		return fmt.Errorf("AUTH_ENABLED must be true in production")
 	}
+	monitoringToken := os.Getenv("MONITORING_TOKEN")
+	if len(monitoringToken) < 32 || monitoringToken == "replace-with-a-random-monitoring-token" {
+		return fmt.Errorf("MONITORING_TOKEN must be at least 32 characters in production")
+	}
 	if !authFileHasPasswordHash() {
 		return fmt.Errorf("AUTH_FILE must contain a bcrypt password hash; run scripts/create-auth-file.sh")
 	}

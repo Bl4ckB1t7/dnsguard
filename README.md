@@ -335,6 +335,7 @@ AUTH_ENABLED=true
 AUTH_USERNAME=admin
 AUTH_SECRET=<at-least-32-random-characters>
 AUTH_FILE=/etc/dns-ops/auth.json
+MONITORING_TOKEN=<at-least-32-random-characters>
 WEB_MODE=preview
 ```
 
@@ -347,6 +348,7 @@ sudo chmod 600 /etc/dns-ops/auth.json
 ```
 
 服务启动时会校验 `AUTH_FILE` 中存在 bcrypt 哈希；生产环境没有认证文件时会直接启动失败。登录后也可以通过密码修改接口更新哈希文件。
+生产环境同时要求 `MONITORING_TOKEN` 为至少 32 位随机值；健康检查和告警脚本必须使用该值访问监控接口。
 
 HTTPS 任选一种：
 
