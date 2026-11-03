@@ -89,8 +89,8 @@ td { color: #c9e7ec; }
 .node-add { border-color: #2b9bca; background: #073449; color: #bdefff; }
 .node-create-form { display: grid; grid-template-columns: 1.1fr 1fr 1.4fr auto; gap: 10px; align-items: end; margin: 0 0 15px; padding: 12px; border: 1px solid #164b60; border-radius: 10px; background: #031522; }
 .node-create-form label { color: #91c2cc; font-size: 11px; }
-.node-create-form input { display: block; width: 100%; margin-top: 6px; padding: 8px 9px; color: #eaffff; background: #031321; border: 1px solid #1a5c70; border-radius: 7px; outline: none; }
-.node-create-form input:focus { border-color: #2ee6ff; box-shadow: 0 0 10px #1bbdff33; }
+.node-create-form input, .node-create-form select { display: block; width: 100%; margin-top: 6px; padding: 8px 9px; color: #eaffff; background: #031321; border: 1px solid #1a5c70; border-radius: 7px; outline: none; }
+.node-create-form input:focus, .node-create-form select:focus { border-color: #2ee6ff; box-shadow: 0 0 10px #1bbdff33; }
 .node-create-form button { border: 1px solid #27d4eb; border-radius: 7px; background: #07506c; color: #e7fdff; padding: 8px 13px; cursor: pointer; }
 .node-delete { border-color: #6c3b4b; }
 .node-delete:disabled { opacity: .35; cursor: not-allowed; }
