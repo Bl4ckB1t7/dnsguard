@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -110,6 +111,9 @@ func main() {
 }
 
 func validateSecurityConfig() error {
+	if authEnabled() && strings.TrimSpace(os.Getenv("AUTH_SECRET")) == "" {
+		return fmt.Errorf("AUTH_SECRET must be configured when authentication is enabled")
+	}
 	if os.Getenv("APP_ENV") != "production" {
 		return nil
 	}

@@ -27,6 +27,22 @@ func TestHTTPServerHasConnectionTimeouts(t *testing.T) {
 	}
 }
 
+func TestAuthSecretHasNoBuiltInFallback(t *testing.T) {
+	t.Setenv("AUTH_SECRET", "")
+	if secret := authSecret(); len(secret) != 0 {
+		t.Fatalf("authSecret must not contain a built-in fallback: %q", secret)
+	}
+}
+
+func TestDevelopmentSecurityRejectsMissingAuthSecret(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("AUTH_ENABLED", "true")
+	t.Setenv("AUTH_SECRET", "")
+	if err := validateSecurityConfig(); err == nil {
+		t.Fatal("expected missing AUTH_SECRET to be rejected when authentication is enabled")
+	}
+}
+
 func TestProductionSecurityRejectsPlaceholderSecret(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("AUTH_ENABLED", "true")

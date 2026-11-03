@@ -62,10 +62,7 @@ func authPassword() string {
 }
 
 func authSecret() []byte {
-	if value := os.Getenv("AUTH_SECRET"); value != "" {
-		return []byte(value)
-	}
-	return []byte("change-this-network-visualizer-secret")
+	return []byte(strings.TrimSpace(os.Getenv("AUTH_SECRET")))
 }
 
 func authFilePath() string {
