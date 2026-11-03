@@ -24,7 +24,7 @@ if [[ -f "$RUN_DIR/api.pid" ]] && kill -0 "$(cat "$RUN_DIR/api.pid")" 2>/dev/nul
   echo "DNS API already running: $(cat "$RUN_DIR/api.pid")"
 else
   (cd "$ROOT/server" && go build -o "$RUN_DIR/dns-ops-api" .)
-  nohup env LISTEN_ADDR=127.0.0.1:8080 DNS_STATE_FILE="$DATA_DIR/dns-state.json" AUDIT_FILE="$DATA_DIR/audit.json" RPZ_ARTIFACT_FILE="$DATA_DIR/rpz/$RPZ_ZONE.db" RPZ_PUBLISH_MODE="$RPZ_PUBLISH_MODE" RPZ_PRIMARY="$RPZ_PRIMARY" RPZ_PRIMARY_PORT="$RPZ_PRIMARY_PORT" RPZ_ZONE="$RPZ_ZONE" RPZ_KEY_FILE="$RPZ_KEY_FILE" AUTH_ENABLED="$AUTH_ENABLED" DNS_NODE_ADDRESSES="$DNS_NODE_ADDRESSES" "$RUN_DIR/dns-ops-api" >"$RUN_DIR/api.log" 2>&1 &
+  setsid env LISTEN_ADDR=127.0.0.1:8080 DNS_STATE_FILE="$DATA_DIR/dns-state.json" AUDIT_FILE="$DATA_DIR/audit.json" RPZ_ARTIFACT_FILE="$DATA_DIR/rpz/$RPZ_ZONE.db" RPZ_PUBLISH_MODE="$RPZ_PUBLISH_MODE" RPZ_PRIMARY="$RPZ_PRIMARY" RPZ_PRIMARY_PORT="$RPZ_PRIMARY_PORT" RPZ_ZONE="$RPZ_ZONE" RPZ_KEY_FILE="$RPZ_KEY_FILE" AUTH_ENABLED="$AUTH_ENABLED" DNS_NODE_ADDRESSES="$DNS_NODE_ADDRESSES" "$RUN_DIR/dns-ops-api" >"$RUN_DIR/api.log" 2>&1 < /dev/null &
   echo $! >"$RUN_DIR/api.pid"
 fi
 
@@ -32,7 +32,7 @@ if [[ -f "$RUN_DIR/web.pid" ]] && kill -0 "$(cat "$RUN_DIR/web.pid")" 2>/dev/nul
   echo "DNS Web already running: $(cat "$RUN_DIR/web.pid")"
 else
   cd "$ROOT"
-  nohup "$ROOT/node_modules/.bin/vite" --host "$IP" --port 5173 --strictPort >"$RUN_DIR/web.log" 2>&1 &
+  setsid "$ROOT/node_modules/.bin/vite" --host "$IP" --port 5173 --strictPort >"$RUN_DIR/web.log" 2>&1 < /dev/null &
   echo $! >"$RUN_DIR/web.pid"
 fi
 
