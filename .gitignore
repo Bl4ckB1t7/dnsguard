@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .run/
+.env
 data/*.json
 data/*.bak
 data/*.lock

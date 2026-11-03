@@ -13,7 +13,27 @@
 
 点击“生成 / 发布 RPZ”时，默认使用 `RPZ_PUBLISH_MODE=artifact`，生成文件到 `RPZ_ARTIFACT_FILE`，不会触碰生产 BIND。配置 `RPZ_PUBLISH_MODE=nsupdate`、`RPZ_PRIMARY` 和 `RPZ_KEY_FILE` 后，才会通过 TSIG `nsupdate` 更新 RPZ Primary。
 
-## 启动
+## 一键部署与启动
+
+首次部署只需要：
+
+```bash
+cp .env.example .env
+# 按实际环境修改 .env 中的 DNS、RPZ 和 HTTPS 参数
+./scripts/start-tailscale.sh
+```
+
+脚本会自动检查 `Node.js`、`Go`、`dig` 和 Tailscale，首次运行自动执行 `npm ci`，构建前端和 Go API，并以生产预览模式启动。默认通过 Tailscale 地址访问；停止服务：
+
+```bash
+./scripts/stop-tailscale.sh
+```
+
+日常升级同样只需要拉取代码后再次执行 `./scripts/start-tailscale.sh`。
+
+开发调试可以在 `.env` 中设置 `WEB_MODE=dev`；生产环境保持 `WEB_MODE=preview`。
+
+## 手动启动（开发）
 
 前端：
 
