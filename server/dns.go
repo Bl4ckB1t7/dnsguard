@@ -690,6 +690,7 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 		}
 		dnsMu.Lock()
 		previousNodes := append([]DNSNode(nil), state.Nodes...)
+		var auditNode DNSNode
 		created := request.ID == ""
 		if created {
 			request.ID = nextNodeID()
@@ -711,6 +712,7 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 				if request.Role != "" {
 					state.Nodes[index].Role = request.Role
 				}
+				auditNode = state.Nodes[index]
 				updated = true
 				break
 			}
@@ -721,7 +723,8 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "新增节点必须填写名称和角色"})
 				return
 			}
-			state.Nodes = append(state.Nodes, DNSNode{ID: request.ID, Name: request.Name, Role: request.Role, Address: request.Address, Status: "unknown", RPZVersion: "—", LastSync: "未探测"})
+			auditNode = DNSNode{ID: request.ID, Name: request.Name, Role: request.Role, Address: request.Address, Status: "unknown", RPZVersion: "—", LastSync: "未探测"}
+			state.Nodes = append(state.Nodes, auditNode)
 			created = true
 		}
 		dnsMu.Unlock()
@@ -740,7 +743,7 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 		if created {
 			action = "dns.node.create"
 		}
-		auditEvent(r, authUsername(), action, request.ID+":"+request.Address)
+		auditEvent(r, authUsername(), action, auditNode.Name+" / "+auditNode.Role+" / "+auditNode.Address)
 		writeJSON(w, http.StatusOK, map[string]any{"updated": true, "created": created, "nodeId": request.ID, "address": request.Address})
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -792,7 +795,7 @@ func dnsNodeByID(w http.ResponseWriter, r *http.Request) {
 	dnsHealthCache = nil
 	dnsHealthAt = time.Time{}
 	dnsHealthMu.Unlock()
-	auditEvent(r, authUsername(), "dns.node.delete", removed.ID+":"+removed.Address)
+	auditEvent(r, authUsername(), "dns.node.delete", removed.Name+" / "+removed.Role+" / "+removed.Address)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "nodeId": removed.ID})
 }
 
@@ -978,10 +981,10 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 	}
 	dnsMu.Lock()
 	kept := make([]RPZRule, 0, len(state.Rules))
-	deleted := make([]string, 0, len(selected))
+	deleted := make([]RPZRule, 0, len(selected))
 	for _, rule := range state.Rules {
 		if _, ok := selected[rule.ID]; ok {
-			deleted = append(deleted, rule.ID)
+			deleted = append(deleted, rule)
 			continue
 		}
 		kept = append(kept, rule)
@@ -996,8 +999,8 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量删除失败"})
 		return
 	}
-	for _, id := range deleted {
-		auditEvent(r, authUsername(), "rpz.rule.delete", id)
+	for _, rule := range deleted {
+		auditEvent(r, authUsername(), "rpz.rule.delete", rule.Domain)
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(deleted)})
 }
@@ -1017,7 +1020,9 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	var removed RPZRule
 	if index >= 0 {
+		removed = state.Rules[index]
 		state.Rules = append(state.Rules[:index], state.Rules[index+1:]...)
 	}
 	dnsMu.Unlock()
@@ -1029,6 +1034,6 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则删除失败"})
 		return
 	}
-	auditEvent(r, authUsername(), "rpz.rule.delete", id)
+	auditEvent(r, authUsername(), "rpz.rule.delete", removed.Domain)
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }

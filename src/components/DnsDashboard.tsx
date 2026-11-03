@@ -52,7 +52,9 @@ function auditActionLabel(action: string): string {
     login: "登录",
     logout: "退出登录",
     "password.change": "修改密码",
+    "dns.node.create": "增加 DNS 节点",
     "dns.node.update": "更新 DNS 节点",
+    "dns.node.delete": "删除 DNS 节点",
     "rpz.rule.create": "新增 RPZ 规则",
     "rpz.rule.delete": "删除 RPZ 规则",
     "rpz.publish": "发布 RPZ",
@@ -65,7 +67,15 @@ function auditDetail(entry: AuditEntry): string {
   if (entry.action === "login") return entry.result === "success" ? "登录成功" : "登录失败";
   if (entry.action === "logout") return "会话已退出";
   if (entry.action === "password.change") return "账户密码已更新";
-  if (entry.action === "rpz.publish") return entry.result.includes(":") ? entry.result.split(":").slice(1).join(":") : entry.result;
+  if (entry.action === "dns.node.create") return `已添加：${entry.result}`;
+  if (entry.action === "dns.node.update") return `已更新：${entry.result}`;
+  if (entry.action === "dns.node.delete") return `已删除：${entry.result}`;
+  if (entry.action === "rpz.rule.create") return `域名：${entry.result}`;
+  if (entry.action === "rpz.rule.delete") return `域名：${entry.result}`;
+  if (entry.action === "rpz.publish") {
+    const status = entry.result.includes(":") ? entry.result.split(":").slice(1).join(":") : entry.result;
+    return status === "published" ? "发布成功" : status === "compiled" ? "RPZ 文件已生成" : status;
+  }
   if (entry.action === "rpz.rollback") return `版本 ${entry.result}`;
   return entry.result;
 }
