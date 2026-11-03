@@ -12,7 +12,7 @@ export function LoginPage({ onLogin }: { onLogin: (mustChangePassword: boolean) 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [title, setTitle] = useState("域盾 DNSGuard");
-  const [subtitle, setSubtitle] = useState("域策 · DNS 安全策略管理平台");
+  const [subtitle, setSubtitle] = useState("DNS 安全策略管理平台");
   const [clock, setClock] = useState(() => new Date());
 
   const refreshCaptcha = async () => {
