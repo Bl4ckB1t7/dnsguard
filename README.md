@@ -272,6 +272,18 @@ RPZ_ZONE=rpz.local
 RPZ_KEY_FILE=/etc/dns-ops/keys/rpz-manager.key
 ```
 
+发布任务默认总超时 15 秒，`nsupdate` 失败后最多重试 2 次，每次间隔 1 秒；可按现场
+网络情况调整：
+
+```dotenv
+RPZ_PUBLISH_TIMEOUT_SECONDS=15
+RPZ_PUBLISH_RETRIES=2
+RPZ_PUBLISH_RETRY_BACKOFF_SECONDS=1
+```
+
+任务接口会返回 `attempts`，最终失败会保留错误信息并触发监控状态为 degraded，便于
+告警系统发现发布异常。
+
 发布链路：
 
 ```text

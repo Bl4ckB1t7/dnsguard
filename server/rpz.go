@@ -30,6 +30,7 @@ type PublishJob struct {
 	CreatedAt  string `json:"createdAt"`
 	StartedAt  string `json:"startedAt,omitempty"`
 	FinishedAt string `json:"finishedAt,omitempty"`
+	Attempts   int    `json:"attempts,omitempty"`
 }
 
 var rpzRuntimeMu sync.RWMutex
@@ -188,10 +189,63 @@ func runNSUpdate(ctx context.Context, current, previous []RPZRule) error {
 	return nil
 }
 
+var runNSUpdateFunc = runNSUpdate
+
+func rpzPublishTimeout() time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RPZ_PUBLISH_TIMEOUT_SECONDS")))
+	if err != nil || seconds < 5 || seconds > 300 {
+		seconds = 15
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func rpzPublishRetries() int {
+	retries, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RPZ_PUBLISH_RETRIES")))
+	if err != nil || retries < 0 || retries > 5 {
+		return 2
+	}
+	return retries
+}
+
+func rpzPublishBackoff() time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RPZ_PUBLISH_RETRY_BACKOFF_SECONDS")))
+	if err != nil || seconds < 0 || seconds > 30 {
+		seconds = 1
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func runNSUpdateWithRetry(ctx context.Context, current, previous []RPZRule) (int, error) {
+	maxAttempts := rpzPublishRetries() + 1
+	backoff := rpzPublishBackoff()
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := runNSUpdateFunc(ctx, current, previous); err == nil {
+			return attempt, nil
+		} else {
+			lastErr = err
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return attempt, fmt.Errorf("nsupdate 重试中止: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+	return maxAttempts, lastErr
+}
+
 type publishResult struct {
 	Status     string
 	Message    string
 	Validation string
+	Attempts   int
 }
 
 func performPublish(ctx context.Context, actor, remoteAddr string) (publishResult, error) {
@@ -215,9 +269,12 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 	dnsMu.RUnlock()
 	message := fmt.Sprintf("已生成 %s；%s", path, validation)
 	status := "compiled"
+	attempts := 1
 	if mode == "nsupdate" {
-		if err := runNSUpdate(ctx, current, previous); err != nil {
-			return publishResult{}, err
+		var err error
+		attempts, err = runNSUpdateWithRetry(ctx, current, previous)
+		if err != nil {
+			return publishResult{Status: status, Attempts: attempts}, err
 		}
 		status = "published"
 		message = "已通过 nsupdate 发布到 RPZ Primary"
@@ -247,7 +304,7 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 	rpzRuntimeState = rpzRuntime{Mode: mode, LastPublish: now, Message: message, JobStatus: "succeeded"}
 	rpzRuntimeMu.Unlock()
 	auditEvent(&http.Request{RemoteAddr: remoteAddr}, actor, "rpz.publish", mode+":"+status)
-	return publishResult{Status: status, Message: message, Validation: validation}, nil
+	return publishResult{Status: status, Message: message, Validation: validation, Attempts: attempts}, nil
 }
 
 func runPublishJob(id, actor, remoteAddr string) {
@@ -258,12 +315,17 @@ func runPublishJob(id, actor, remoteAddr string) {
 	rpzRuntimeState.JobID = id
 	rpzRuntimeState.JobStatus = "running"
 	rpzRuntimeMu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), rpzPublishTimeout())
 	result, err := performPublish(ctx, actor, remoteAddr)
 	cancel()
 	finished := time.Now().UTC().Format(time.RFC3339)
 	if err != nil {
-		updatePublishJob(id, func(job *PublishJob) { job.Status = "failed"; job.Error = err.Error(); job.FinishedAt = finished })
+		updatePublishJob(id, func(job *PublishJob) {
+			job.Status = "failed"
+			job.Error = err.Error()
+			job.FinishedAt = finished
+			job.Attempts = result.Attempts
+		})
 		rpzRuntimeMu.Lock()
 		rpzRuntimeState.JobID = id
 		rpzRuntimeState.JobStatus = "failed"
@@ -276,6 +338,7 @@ func runPublishJob(id, actor, remoteAddr string) {
 		job.Message = result.Message
 		job.Validation = result.Validation
 		job.FinishedAt = finished
+		job.Attempts = result.Attempts
 	})
 	rpzRuntimeMu.Lock()
 	rpzRuntimeState.JobID = id
