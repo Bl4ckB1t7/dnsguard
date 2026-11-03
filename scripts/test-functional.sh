@@ -42,6 +42,9 @@ assert len({node["rpzVersion"] for node in x}) == 1, x
 '
 pass "live DNS node status and RPZ Serial comparison"
 
+curl -fsS -H 'Content-Type: application/json' -d '{"id":"primary-1","address":"127.0.0.2:5353"}' "$API_URL/api/dns/nodes" | python3 -c 'import json,sys; assert json.load(sys.stdin)["updated"] is True'
+pass "DNS node configuration persistence"
+
 curl -fsS "$API_URL/api/dns/overview" | python3 -c '
 import json,sys
 x=json.load(sys.stdin)

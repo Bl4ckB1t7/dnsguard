@@ -463,12 +463,70 @@ func rpzVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 func dnsNodes(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, liveDNSNodes())
+	case http.MethodPost:
+		var request struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Role    string `json:"role"`
+			Address string `json:"address"`
+		}
+		if err := decodeJSON(r, &request); err != nil || strings.TrimSpace(request.ID) == "" || !validDNSNodeAddress(request.Address) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "节点 ID 或地址无效"})
+			return
+		}
+		dnsMu.Lock()
+		updated := false
+		for index := range state.Nodes {
+			if state.Nodes[index].ID == request.ID {
+				state.Nodes[index].Address = strings.TrimSpace(request.Address)
+				if strings.TrimSpace(request.Name) != "" {
+					state.Nodes[index].Name = strings.TrimSpace(request.Name)
+				}
+				if strings.TrimSpace(request.Role) != "" {
+					state.Nodes[index].Role = strings.TrimSpace(request.Role)
+				}
+				updated = true
+				break
+			}
+		}
+		dnsMu.Unlock()
+		if !updated {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "节点不存在"})
+			return
+		}
+		if err := saveDNSState(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "节点配置保存失败"})
+			return
+		}
+		dnsHealthMu.Lock()
+		dnsHealthCache = nil
+		dnsHealthMu.Unlock()
+		auditEvent(r, authUsername(), "dns.node.update", request.ID+":"+request.Address)
+		writeJSON(w, http.StatusOK, map[string]any{"updated": true, "nodeId": request.ID, "address": request.Address})
+	default:
+		w.Header().Set("Allow", "GET, POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
 	}
-	writeJSON(w, http.StatusOK, liveDNSNodes())
+}
+
+func validDNSNodeAddress(address string) bool {
+	address = strings.TrimSpace(address)
+	if address == "" || strings.ContainsAny(address, " \t\r\n") {
+		return false
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		host = strings.Trim(address, "[]")
+		port = "53"
+	}
+	if host == "" {
+		return false
+	}
+	portNumber, err := strconv.Atoi(port)
+	return err == nil && portNumber > 0 && portNumber <= 65535
 }
 
 func dnsRecords(w http.ResponseWriter, r *http.Request) {

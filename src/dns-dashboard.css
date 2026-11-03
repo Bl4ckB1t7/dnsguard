@@ -50,6 +50,9 @@ table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th, td { padding: 11px 9px; border-bottom: 1px solid #123748; text-align: left; white-space: nowrap; }
 th { color: #71b7c8; font-weight: 500; }
 td { color: #c9e7ec; }
+.node-address { width: 150px; box-sizing: border-box; padding: 7px 8px; color: #eaffff; background: #031321; border: 1px solid #1a5c70; outline: none; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.node-address:focus { border-color: #2ee6ff; box-shadow: 0 0 10px #1bbdff33; }
+.node-save { padding: 5px 9px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; background: #f4b94f; box-shadow: 0 0 8px #f4b94f; }
 .status-dot.ok { background: #2cf0ab; box-shadow: 0 0 8px #2cf0ab; }
