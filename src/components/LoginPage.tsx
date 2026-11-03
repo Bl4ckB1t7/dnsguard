@@ -75,8 +75,8 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
     <main className="login-viewport">
       <div className="login-grid" />
       <div className="login-radar" aria-hidden="true" />
-      <div className="login-telemetry login-telemetry-left"><b>◉ SYSTEM SCANNING</b><span>NETWORK NODES <strong>128</strong></span><span>THREAT LEVEL <strong className="safe">LOW</strong></span></div>
-      <div className="login-telemetry login-telemetry-right"><b>{clock.toISOString().slice(0, 19).replace("T", " ")} UTC</b><span>SECURITY LEVEL <strong>HIGH</strong></span><span>ENCRYPTED CHANNEL <strong className="safe">ACTIVE</strong></span></div>
+      <div className="login-telemetry login-telemetry-left"><b>◉ DNS CONTROL ONLINE</b><span>DNS NODES <strong>ACTIVE</strong></span><span>RPZ POLICY <strong className="safe">READY</strong></span></div>
+      <div className="login-telemetry login-telemetry-right"><b>{clock.toISOString().slice(0, 19).replace("T", " ")} UTC</b><span>ACCESS LEVEL <strong>ADMIN</strong></span><span>SECURE SESSION <strong className="safe">READY</strong></span></div>
       <div className="login-scan" />
       <section className="login-card">
         <div className="login-corner login-corner-a" /><div className="login-corner login-corner-b" />
@@ -93,9 +93,9 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
             </div>
           </label>
           {error && <p className="login-error">{error}</p>}
-          <button type="submit" disabled={loading || captchaCode.trim().length !== 4}>{loading ? "认证中…" : "进入监控驾驶舱"}</button>
+          <button type="submit" disabled={loading || captchaCode.trim().length !== 4}>{loading ? "认证中…" : "登录 DNS 控制台"}</button>
         </form>
-        <footer><span>AUTHORIZED DNS CONSOLE</span><b>● SECURE</b></footer>
+        <footer><span>AUTHORIZED DNS CONTROL</span><b>● SECURE</b></footer>
         <div className="login-card-status"><span><i /> AUTH SERVICE ONLINE</span><span><i /> RPZ CONTROL READY</span></div>
       </section>
     </main>
