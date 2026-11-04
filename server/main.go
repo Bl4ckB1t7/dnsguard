@@ -69,7 +69,9 @@ func main() {
 	if err := loadDNSNodeConfig(); err != nil {
 		log.Fatal(err)
 	}
-	loadAudit()
+	if err := loadAudit(); err != nil {
+		log.Printf("audit integrity unavailable; management writes will be blocked: %v", err)
+	}
 	loadAuth()
 	if err := loadTelegramConfig(); err != nil {
 		log.Fatal(err)

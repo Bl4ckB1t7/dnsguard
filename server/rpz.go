@@ -53,6 +53,7 @@ var rpzRuntimeMu sync.RWMutex
 var rpzRuntimeState = rpzRuntime{Mode: "artifact", Message: "尚未发布", JobStatus: "idle"}
 var publishJobMu sync.RWMutex
 var publishJobs = map[string]PublishJob{}
+var publishJobPersistMu sync.Mutex
 var publishExecutionMu sync.Mutex
 var activePublishID string
 var rpzSerialMu sync.Mutex
@@ -80,6 +81,12 @@ func publishJobsPath() string {
 }
 
 func persistPublishJobs() error {
+	publishJobPersistMu.Lock()
+	defer publishJobPersistMu.Unlock()
+	return persistPublishJobsLocked()
+}
+
+func persistPublishJobsLocked() error {
 	path := publishJobsPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -161,16 +168,39 @@ func loadPublishJobs() error {
 	return nil
 }
 
-func updatePublishJob(id string, update func(*PublishJob)) PublishJob {
+func updatePublishJob(id string, update func(*PublishJob)) (PublishJob, error) {
+	publishJobPersistMu.Lock()
+	defer publishJobPersistMu.Unlock()
 	publishJobMu.Lock()
+	_, exists := publishJobs[id]
+	if !exists {
+		publishJobMu.Unlock()
+		return PublishJob{}, fmt.Errorf("RPZ 发布任务不存在: %s", id)
+	}
 	job := publishJobs[id]
 	update(&job)
 	publishJobs[id] = job
 	publishJobMu.Unlock()
-	if err := persistPublishJobs(); err != nil {
-		log.Printf("persist RPZ publish job %s failed: %v", id, err)
+	if err := persistPublishJobsLocked(); err == nil {
+		return job, nil
+	} else {
+		persistErr := fmt.Errorf("RPZ 发布任务状态持久化失败: %w", err)
+		publishJobMu.Lock()
+		job = publishJobs[id]
+		job.Status = "reconcile_required"
+		job.SyncStatus = "reconcile_required"
+		job.Error = persistErr.Error() + "；禁止自动重放，必须人工核对 Primary/Secondary 实际状态"
+		if job.FinishedAt == "" {
+			job.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+		publishJobs[id] = job
+		publishJobMu.Unlock()
+		if recoveryErr := persistPublishJobsLocked(); recoveryErr != nil {
+			log.Printf("persist RPZ publish job %s recovery state failed: %v", id, recoveryErr)
+			return job, fmt.Errorf("%w；写入人工核对状态也失败: %v", persistErr, recoveryErr)
+		}
+		return job, persistErr
 	}
-	return job
 }
 
 func getPublishJob(id string) (PublishJob, bool) {
@@ -602,7 +632,11 @@ type publishResult struct {
 }
 
 func performPublish(ctx context.Context, actor, remoteAddr string) (publishResult, error) {
-	current := activeRPZRules()
+	dnsMu.RLock()
+	current := copyRPZRules(state.Rules)
+	previous := copyRPZRules(state.Published)
+	snapshotRevision := state.RulesRevision
+	dnsMu.RUnlock()
 	content, err := compileRPZ(current)
 	if err != nil {
 		return publishResult{}, err
@@ -617,9 +651,6 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 	}
 
 	mode := rpzConfig("RPZ_PUBLISH_MODE", "artifact")
-	dnsMu.RLock()
-	previous := append([]RPZRule(nil), state.Published...)
-	dnsMu.RUnlock()
 	currentDomains := make(map[string]struct{}, len(current))
 	for _, rule := range current {
 		currentDomains[rule.Domain] = struct{}{}
@@ -645,7 +676,7 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 		}
 		attempts, err = runNSUpdateWithRetry(ctx, current, previous)
 		if err != nil {
-			return publishResult{Status: status, Attempts: attempts}, err
+			return publishResult{Status: "reconcile_required", SyncStatus: "reconcile_required", Attempts: attempts}, fmt.Errorf("nsupdate 结果不确定，需人工核对 Primary/Secondary: %w", err)
 		}
 		nodeChecks, err := verifyRPZCluster(ctx, previousSerial, current, removed)
 		if err != nil {
@@ -654,14 +685,16 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 		resultChecks := nodeChecks
 		status = "published"
 		message = "已通过 nsupdate 发布到 RPZ Primary"
-		return finishPublish(actor, remoteAddr, current, previous, validation, mode, status, attempts, message, resultChecks)
+		return finishPublish(actor, remoteAddr, current, previous, snapshotRevision, validation, mode, status, attempts, message, resultChecks)
 	} else if mode != "artifact" {
 		return publishResult{}, fmt.Errorf("RPZ_PUBLISH_MODE 只支持 artifact 或 nsupdate")
 	}
-	return finishPublish(actor, remoteAddr, current, previous, validation, mode, status, attempts, message, nil)
+	return finishPublish(actor, remoteAddr, current, previous, snapshotRevision, validation, mode, status, attempts, message, nil)
 }
 
-func finishPublish(actor, remoteAddr string, current, previous []RPZRule, validation, mode, status string, attempts int, message string, nodeChecks []RPZNodeCheck) (publishResult, error) {
+var performPublishFunc = performPublish
+
+func finishPublish(actor, remoteAddr string, current, previous []RPZRule, snapshotRevision uint64, validation, mode, status string, attempts int, message string, nodeChecks []RPZNodeCheck) (publishResult, error) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	dnsStateMutationMu.Lock()
@@ -669,12 +702,23 @@ func finishPublish(actor, remoteAddr string, current, previous []RPZRule, valida
 	previousRulesState := copyRPZRules(state.Rules)
 	previousPublishedState := copyRPZRules(state.Published)
 	previousVersionsState := append([]RPZVersion(nil), state.Versions...)
+	previousRevision := state.RulesRevision
 	for index := range state.Rules {
-		state.Rules[index].Status = status
-		state.Rules[index].UpdatedAt = now
+		if rpzRuleInSnapshot(state.Rules[index], current) {
+			state.Rules[index].Status = status
+			if state.RulesRevision == snapshotRevision {
+				state.Rules[index].UpdatedAt = now
+			}
+		} else if status == "published" || status == "compiled" {
+			state.Rules[index].Status = "draft"
+		}
 	}
 	if status == "published" {
 		snapshot := copyRPZRules(current)
+		for index := range snapshot {
+			snapshot[index].Status = "published"
+			snapshot[index].UpdatedAt = now
+		}
 		state.Published = snapshot
 		state.Versions = append([]RPZVersion{{ID: "version-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10), CreatedAt: now, Mode: mode, Rules: snapshot}}, state.Versions...)
 		if len(state.Versions) > 20 {
@@ -687,50 +731,72 @@ func finishPublish(actor, remoteAddr string, current, previous []RPZRule, valida
 		state.Rules = previousRulesState
 		state.Published = previousPublishedState
 		state.Versions = previousVersionsState
+		state.RulesRevision = previousRevision
 		dnsMu.Unlock()
 		dnsStateMutationMu.Unlock()
-		return publishResult{}, fmt.Errorf("状态保存失败")
+		return publishResult{Status: "reconcile_required", SyncStatus: "reconcile_required", Validation: validation, Attempts: attempts, NodeChecks: nodeChecks}, fmt.Errorf("状态保存失败；外部发布状态需人工核对")
 	}
 	dnsStateMutationMu.Unlock()
+	if err := auditEvent(&http.Request{RemoteAddr: remoteAddr}, actor, "rpz.publish", mode+":"+status); err != nil {
+		message += "；审计记录写入失败，需人工核对：" + err.Error()
+		return publishResult{Status: "reconcile_required", SyncStatus: "reconcile_required", Message: message, Validation: validation, Attempts: attempts, NodeChecks: nodeChecks}, fmt.Errorf("发布完成但审计记录失败，需人工核对: %w", err)
+	}
 	rpzRuntimeMu.Lock()
 	rpzRuntimeState = rpzRuntime{Mode: mode, LastPublish: now, Message: message, JobStatus: "succeeded"}
 	rpzRuntimeMu.Unlock()
-	if err := auditEvent(&http.Request{RemoteAddr: remoteAddr}, actor, "rpz.publish", mode+":"+status); err != nil {
-		message += "；审计记录写入失败：" + err.Error()
-	}
 	return publishResult{Status: status, SyncStatus: status, Message: message, Validation: validation, Attempts: attempts, NodeChecks: nodeChecks}, nil
 }
 
 func runPublishJob(id, actor, remoteAddr string) {
 	defer releasePublishJob(id)
 	started := time.Now().UTC().Format(time.RFC3339)
-	updatePublishJob(id, func(job *PublishJob) { job.Status = "running"; job.StartedAt = started })
+	if _, err := updatePublishJob(id, func(job *PublishJob) { job.Status = "running"; job.StartedAt = started }); err != nil {
+		rpzRuntimeMu.Lock()
+		rpzRuntimeState.JobID = id
+		rpzRuntimeState.JobStatus = "reconcile_required"
+		rpzRuntimeState.Message = err.Error()
+		rpzRuntimeMu.Unlock()
+		queueTelegramAlert("publish_state_persist_failed", fmt.Sprintf("🚨 域盾 DNSGuard RPZ 任务状态持久化失败\n任务：%s\n原因：%s", id, err.Error()))
+		return
+	}
 	rpzRuntimeMu.Lock()
 	rpzRuntimeState.JobID = id
 	rpzRuntimeState.JobStatus = "running"
 	rpzRuntimeMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), rpzPublishTimeout())
-	result, err := performPublish(ctx, actor, remoteAddr)
+	result, err := performPublishFunc(ctx, actor, remoteAddr)
 	cancel()
 	finished := time.Now().UTC().Format(time.RFC3339)
 	if err != nil {
-		updatePublishJob(id, func(job *PublishJob) {
-			job.Status = "failed"
+		jobStatus := "failed"
+		if result.Status == "reconcile_required" || result.SyncStatus == "reconcile_required" {
+			jobStatus = "reconcile_required"
+		}
+		if _, persistErr := updatePublishJob(id, func(job *PublishJob) {
+			job.Status = jobStatus
 			job.SyncStatus = result.SyncStatus
 			job.NodeChecks = result.NodeChecks
 			job.Error = err.Error()
 			job.FinishedAt = finished
 			job.Attempts = result.Attempts
-		})
+		}); persistErr != nil {
+			rpzRuntimeMu.Lock()
+			rpzRuntimeState.JobID = id
+			rpzRuntimeState.JobStatus = "reconcile_required"
+			rpzRuntimeState.Message = persistErr.Error()
+			rpzRuntimeMu.Unlock()
+			queueTelegramAlert("publish_state_persist_failed", fmt.Sprintf("🚨 域盾 DNSGuard RPZ 任务结果无法持久化\n任务：%s\n原因：%s", id, persistErr.Error()))
+			return
+		}
 		rpzRuntimeMu.Lock()
 		rpzRuntimeState.JobID = id
-		rpzRuntimeState.JobStatus = "failed"
+		rpzRuntimeState.JobStatus = jobStatus
 		rpzRuntimeState.Message = err.Error()
 		rpzRuntimeMu.Unlock()
 		queueTelegramAlert("publish_failed", fmt.Sprintf("🚨 域盾 DNSGuard RPZ 发布失败\n任务：%s\n原因：%s", id, err.Error()))
 		return
 	}
-	updatePublishJob(id, func(job *PublishJob) {
+	if _, persistErr := updatePublishJob(id, func(job *PublishJob) {
 		job.Status = "succeeded"
 		job.SyncStatus = result.SyncStatus
 		job.NodeChecks = result.NodeChecks
@@ -738,7 +804,15 @@ func runPublishJob(id, actor, remoteAddr string) {
 		job.Validation = result.Validation
 		job.FinishedAt = finished
 		job.Attempts = result.Attempts
-	})
+	}); persistErr != nil {
+		rpzRuntimeMu.Lock()
+		rpzRuntimeState.JobID = id
+		rpzRuntimeState.JobStatus = "reconcile_required"
+		rpzRuntimeState.Message = persistErr.Error()
+		rpzRuntimeMu.Unlock()
+		queueTelegramAlert("publish_state_persist_failed", fmt.Sprintf("🚨 域盾 DNSGuard RPZ 发布完成但任务状态无法持久化\n任务：%s\n原因：%s", id, persistErr.Error()))
+		return
+	}
 	rpzRuntimeMu.Lock()
 	rpzRuntimeState.JobID = id
 	rpzRuntimeState.JobStatus = "succeeded"
@@ -785,10 +859,17 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 	publishJobMu.Unlock()
 	if err := persistPublishJobs(); err != nil {
 		releasePublishJob(job.ID)
-		publishJobMu.Lock()
-		delete(publishJobs, job.ID)
-		publishJobMu.Unlock()
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "RPZ 发布任务持久化失败"})
+		_, recoveryErr := updatePublishJob(job.ID, func(job *PublishJob) {
+			job.Status = "reconcile_required"
+			job.SyncStatus = "reconcile_required"
+			job.Error = "任务初始状态持久化失败，未执行 BIND 更新；请人工核对任务文件后恢复"
+			job.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		})
+		message := "RPZ 发布任务持久化失败，未执行 BIND 更新"
+		if recoveryErr != nil {
+			message += "；人工核对状态写入也失败: " + recoveryErr.Error()
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": message, "jobId": job.ID})
 		return
 	}
 	rpzRuntimeMu.Lock()
@@ -857,7 +938,9 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 	dnsStateMutationMu.Lock()
 	dnsMu.Lock()
 	previousRules := copyRPZRules(state.Rules)
+	previousRevision := state.RulesRevision
 	state.Rules = copyRPZRules(target.Rules)
+	state.RulesRevision++
 	for index := range state.Rules {
 		state.Rules[index].Status = "draft"
 		state.Rules[index].UpdatedAt = now
@@ -866,6 +949,7 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 	if err := saveDNSState(); err != nil {
 		dnsMu.Lock()
 		state.Rules = previousRules
+		state.RulesRevision = previousRevision
 		dnsMu.Unlock()
 		dnsStateMutationMu.Unlock()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "回滚状态保存失败"})

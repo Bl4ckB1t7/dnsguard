@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -73,8 +75,30 @@ func TestRequestIPOnlyTrustsForwardedHeadersFromConfiguredProxy(t *testing.T) {
 
 func TestAuditEventReturnsWriteFailure(t *testing.T) {
 	t.Setenv("AUDIT_FILE", "/dev/null/dnsguard-audit.json")
+	defer setAuditIntegrityFailure(nil)
 	request := httptest.NewRequest("GET", "/", nil)
 	if err := auditEvent(request, "admin", "test", "failure"); err == nil {
 		t.Fatal("audit write failure must be returned to the caller")
+	}
+}
+
+func TestAuditIntegrityFailureBlocksManagementWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	t.Setenv("AUDIT_FILE", path)
+	if err := os.WriteFile(path, []byte(`[{"Timestamp":"tampered"}]`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadAudit(); err == nil {
+		t.Fatal("expected audit integrity failure")
+	}
+	defer setAuditIntegrityFailure(nil)
+	t.Setenv("AUTH_ENABLED", "false")
+	request := httptest.NewRequest(http.MethodPost, "/api/dns/rpz", nil)
+	recorder := httptest.NewRecorder()
+	authMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("management write must be blocked while audit is unhealthy")
+	})).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
