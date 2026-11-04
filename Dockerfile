@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.23.3-bookworm AS api-builder
+FROM golang:1.26.10-bookworm AS api-builder
 WORKDIR /src/server
 COPY server/go.mod server/go.sum ./
 RUN go mod download
@@ -14,9 +14,10 @@ RUN npm ci --ignore-scripts
 COPY . ./
 RUN npm run build
 
-FROM debian:12.8-slim AS api
+FROM debian:12.12-slim AS api
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends bind9-dnsutils bind9-utils ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 dnsguard \
@@ -31,7 +32,8 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=6 \
     CMD curl --fail --silent http://127.0.0.1:8080/api/health || exit 1
 ENTRYPOINT ["/usr/local/bin/dnsguard-api"]
 
-FROM nginx:1.27.3-alpine AS web
+FROM nginx:1.29.3-alpine AS web
+RUN apk upgrade --no-cache
 COPY --from=web-builder /src/dist /usr/share/nginx/html
 COPY deploy/docker/nginx.conf /etc/nginx/conf.d/default.conf
 USER 101:101
