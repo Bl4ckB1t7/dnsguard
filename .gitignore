@@ -26,6 +26,7 @@ tests/docker-initialization-runtime/
 
 # Docker production deployment secrets and persistent state
 deploy/docker/dnsguard.env
+docs/
 docker-data/
 secrets/
 tls/

@@ -14,6 +14,13 @@
 - **发布不是自动发生的**：新增、编辑或删除规则后，必须在页面点击“生成 / 发布 RPZ”。没有待发布变更时，发布按钮会显示“已是最新”。
 - 本地 BIND/RPZ 联调环境保留在 `dev/bind-rpz/`，只监听 `5353`，不会占用生产 DNS 的 `53` 端口。
 
+## 公开仓库安全说明
+
+- `tests/` 中保留的是可复现的隔离测试源码和配置；测试运行目录、TSIG、日志、状态文件和报告不会进入仓库，也不会进入最终运行镜像。
+- 不要提交 `deploy/docker/dnsguard.env`、`docker-data/`、`secrets/`、`tls/`、`bind-logs/`、`.run/` 或任何真实 BIND 配置/密钥。
+- 发布前应检查暂存区而不是只检查工作区：`git diff --cached --check`、`git ls-files` 和仓库平台的 Secret scanning 都必须通过。
+- 当前仓库不替用户选择开源许可证；公开发布前请根据项目授权意图补充合适的 `LICENSE`。没有许可证时，公开可见不等于他人获得再分发或修改许可。
+
 ## 解决什么问题
 
 企业中手工维护 BIND RPZ 通常会遇到：
@@ -133,7 +140,7 @@ systemctl --version
 | Secondary 列表 | `DNS_SECONDARY_1:53,DNS_SECONDARY_2:53` | 节点状态和同步验证 |
 | TSIG key 文件 | `PATH_TO_RPZ_KEY` | `nsupdate` 认证 |
 | RPZ 日志文件 | `/var/log/named/rpz.log` | RPZ 命中统计 |
-| 管理网卡 | `BIND_INTERFACE` | Web 绑定地址来源 |
+| 管理网卡 | `BIND_INTERFACE` 或 `WEB_BIND_ADDRESS` | Web 绑定地址来源；公开部署不要假定网卡名称 |
 | HTTPS 域名 | `DNSGUARD_DOMAIN` | Nginx `server_name` |
 
 ### 一键安装和配置

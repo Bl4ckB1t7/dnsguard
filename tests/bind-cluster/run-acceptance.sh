@@ -21,6 +21,23 @@ declare -a CASE_NAMES=()
 declare -a CASE_STATUS=()
 declare -a CASE_EVIDENCE=()
 
+# The permission-failure cases need a non-root account so that chmod-based
+# failures are real. Do not bake a workstation-specific username into the
+# public test harness; CI or operators can set TEST_RUN_USER explicitly.
+TEST_RUN_USER="${TEST_RUN_USER:-}"
+if [[ -z "$TEST_RUN_USER" ]]; then
+  if [[ "$EUID" -ne 0 ]]; then
+    TEST_RUN_USER="$(id -un)"
+  else
+    TEST_RUN_USER="$(awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /(nologin|false)$/ {print $1; exit}' /etc/passwd)"
+  fi
+fi
+if [[ -z "$TEST_RUN_USER" ]] || ! id "$TEST_RUN_USER" >/dev/null 2>&1; then
+  printf 'NOT RUN: set TEST_RUN_USER to an existing non-root test account\n' >&2
+  exit 2
+fi
+TEST_RUN_GROUP="$(id -gn "$TEST_RUN_USER")"
+
 log() { printf '[bind-cluster] %s\n' "$*"; }
 
 usage() {
@@ -694,10 +711,10 @@ case_artifact_write_failure() {
   artifact_dir="$dir/artifact-dir"
   mkdir -p "$artifact_dir"
   cp "$RUNTIME_DIR/keys/rpz-manager.key" "$dir/test.key"
-  chown -R kali:kali "$dir"
+  chown -R "$TEST_RUN_USER:$TEST_RUN_GROUP" "$dir"
   chmod 0600 "$dir/test.key"
   chmod 0755 "$RUNTIME_DIR"
-  API_RUN_USER=kali RPZ_KEY_FILE_OVERRIDE="$dir/test.key" RPZ_ARTIFACT_FILE_OVERRIDE="$artifact_dir/rpz.local.db" pid="$(start_api 18089 "$dir")"
+  API_RUN_USER="$TEST_RUN_USER" RPZ_KEY_FILE_OVERRIDE="$dir/test.key" RPZ_ARTIFACT_FILE_OVERRIDE="$artifact_dir/rpz.local.db" pid="$(start_api 18089 "$dir")"
   wait_api http://127.0.0.1:18089
   curl -fsS -X POST -H 'Content-Type: application/json' --data '{"domain":"artifact-failure.app.test","type":"A","value":"192.0.2.94"}' -o "$dir/rule.json" http://127.0.0.1:18089/api/dns/rpz
   chmod 0500 "$artifact_dir"
@@ -768,7 +785,7 @@ case_failed_publish_recovery() {
   copy_api_fixture "$dir"
   mkdir -p "$fake"
   cp "$RUNTIME_DIR/keys/rpz-manager.key" "$dir/test.key"
-  chown -R kali:kali "$dir"
+  chown -R "$TEST_RUN_USER:$TEST_RUN_GROUP" "$dir"
   chmod 0755 "$RUNTIME_DIR"
   chmod 0600 "$dir/test.key"
   cat >"$fake/nsupdate" <<EOF
@@ -777,9 +794,9 @@ case_failed_publish_recovery() {
 touch "$marker"
 sleep 5
 EOF
-  chown kali:kali "$fake/nsupdate"
+  chown "$TEST_RUN_USER:$TEST_RUN_GROUP" "$fake/nsupdate"
   chmod +x "$fake/nsupdate"
-  API_RUN_USER=kali RPZ_KEY_FILE_OVERRIDE="$dir/test.key" pid="$(start_api 18085 "$dir" "$fake")"
+  API_RUN_USER="$TEST_RUN_USER" RPZ_KEY_FILE_OVERRIDE="$dir/test.key" pid="$(start_api 18085 "$dir" "$fake")"
   wait_api http://127.0.0.1:18085
   curl -fsS -X POST -H 'Content-Type: application/json' --data '{"domain":"state-failure.app.test","type":"A","value":"192.0.2.86"}' -o "$dir/rule.json" http://127.0.0.1:18085/api/dns/rpz
   curl -fsS -X POST -o "$dir/publish.json" http://127.0.0.1:18085/api/dns/rpz/publish

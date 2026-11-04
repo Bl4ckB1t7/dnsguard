@@ -46,9 +46,14 @@ ask_required DNSGUARD_PRIMARY_ADDRESS "Primary DNS address (host:port)"
 ask_required DNSGUARD_SECONDARY_ADDRESSES "Secondary DNS addresses (comma-separated)"
 ask_required DNSGUARD_RPZ_KEY_FILE "TSIG key file" "$CONFIG_DIR/keys/rpz-manager.key"
 ask_required DNSGUARD_RPZ_LOG_FILES "BIND RPZ log files (comma-separated)" "/var/log/named/rpz.log"
-ask_required DNSGUARD_BIND_INTERFACE "Management interface" "tailscale0"
+ask_optional DNSGUARD_BIND_INTERFACE "Management interface (leave blank when Web bind address is set)"
 ask_optional DNSGUARD_WEB_BIND_ADDRESS "Web bind address (empty = interface IPv4)"
 ask_required DNSGUARD_AUTH_USERNAME "Login username" "admin"
+
+if [[ -z "$DNSGUARD_BIND_INTERFACE" && -z "$DNSGUARD_WEB_BIND_ADDRESS" ]]; then
+  echo "Set a management interface or an explicit Web bind address" >&2
+  exit 2
+fi
 
 if [[ "$DNSGUARD_PRIMARY_ADDRESS" != *:* ]]; then
   echo "Primary DNS address must use host:port form" >&2
