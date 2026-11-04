@@ -621,6 +621,11 @@ func loadDNSNodeConfig() error {
 	if !os.IsNotExist(err) {
 		return fmt.Errorf("读取 DNS 节点配置失败: %w", err)
 	}
+	if !isInitialized() {
+		// The first-run wizard owns node configuration. Do not materialize the
+		// old placeholder nodes before the administrator has completed setup.
+		return nil
+	}
 	for _, item := range strings.Split(os.Getenv("DNS_NODE_ADDRESSES"), ",") {
 		parts := strings.SplitN(strings.TrimSpace(item), "=", 2)
 		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !dnsNodeAddressAllowed(parts[1]) {
@@ -643,6 +648,10 @@ func loadDNSState() error {
 	if contentErr == nil {
 		var loaded dnsState
 		if err := json.Unmarshal(content, &loaded); err == nil {
+			if !isInitialized() {
+				state = dnsState{Nodes: []DNSNode{}, Rules: []RPZRule{}, Published: []RPZRule{}, Versions: []RPZVersion{}}
+				return nil
+			}
 			state = loaded
 			return normalizeRuleIDs()
 		}
@@ -666,6 +675,10 @@ func loadDNSState() error {
 
 	if !os.IsNotExist(contentErr) || !os.IsNotExist(backupErr) {
 		return fmt.Errorf("DNS 状态文件损坏且备份不可用: %s", path)
+	}
+	if !isInitialized() {
+		state = dnsState{Nodes: []DNSNode{}, Rules: []RPZRule{}, Published: []RPZRule{}, Versions: []RPZVersion{}}
+		return nil
 	}
 
 	state = dnsState{

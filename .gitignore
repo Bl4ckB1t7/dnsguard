@@ -17,3 +17,16 @@ dev/bind-rpz/logs/
 dev/bind-rpz/run/
 dev/bind-rpz/keys/*.key
 dev/bind-rpz/keys/*.private
+
+# Docker BIND acceptance runtime (generated TSIG, journals, logs, reports)
+tests/bind-cluster/runtime/
+tests/docker-production-runtime/
+tests/docker-production-bind/runtime/
+tests/docker-initialization-runtime/
+
+# Docker production deployment secrets and persistent state
+deploy/docker/dnsguard.env
+docker-data/
+secrets/
+tls/
+bind-logs/
