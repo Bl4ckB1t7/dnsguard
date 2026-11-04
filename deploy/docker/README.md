@@ -220,6 +220,13 @@ DNSGUARD_ENV_FILE="$PWD/deploy/docker/dnsguard.env" \
 尝试恢复原文件。`config/dnsguard.env` 始终按敏感文件处理，修改 manifest 的
 `sensitive` 标记不能绕过 `RESTORE_INCLUDE_SENSITIVE=true`。
 
+恢复开始后会在 `docker-data/.restore-in-progress.json` 写入事务标记，并在每个文件和
+目录完成必要的同步后删除。该标记存在时，备份会拒绝继续，API 健康检查保持失败，
+初始化脚本也会拒绝启动；这不是跨文件完全原子事务，进程或主机突然断电后必须保持
+Compose 停止，检查回退结果和备份内容，必要时重新执行恢复。确认人工核对完成后才能
+删除该标记并启动服务。恢复的 JSON 状态也不代表 BIND Zone 已经回滚，必须重新核对
+Primary/Secondary 的 SOA Serial 和实际解析结果。
+
 恢复后：
 
 1. 检查文件权限和 JSON 完整性；

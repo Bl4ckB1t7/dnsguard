@@ -46,6 +46,7 @@ TLS_DIR="$DNSGUARD_TLS_DIR"
 LOG_DIR="$DNSGUARD_BIND_LOG_DIR"
 mkdir -p "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 chmod 0750 "$DATA_DIR" "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
+[[ ! -e "$DATA_DIR/.restore-in-progress.json" ]] || die "an incomplete restore marker exists at $DATA_DIR/.restore-in-progress.json; inspect and recover it before starting"
 
 KEY_FILE="$SECRET_DIR/rpz-manager.key"
 [[ -f "$KEY_FILE" ]] || die "copy the production RPZ TSIG key to $KEY_FILE; it will not be generated"

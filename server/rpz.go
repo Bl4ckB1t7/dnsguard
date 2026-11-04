@@ -936,22 +936,6 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "versionId required"})
 		return
 	}
-	dnsMu.RLock()
-	var target *RPZVersion
-	for index := range state.Versions {
-		if state.Versions[index].ID == request.VersionID {
-			copy := state.Versions[index]
-			copy.Rules = copyRPZRules(copy.Rules)
-			target = &copy
-			break
-		}
-	}
-	dnsMu.RUnlock()
-	if target == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "version not found"})
-		return
-	}
-
 	// Keep the execution slot from the rollback decision through durable state
 	// mutation and publish-job creation. A competing publish/rollback therefore
 	// cannot enter between the old active check and publishRPZ.
@@ -970,6 +954,27 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	dnsStateMutationMu.Lock()
 	dnsMu.Lock()
+	var target *RPZVersion
+	for index := range state.Versions {
+		if state.Versions[index].ID == request.VersionID {
+			copy := state.Versions[index]
+			copy.Rules = copyRPZRules(copy.Rules)
+			target = &copy
+			break
+		}
+	}
+	if target == nil {
+		dnsMu.Unlock()
+		dnsStateMutationMu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "version not found"})
+		return
+	}
+	if rpzRulesEqual(target.Rules, state.Published) {
+		dnsMu.Unlock()
+		dnsStateMutationMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "目标版本已经是当前已发布版本，无需回滚"})
+		return
+	}
 	previousRules := copyRPZRules(state.Rules)
 	previousRevision := state.RulesRevision
 	state.Rules = copyRPZRules(target.Rules)

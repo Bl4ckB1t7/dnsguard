@@ -310,3 +310,31 @@ func TestRollbackStateWriteFailureReleasesReservation(t *testing.T) {
 		t.Fatalf("rollback state was not restored: %+v", state.Rules)
 	}
 }
+
+func TestRollbackNoOpDoesNotCreateDraftOrReservation(t *testing.T) {
+	originalState := state
+	originalActive := activePublishID
+	defer func() {
+		state = originalState
+		activePublishID = originalActive
+	}()
+	rule := RPZRule{ID: "published", Domain: "published.example.com", Action: "passthru", Type: "CNAME", Status: "published"}
+	state = dnsState{
+		Rules:     []RPZRule{rule},
+		Published: []RPZRule{rule},
+		Versions:  []RPZVersion{{ID: "version-published", Rules: []RPZRule{rule}}},
+	}
+	activePublishID = ""
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/dns/rpz/rollback", strings.NewReader(`{"versionId":"version-published"}`))
+	rollbackRPZ(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("rollback of current version status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if activePublishJob() != "" {
+		t.Fatal("no-op rollback left an execution reservation")
+	}
+	if state.Rules[0].Status != "published" {
+		t.Fatalf("no-op rollback changed rule status: %+v", state.Rules)
+	}
+}

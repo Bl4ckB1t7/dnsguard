@@ -29,7 +29,8 @@ USER 10001:10001
 ENV HOME=/nonexistent
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=6 \
-    CMD curl --fail --silent http://127.0.0.1:8080/api/health || exit 1
+    CMD test ! -e /var/lib/dnsguard/.restore-in-progress.json \
+        && curl --fail --silent http://127.0.0.1:8080/api/health || exit 1
 ENTRYPOINT ["/usr/local/bin/dnsguard-api"]
 
 FROM nginx:1.29.3-alpine AS web

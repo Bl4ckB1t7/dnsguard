@@ -32,6 +32,7 @@ python3 - <<'PY'
 import hashlib
 import json
 import os
+import re
 import shutil
 import tarfile
 import tempfile
@@ -130,6 +131,28 @@ def owner_for(relative):
         return (101, 101)
     return None
 
+
+def fsync_file(path):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+restore_marker = docker_roots["docker-data"] / ".restore-in-progress.json"
+assert_no_symlink_components(docker_roots["docker-data"], "docker-data")
+if restore_marker.is_symlink() or restore_marker.exists():
+    raise SystemExit(f"an incomplete restore marker exists; inspect it before retrying: {restore_marker}")
+
 with tarfile.open(archive, "r:gz") as bundle:
     members = bundle.getmembers()
     if len(members) != len({member.name for member in members}):
@@ -153,7 +176,7 @@ with tarfile.open(archive, "r:gz") as bundle:
         manifest = json.loads(bundle.extractfile(manifest_member).read())
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         raise SystemExit(f"invalid backup manifest: {exc}")
-    if manifest.get("format") not in (1, 2):
+    if type(manifest.get("format")) is not int or manifest.get("format") not in (1, 2):
         raise SystemExit("unsupported backup format")
     if manifest.get("mode") != mode:
         raise SystemExit(f"backup mode mismatch: archive={manifest.get('mode')} requested={mode}")
@@ -164,12 +187,16 @@ with tarfile.open(archive, "r:gz") as bundle:
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("sha256"), str):
             raise SystemExit("invalid backup manifest entry")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", entry["sha256"]):
+            raise SystemExit(f"invalid checksum in backup manifest: {entry['path']}")
         relative = relative_path(entry["path"])
         if relative == Path("manifest.json") or str(relative) in manifest_names:
             raise SystemExit(f"duplicate manifest path: {relative}")
         manifest_names.append(str(relative))
         actual_sensitive = is_sensitive(relative)
-        if "sensitive" in entry and bool(entry.get("sensitive")) != actual_sensitive:
+        if "sensitive" in entry and type(entry["sensitive"]) is not bool:
+            raise SystemExit(f"invalid sensitivity marker: {relative}")
+        if "sensitive" in entry and entry["sensitive"] != actual_sensitive:
             raise SystemExit(f"manifest sensitivity does not match protected path: {relative}")
         if str(relative) not in members_by_name:
             raise SystemExit(f"manifest member missing: {relative}")
@@ -217,38 +244,83 @@ with tarfile.open(archive, "r:gz") as bundle:
                     raise SystemExit(f"restore destination appeared during validation: {destination}")
 
         backups = {}
+        original_metadata = {}
         applied = []
         temporary_files = []
+        marker_created = False
         try:
+            docker_roots["docker-data"].mkdir(parents=True, exist_ok=True, mode=0o750)
+            marker_fd = os.open(restore_marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+            try:
+                marker_payload = json.dumps({"archive": str(archive), "pid": os.getpid(), "status": "in_progress"}, separators=(",", ":")) + "\n"
+                marker_bytes = marker_payload.encode()
+                while marker_bytes:
+                    marker_bytes = marker_bytes[os.write(marker_fd, marker_bytes):]
+                os.fsync(marker_fd)
+            finally:
+                os.close(marker_fd)
+            marker_created = True
+            fsync_directory(restore_marker.parent)
             for index, (source, destination, mode_bits, owner, relative) in enumerate(planned):
                 destination.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
                 if destination.exists():
                     backup = rollback / str(index)
+                    metadata = destination.stat()
                     shutil.copy2(destination, backup)
+                    os.chmod(backup, metadata.st_mode & 0o7777)
+                    if os.geteuid() == 0:
+                        os.chown(backup, metadata.st_uid, metadata.st_gid)
                     backups[destination] = backup
+                    original_metadata[destination] = metadata
                 temporary = destination.with_name(f".{destination.name}.restore.tmp.{os.getpid()}")
                 temporary_files.append(temporary)
                 shutil.copy2(source, temporary)
                 os.chmod(temporary, mode_bits)
                 if owner is not None and os.geteuid() == 0:
                     os.chown(temporary, *owner)
+                fsync_file(temporary)
                 os.replace(temporary, destination)
+                fsync_directory(destination.parent)
                 applied.append(destination)
+            restore_marker.unlink()
+            marker_created = False
+            fsync_directory(restore_marker.parent)
         except Exception as exc:
+            rollback_errors = []
             for destination in reversed(applied):
                 backup = backups.get(destination)
                 if backup is not None:
-                    os.replace(backup, destination)
+                    try:
+                        os.replace(backup, destination)
+                        metadata = original_metadata[destination]
+                        os.chmod(destination, metadata.st_mode & 0o7777)
+                        if os.geteuid() == 0:
+                            os.chown(destination, metadata.st_uid, metadata.st_gid)
+                        fsync_directory(destination.parent)
+                    except Exception as rollback_error:
+                        rollback_errors.append(f"{destination}: {rollback_error}")
                 else:
                     try:
                         destination.unlink()
+                        fsync_directory(destination.parent)
                     except FileNotFoundError:
                         pass
+                    except Exception as rollback_error:
+                        rollback_errors.append(f"{destination}: {rollback_error}")
             for temporary in temporary_files:
                 try:
                     temporary.unlink()
                 except FileNotFoundError:
                     pass
+            if marker_created and not rollback_errors:
+                try:
+                    restore_marker.unlink()
+                    marker_created = False
+                    fsync_directory(restore_marker.parent)
+                except Exception as marker_error:
+                    rollback_errors.append(f"restore marker: {marker_error}")
+            if rollback_errors:
+                raise SystemExit(f"restore failed; rollback is incomplete and the restore marker was retained: {exc}; rollback errors={rollback_errors}")
             raise SystemExit(f"restore failed and previous files were restored: {exc}")
         for _, destination, _, _, relative in planned:
             print(f"restored {relative} -> {destination}")

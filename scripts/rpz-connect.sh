@@ -21,6 +21,11 @@ CONFIRM_WRITE="${RPZ_CONNECT_CONFIRM-}"
 FAILURES=0
 WARNINGS=0
 PRIMARY_SERIAL=""
+TEST_RECORD_NEEDS_CLEANUP=0
+TEST_INPUT_FILES=()
+DNS_QUERY_STATE=""
+DNS_QUERY_OUTPUT=""
+EXACT_QUERY_STATE=""
 
 usage() {
   cat <<USAGE
@@ -192,13 +197,14 @@ TEMPLATE
 
 test_domain_scope() {
   [[ "$WRITE_TEST" -eq 1 ]] || return 0
-  local namespace name
-  namespace="${RPZ_TEST_NAMESPACE:-_dnsguard-preflight.${RPZ_ZONE}}"
+  local namespace name zone_base
+  zone_base="${RPZ_ZONE%.}"
+  namespace="${RPZ_TEST_NAMESPACE:-_dnsguard-preflight.${zone_base}}"
   namespace="${namespace%.}"
   name="${RPZ_TEST_DOMAIN:-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n').${namespace}}"
   name="${name%.}"
-  [[ "$namespace" =~ ^[A-Za-z0-9_.-]+$ ]] || { fail 'RPZ_TEST_NAMESPACE 格式无效'; return; }
-  [[ "$name" =~ ^[A-Za-z0-9_.-]+$ ]] || { fail '临时测试域名格式无效'; return; }
+  valid_dns_name "$namespace" || { fail 'RPZ_TEST_NAMESPACE 格式无效'; return; }
+  valid_dns_name "$name" || { fail '临时测试域名格式无效'; return; }
   if [[ -n "$RPZ_TEST_DOMAIN" && "$name" != *."$namespace" ]]; then
     fail "自定义测试域名必须位于测试命名空间 ${namespace} 下"
     return
@@ -208,43 +214,123 @@ test_domain_scope() {
   pass "写入目标已限制在测试命名空间: $TEST_DOMAIN"
 }
 
+valid_dns_name() {
+  local name="$1" label
+  [[ -n "$name" && ${#name} -le 253 && "$name" != .* && "$name" != *..* ]] || return 1
+  IFS='.' read -r -a labels <<<"$name"
+  for label in "${labels[@]}"; do
+    [[ -n "$label" && ${#label} -le 63 && "$label" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*[A-Za-z0-9_]$|^[A-Za-z0-9_]$ ]] || return 1
+  done
+}
+
+query_record_state() {
+  local host="$1" port="$2" name="$3" type="$4" output rcode flags answer
+  DNS_QUERY_STATE="UNKNOWN"
+  DNS_QUERY_OUTPUT=""
+  output="$(dig +comments +norecurse +time=2 +tries=1 "@$host" -p "$port" "$name" "$type" 2>/dev/null || true)"
+  DNS_QUERY_OUTPUT="$output"
+  rcode="$(sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' <<<"$output" | head -n1)"
+  flags="$(sed -n 's/^;; flags: \([^;]*\);.*/\1/p' <<<"$output" | head -n1)"
+  if [[ -z "$rcode" || "$flags" != *" aa"* ]]; then
+    return 0
+  fi
+  case "$rcode" in
+    NXDOMAIN)
+      DNS_QUERY_STATE="NXDOMAIN"
+      ;;
+    NOERROR)
+      answer="$(awk '!/^;;/ && NF >= 4 {found=1} END {if (found) print "PRESENT"}' <<<"$output")"
+      DNS_QUERY_STATE="${answer:-NODATA}"
+      ;;
+    *)
+      DNS_QUERY_STATE="UNKNOWN"
+      ;;
+  esac
+}
+
 record_exists() {
-  local host="$1" port="$2" name="$3" output
-  output="$(dig +noall +answer +norecurse +time=2 +tries=1 "@$host" -p "$port" "$name" ANY 2>/dev/null || true)"
-  [[ -n "$output" ]]
+  query_record_state "$1" "$2" "$3" ANY
+  [[ "$DNS_QUERY_STATE" == PRESENT ]]
 }
 
 exact_test_record_present() {
-  local host="$1" port="$2" name="$3" token="$4" output
-  output="$(dig +short +norecurse +time=2 +tries=1 "@$host" -p "$port" "$name" TXT 2>/dev/null || true)"
-  [[ "$output" == *"$token"* ]]
+  local host="$1" port="$2" name="$3" token="$4"
+  query_record_state "$host" "$port" "$name" TXT
+  EXACT_QUERY_STATE="UNKNOWN"
+  case "$DNS_QUERY_STATE" in
+    NXDOMAIN|NODATA)
+      EXACT_QUERY_STATE="ABSENT"
+      ;;
+    PRESENT)
+      if grep -Fq "\"$token\"" <<<"$DNS_QUERY_OUTPUT"; then
+        EXACT_QUERY_STATE="PRESENT"
+      else
+        EXACT_QUERY_STATE="ABSENT"
+      fi
+      ;;
+  esac
+  [[ "$EXACT_QUERY_STATE" == PRESENT ]]
 }
 
 cleanup_test_record() {
-  local host="$1" port="$2" name="$3" token="$4" delete_input="$5"
-  [[ "${TEST_RECORD_ADDED:-0}" -eq 1 ]] || return 0
+  local host="$1" port="$2" name="$3" token="$4" delete_input="$5" delete_status=0
+  [[ "${TEST_RECORD_NEEDS_CLEANUP:-0}" -eq 1 ]] || return 0
   cat >"$delete_input" <<UPDATE
 server $host $port
 zone $RPZ_ZONE
 update delete $name TXT "$token"
 send
 UPDATE
-  if timeout "${RPZ_WRITE_TIMEOUT_SECONDS:-10}" nsupdate -k "$RPZ_KEY_FILE" <"$delete_input" >/dev/null 2>&1; then
-    if ! exact_test_record_present "$host" "$port" "$name" "$token"; then
-      pass "临时记录已精确删除并确认清理: $name"
-      TEST_RECORD_ADDED=0
-      return 0
-    fi
+  if ! timeout "${RPZ_WRITE_TIMEOUT_SECONDS:-10}" nsupdate -k "$RPZ_KEY_FILE" <"$delete_input" >/dev/null 2>&1; then
+    warn "临时记录精确清理更新结果不确定，继续通过权威查询确认: $name"
+    delete_status=1
   fi
-  fail "临时记录清理失败或仍存在: $name；请人工核对并仅删除本次 TXT RDATA=$token"
+  exact_test_record_present "$host" "$port" "$name" "$token" || true
+  case "$EXACT_QUERY_STATE" in
+    ABSENT)
+      if ((delete_status)); then
+        pass "临时记录已精确删除并确认清理: $name（更新结果曾不确定）"
+      else
+        pass "临时记录已精确删除并确认清理: $name"
+      fi
+      TEST_RECORD_NEEDS_CLEANUP=0
+      return 0
+      ;;
+    PRESENT)
+      fail "临时记录清理后仍存在: $name"
+      ;;
+    *)
+      fail "临时记录清理状态无法确认（DNS 查询失败或非权威响应）: $name"
+      ;;
+  esac
+  fail "请人工核对测试名称 $name 及本次随机记录标识 ${token:0:8}…；未执行宽泛删除"
   return 1
+}
+
+cleanup_on_exit() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  if ! cleanup_test_record "${TEST_HOST:-}" "${TEST_PORT:-}" "${TEST_NAME:-}" "${TEST_TOKEN:-}" "${TEST_DELETE_INPUT:-}"; then
+    exit_code=1
+  fi
+  if ((${#TEST_INPUT_FILES[@]})); then
+    rm -f -- "${TEST_INPUT_FILES[@]}"
+  fi
+  exit "$exit_code"
+}
+
+handle_signal() {
+  local signal="$1"
+  trap - INT TERM
+  fail "收到 ${signal}，已停止写入流程并进入精确清理"
+  exit 130
 }
 
 write_test() {
   [[ -n "$RPZ_KEY_FILE" ]] || { fail '--write-test 需要 --key-file'; return; }
   [[ -f "$RPZ_KEY_FILE" && -r "$RPZ_KEY_FILE" && ! -L "$RPZ_KEY_FILE" ]] || { fail '--write-test 的 TSIG 文件不可读或为符号链接'; return; }
   parse_endpoint "$RPZ_PRIMARY" "$RPZ_PRIMARY_PORT" || { fail 'Primary 地址无效'; return; }
-  local host="$ENDPOINT_HOST" port="$ENDPOINT_PORT" suffix name token add_input delete_input
+  local host="$ENDPOINT_HOST" port="$ENDPOINT_PORT" suffix name token add_input delete_input cleanup_status=0
   suffix="$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
   if [[ -n "${TEST_DOMAIN:-}" ]]; then
     name="$TEST_DOMAIN"
@@ -255,12 +341,21 @@ write_test() {
   token="dnsguard-preflight-${suffix}"
   add_input="$(mktemp)"
   delete_input="$(mktemp)"
-  TEST_RECORD_ADDED=0
-  trap 'cleanup_test_record "$host" "$port" "$name" "$token" "$delete_input" || true' EXIT INT TERM
+  TEST_HOST="$host"
+  TEST_PORT="$port"
+  TEST_NAME="$name"
+  TEST_TOKEN="$token"
+  TEST_DELETE_INPUT="$delete_input"
+  TEST_INPUT_FILES=("$add_input" "$delete_input")
+  TEST_RECORD_NEEDS_CLEANUP=0
+  trap cleanup_on_exit EXIT
+  trap 'handle_signal SIGINT' INT
+  trap 'handle_signal SIGTERM' TERM
   if record_exists "$host" "$port" "$name"; then
     fail "临时测试名称已存在记录，拒绝覆盖或删除: $name"
-    trap - EXIT INT TERM
-    rm -f "$add_input" "$delete_input"
+    return
+  elif [[ "$DNS_QUERY_STATE" != NXDOMAIN ]]; then
+    fail "无法确认临时测试名称不存在（DNS 状态=$DNS_QUERY_STATE），拒绝写入: $name"
     return
   fi
   cat >"$add_input" <<UPDATE
@@ -270,24 +365,32 @@ prereq nxdomain $name
 update add $name 30 TXT "$token"
 send
 UPDATE
+  TEST_RECORD_NEEDS_CLEANUP=1
   if timeout "${RPZ_WRITE_TIMEOUT_SECONDS:-10}" nsupdate -k "$RPZ_KEY_FILE" <"$add_input" >/dev/null 2>&1; then
-    if exact_test_record_present "$host" "$port" "$name" "$token"; then
-      TEST_RECORD_ADDED=1
+    exact_test_record_present "$host" "$port" "$name" "$token" || true
+    if [[ "$EXACT_QUERY_STATE" == PRESENT ]]; then
       pass "TSIG 写入测试成功: $name"
+    elif [[ "$EXACT_QUERY_STATE" == ABSENT ]]; then
+      fail "TSIG 写入返回成功，但临时记录未读回；已进入精确清理流程"
     else
-      fail 'TSIG 写入返回成功，但临时记录未读回；请人工核对 Primary'
+      fail 'TSIG 写入返回成功，但 DNS 读回状态无法确认；已进入精确清理流程'
     fi
   else
-    if exact_test_record_present "$host" "$port" "$name" "$token"; then
-      TEST_RECORD_ADDED=1
+    exact_test_record_present "$host" "$port" "$name" "$token" || true
+    if [[ "$EXACT_QUERY_STATE" == PRESENT ]]; then
       fail 'nsupdate 返回失败但临时记录已存在，结果不确定；已进入精确清理流程'
+    elif [[ "$EXACT_QUERY_STATE" == ABSENT ]]; then
+      fail 'TSIG 写入测试失败；已执行精确清理尝试，未执行正式 RPZ 发布'
     else
-      fail 'TSIG 写入测试失败；未执行正式 RPZ 发布'
+      fail 'TSIG 写入结果和 DNS 状态均无法确认；已执行精确清理尝试，需人工核对'
     fi
   fi
-  cleanup_test_record "$host" "$port" "$name" "$token" "$delete_input" || true
+  cleanup_test_record "$host" "$port" "$name" "$token" "$delete_input" || cleanup_status=1
+  ((cleanup_status == 0)) || fail "临时记录清理未完成；需人工核对: $name"
+  TEST_RECORD_NEEDS_CLEANUP=0
   trap - EXIT INT TERM
-  rm -f "$add_input" "$delete_input"
+  rm -f -- "$add_input" "$delete_input"
+  TEST_INPUT_FILES=()
 }
 
 while (($#)); do

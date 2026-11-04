@@ -165,6 +165,9 @@ if ! curl -kfsS "https://127.0.0.1:19446/api/health" >/dev/null; then
 fi
 [[ "$(curl -ksS -o /dev/null -w '%{http_code}' "https://127.0.0.1:19446/api/dns/rpz")" == 401 ]]
 docker compose -p "$RESTORE_PROJECT" -f "$ROOT/compose.yaml" --env-file "$RESTORE_ENV" exec -T dnsguard-api test -r /var/lib/dnsguard/auth.json
+[[ ! -e "$restore_data/.restore-in-progress.json" ]]
+[[ "$(docker compose -p "$RESTORE_PROJECT" -f "$ROOT/compose.yaml" --env-file "$RESTORE_ENV" exec -T dnsguard-api id -u)" == '10001' ]]
+[[ "$(docker compose -p "$RESTORE_PROJECT" -f "$ROOT/compose.yaml" --env-file "$RESTORE_ENV" exec -T dnsguard-web id -u)" == '101' ]]
 
 decode_captcha() {
   python3 - "$ROOT/server/captcha.go" "$1" <<'PY'
@@ -338,5 +341,40 @@ fi
 sentinel_after="$(sha256sum "$restore_data/dns-state.json" | awk '{print $1}')"
 [[ "$sentinel_before" == "$sentinel_after" ]]
 echo 'PASS: existing restore targets require explicit overwrite authorization and remain unchanged'
+
+printf '%s\n' '{"status":"in_progress"}' >"$data/.restore-in-progress.json"
+if DNSGUARD_BACKUP_MODE=docker DNSGUARD_DATA_DIR="$data" DNSGUARD_SECRET_DIR="$secrets" DNSGUARD_TLS_DIR="$tls" BACKUP_DIR="$WORK/blocked-backup" "$ROOT/scripts/backup-dnsguard.sh" >/dev/null 2>&1; then
+  echo 'backup accepted an incomplete restore marker' >&2
+  exit 1
+fi
+rm -f "$data/.restore-in-progress.json"
+echo 'PASS: incomplete restore marker blocks backup'
+
+# Run a restore as an unprivileged account with a protected nested directory.
+# The failure occurs after earlier files have been replaced, so this verifies
+# rollback of already-applied files and a non-success exit status.
+failure_data="$WORK/failure-data"
+failure_secrets="$WORK/failure-secrets"
+failure_tls="$WORK/failure-tls"
+failure_config="$WORK/failure.env"
+mkdir -p "$failure_data/rpz" "$failure_secrets" "$failure_tls"
+printf '%s\n' 'sentinel-before-transaction' >"$failure_data/auth.json"
+cp "$config" "$failure_config"
+chown -R kali:kali "$failure_data" "$failure_secrets" "$failure_tls" "$failure_config"
+chown root:root "$failure_data/rpz"
+chmod 0500 "$failure_data/rpz"
+sentinel_before_failure="$(sha256sum "$failure_data/auth.json" | awk '{print $1}')"
+if runuser -u kali -- env \
+  DNSGUARD_BACKUP_MODE=docker RESTORE_INCLUDE_SENSITIVE=true RESTORE_ALLOW_OVERWRITE=true \
+  DNSGUARD_DATA_DIR="$failure_data" DNSGUARD_SECRET_DIR="$failure_secrets" \
+  DNSGUARD_TLS_DIR="$failure_tls" DNSGUARD_ENV_FILE="$failure_config" \
+  "$ROOT/scripts/restore-dnsguard.sh" "$archive" >/dev/null 2>&1; then
+  echo 'restore unexpectedly reported success after a nested write failure' >&2
+  exit 1
+fi
+[[ "$sentinel_before_failure" == "$(sha256sum "$failure_data/auth.json" | awk '{print $1}')" ]] \
+  || { echo 'restore rollback did not restore an earlier file' >&2; exit 1; }
+[[ ! -e "$failure_data/.restore-in-progress.json" ]]
+echo 'PASS: mid-restore write failure returned nonzero and rolled back earlier files'
 
 echo 'PASS: Docker backup contains complete state and sensitive files restore only with explicit opt-in'

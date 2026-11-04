@@ -70,7 +70,7 @@ def add_tree(stage: Path, source_root: Path, prefix: str, sensitive: bool = Fals
     if not source_root.is_dir():
         return
     for source in sorted(source_root.rglob("*")):
-        if not source.is_file() or source.is_symlink() or source.suffix in {".lock", ".tmp", ".pid"}:
+        if source.name == ".restore-in-progress.json" or not source.is_file() or source.is_symlink() or source.suffix in {".lock", ".tmp", ".pid"}:
             continue
         add_file(stage, source, source_root, prefix, sensitive)
 
@@ -79,6 +79,9 @@ with tempfile.TemporaryDirectory(prefix="dnsguard-backup-") as temp:
     if mode == "docker":
         # These are host paths. The application paths /var/lib/dnsguard and
         # /run/dnsguard-secrets must not be used by a host-side backup.
+        restore_marker = Path(os.environ["DNSGUARD_DATA_DIR"]) / ".restore-in-progress.json"
+        if restore_marker.exists() or restore_marker.is_symlink():
+            raise SystemExit(f"an incomplete restore marker exists; inspect before backing up: {restore_marker}")
         add_tree(stage, Path(os.environ["DNSGUARD_DATA_DIR"]), "docker-data", False)
         if os.environ.get("BACKUP_INCLUDE_SENSITIVE", "false").lower() == "true":
             add_tree(stage, Path(os.environ["DNSGUARD_SECRET_DIR"]), "secrets", True)
