@@ -7,6 +7,9 @@
 - **生产部署使用安装脚本和 systemd**，不要用开发启动脚本长期运行。
 - **不使用数据库**：规则、节点、版本、审计和运行状态使用受保护的 JSON 文件保存。
 - **生产默认通过 `nsupdate + TSIG` 更新 RPZ Primary**，由 BIND 原生 NOTIFY/IXFR 同步 Secondary。
+- **发布成功必须通过集群核验**：Primary SOA Serial、全部 Secondary SOA Serial，以及关键 RPZ 规则的精确和泛域名响应都验证通过后，任务才会标记成功。
+- **发布任务可恢复**：任务快照保存在 JSON 文件中；API 重启时未完成任务会进入 `reconcile_required`，不会未经核对自动重放或自动回滚。
+- **故障优先保护 DNS 数据面**：DNSGuard 只负责控制面，发布失败、API 重启或控制面宕机不会停止 BIND 已加载的解析服务。
 - **API 默认只监听 `127.0.0.1:8080`**，生产通过 Nginx 或现有 HTTPS 反向代理提供页面访问。
 - **发布不是自动发生的**：新增、编辑或删除规则后，必须在页面点击“生成 / 发布 RPZ”。没有待发布变更时，发布按钮会显示“已是最新”。
 - 本地 BIND/RPZ 联调环境保留在 `dev/bind-rpz/`，只监听 `5353`，不会占用生产 DNS 的 `53` 端口。
@@ -29,7 +32,8 @@
 - RPZ 白名单：CNAME `rpz-passthru` 动作。
 - RPZ A 记录重定向：将域名和泛域名触发器指向指定 IPv4。
 - 发布预览：显示当前规则、已发布规则和待处理变更。
-- 受控发布：内置规则校验、`named-checkzone` 校验、`nsupdate` 发布和任务状态。
+- 受控发布：内置规则校验、`named-checkzone` 校验、`nsupdate` 发布、任务持久化和 Primary/Secondary 集群核验。
+- 故障恢复保护：状态写入失败回滚内存快照；状态文件和备份同时损坏时拒绝启动；失败发布保留诊断，不自动回滚。
 - 版本记录：保存发布版本，支持回滚并重新发布。
 - DNS 节点管理：增加、编辑、删除节点，角色固定为主节点或辅节点。
 - 真实节点状态：通过 `dig` 查询节点 SOA Serial，显示正常、版本不一致或不可达。
@@ -116,9 +120,9 @@ sudo ./scripts/install-dnsguard.sh
 1. 创建 `dnsguard` 系统用户和用户组。
 2. 将程序安装到 `/opt/dnsguard`。
 3. 创建 `/etc/dnsguard`、`/var/lib/dnsguard` 和 `/var/log/dnsguard`。
-4. 使用非 root 用户构建 React 前端和 Go API。
+4. 从 root-owned 发布目录构建 React 前端和 Go API，构建完成后服务用户不能修改安装目录中的代码。
 5. 安装 `dnsguard-api.service`、`dnsguard-monitor.service` 和定时器。
-6. 设置服务最小权限和显式可写目录。
+6. 设置服务最小权限；服务用户只写入 `/var/lib/dnsguard` 和 `/var/log/dnsguard` 等运行目录。
 
 执行交互式配置：
 
@@ -278,7 +282,11 @@ nsupdate 更新 Primary
         ↓
 BIND NOTIFY / IXFR 同步 Secondary
         ↓
-dig 查询各节点 SOA Serial 和状态
+逐台 dig 查询各节点 SOA Serial
+        ↓
+验证关键 RPZ 规则的精确/泛域名响应
+        ↓
+全部节点通过才标记 succeeded
 ```
 
 规则修改不会直接写入 BIND Zone 文件，也不会自动发布。只有点击“生成 / 发布 RPZ”后才会进入发布任务。
@@ -303,6 +311,14 @@ example.com  A  192.0.2.10
 ```
 
 页面中的 A 记录只接受 IPv4。规则保存后仍需发布，未发布不会改变生产 DNS 响应。
+
+发布任务有以下安全边界：
+
+- 没有待发布变更时，API 返回 `409`，不会重复执行 `nsupdate`。
+- Primary 更新成功但任一 Secondary 未同步时，任务不会被标记为集群成功。
+- API 在 `queued` 或 `running` 阶段重启后，任务恢复为 `reconcile_required`。
+- 不执行未经验证的自动回滚；应先核对 Primary、Secondary SOA 和关键解析结果。
+- DNSGuard 故障不会停止 BIND，BIND 继续使用当前已加载的 Zone 数据提供解析。
 
 ### DNS 节点状态
 
@@ -381,6 +397,7 @@ sudo systemctl start dnsguard-api.service
 | `RPZ_PRIMARY_PORT` | `53` | RPZ 动态更新端口 |
 | `RPZ_ZONE` | `rpz.local` | RPZ Zone 名称 |
 | `RPZ_KEY_FILE` | `/etc/dnsguard/keys/rpz-manager.key` | TSIG key |
+| `RPZ_PUBLISH_JOBS_FILE` | 默认使用 `DNS_STATE_FILE.jobs.json` | 发布任务快照，可显式指定独立路径 |
 | `RPZ_LOG_FILES` | BIND RPZ 日志 | 命中统计来源 |
 | `LISTEN_ADDR` | `127.0.0.1:8080` | API 监听地址 |
 | `BIND_INTERFACE` | `BIND_INTERFACE` | Web 绑定地址来源 |
@@ -396,7 +413,7 @@ sudo systemctl start dnsguard-api.service
 建议生产文件权限如下：
 
 ```text
-/etc/dnsguard/                 root:dnsguard 0770
+/etc/dnsguard/                 root:dnsguard 0750
 /etc/dnsguard/dnsguard.env     root:dnsguard 0640
 /etc/dnsguard/dns-nodes.json   root:dnsguard 0640
 /etc/dnsguard/auth.json        dnsguard:dnsguard 0600
@@ -464,7 +481,7 @@ EOF
 ./scripts/test-functional.sh
 ```
 
-测试覆盖 API 健康、设置、认证关闭模式、真实节点状态、节点配置持久化、RPZ 命中、规则新增、发布、Primary/Secondary 同步、删除、批量删除和发布任务。
+测试覆盖 API 健康、设置、认证关闭模式、真实节点状态、节点配置持久化、RPZ 命中、规则新增、发布、Primary/Secondary 同步、删除、批量删除和重复发布拦截。
 
 停止：
 
@@ -499,6 +516,8 @@ cd ..
 bash -n scripts/*.sh
 git diff --check
 ```
+
+本地隔离 BIND 故障回归覆盖：Primary/Secondary 不可达、TSIG 错误、发布中断、超时、API 异常退出、API 重启、JSON 写入失败、磁盘写入失败替代注入、并发发布、重复发布、回滚失败和 BIND 重启。故障测试必须使用 `dev/bind-rpz/`，不得直接对生产 BIND 注入故障。
 
 安装脚本只做构建和服务文件渲染测试时，可以使用临时路径：
 
@@ -563,6 +582,16 @@ sudo journalctl -u dnsguard-api.service -n 200 --no-pager
 - `RPZ_KEY_FILE` 是否能被 `dnsguard` 用户读取。
 - BIND 是否允许来自控制面地址的动态更新。
 - `named-checkzone` 是否能解析生成的 RPZ 文件。
+
+如果任务显示 `reconcile_required`，表示 DNSGuard 在发布过程中重启或无法确认所有节点状态。此时不要直接回滚或强制重复发布，先分别执行：
+
+```bash
+dig +short @DNS_PRIMARY -p 53 rpz.local SOA
+dig +short @DNS_SECONDARY_1 -p 53 rpz.local SOA
+dig +short @DNS_SECONDARY_2 -p 53 rpz.local SOA
+```
+
+再抽查关键域名的精确和泛域名触发器，确认实际 BIND 状态后，再由人工决定重试或回滚。
 
 ### 页面打不开
 
