@@ -91,6 +91,31 @@ func TestLoadPublishJobsRecoversInFlightTask(t *testing.T) {
 	}
 }
 
+func TestLoadPublishJobsRejectsCorruptStateWithoutOverwritingIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "publish-jobs.json")
+	t.Setenv("RPZ_PUBLISH_JOBS_FILE", path)
+	content := []byte("{not-json")
+	if err := os.WriteFile(path, content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	originalJobs := publishJobs
+	publishJobs = map[string]PublishJob{"existing": {ID: "existing", Status: "succeeded"}}
+	defer func() { publishJobs = originalJobs }()
+	if err := loadPublishJobs(); err == nil {
+		t.Fatal("corrupt publish job state must fail closed")
+	}
+	if got := publishJobs["existing"].Status; got != "succeeded" {
+		t.Fatalf("corrupt load replaced in-memory jobs: %+v", publishJobs)
+	}
+	readBack, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(readBack) != string(content) {
+		t.Fatalf("corrupt publish job evidence was overwritten: %s", readBack)
+	}
+}
+
 func TestNSUpdateRetriesUntilSuccess(t *testing.T) {
 	t.Setenv("RPZ_PUBLISH_RETRIES", "2")
 	t.Setenv("RPZ_PUBLISH_RETRY_BACKOFF_SECONDS", "0")
@@ -123,5 +148,89 @@ func TestNSUpdateRetryHonorsRetryLimit(t *testing.T) {
 	used, err := runNSUpdateWithRetry(context.Background(), nil, nil)
 	if err == nil || used != 2 || attempts != 2 {
 		t.Fatalf("expected retry limit failure, used=%d attempts=%d err=%v", used, attempts, err)
+	}
+}
+
+func TestUpdatePublishJobFailsClosedWhenStateCannotBePersisted(t *testing.T) {
+	t.Setenv("RPZ_PUBLISH_JOBS_FILE", "/dev/null/publish-jobs.json")
+	originalJobs := publishJobs
+	defer func() { publishJobs = originalJobs }()
+	publishJobs = map[string]PublishJob{"job-1": {ID: "job-1", Status: "queued"}}
+	job, err := updatePublishJob("job-1", func(job *PublishJob) { job.Status = "running" })
+	if err == nil {
+		t.Fatal("state persistence failure must be returned")
+	}
+	if job.Status != "reconcile_required" || job.SyncStatus != "reconcile_required" {
+		t.Fatalf("job must enter reconcile_required, got %+v", job)
+	}
+	if got := publishJobs["job-1"].Status; got != "reconcile_required" {
+		t.Fatalf("in-memory job status = %q", got)
+	}
+}
+
+func TestRunPublishJobDoesNotPublishWhenRunningStateCannotBePersisted(t *testing.T) {
+	t.Setenv("RPZ_PUBLISH_JOBS_FILE", "/dev/null/publish-jobs.json")
+	originalJobs := publishJobs
+	originalActive := activePublishID
+	originalPerform := performPublishFunc
+	defer func() {
+		publishJobs = originalJobs
+		activePublishID = originalActive
+		performPublishFunc = originalPerform
+	}()
+	publishJobs = map[string]PublishJob{"job-1": {ID: "job-1", Status: "queued"}}
+	activePublishID = "job-1"
+	called := false
+	performPublishFunc = func(context.Context, string, string) (publishResult, error) {
+		called = true
+		return publishResult{Status: "published"}, nil
+	}
+	runPublishJob("job-1", "admin", "127.0.0.1:1")
+	if called {
+		t.Fatal("nsupdate workflow must not start after running-state persistence failure")
+	}
+	if job := publishJobs["job-1"]; job.Status != "reconcile_required" {
+		t.Fatalf("job status = %q, want reconcile_required", job.Status)
+	}
+	if activePublishJob() != "" {
+		t.Fatal("publish execution slot was not released")
+	}
+}
+
+func TestFinishPublishKeepsRulesChangedDuringPublishAsDraft(t *testing.T) {
+	t.Setenv("DNS_STATE_FILE", filepath.Join(t.TempDir(), "dns-state.json"))
+	t.Setenv("AUDIT_FILE", filepath.Join(t.TempDir(), "audit.json"))
+	setAuditIntegrityFailure(nil)
+	originalState := state
+	originalRuntime := rpzRuntimeState
+	defer func() {
+		state = originalState
+		rpzRuntimeState = originalRuntime
+	}()
+	snapshot := RPZRule{ID: "rule-1", Domain: "snapshot.example.com", Action: "passthru", Type: "CNAME", Status: "draft"}
+	draft := RPZRule{ID: "rule-2", Domain: "new.example.com", Action: "passthru", Type: "CNAME", Status: "draft"}
+	state = dnsState{Rules: []RPZRule{snapshot, draft}, Published: []RPZRule{}, RulesRevision: 2}
+	if _, err := finishPublish("admin", "127.0.0.1:1", []RPZRule{snapshot}, nil, 1, "ok", "nsupdate", "published", 1, "published snapshot", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Published) != 1 || state.Published[0].Domain != snapshot.Domain {
+		t.Fatalf("published snapshot was polluted: %+v", state.Published)
+	}
+	if state.Rules[0].Status != "published" || state.Rules[1].Status != "draft" {
+		t.Fatalf("rule statuses crossed snapshot boundary: %+v", state.Rules)
+	}
+}
+
+func TestFinishPublishStateWriteFailureRequiresReconciliation(t *testing.T) {
+	t.Setenv("DNS_STATE_FILE", "/dev/null/dns-state.json")
+	t.Setenv("AUDIT_FILE", filepath.Join(t.TempDir(), "audit.json"))
+	setAuditIntegrityFailure(nil)
+	originalState := state
+	defer func() { state = originalState }()
+	rule := RPZRule{ID: "rule-1", Domain: "state-failure.example.com", Action: "passthru", Type: "CNAME", Status: "draft"}
+	state = dnsState{Rules: []RPZRule{rule}, RulesRevision: 1}
+	result, err := finishPublish("admin", "127.0.0.1:1", []RPZRule{rule}, nil, 1, "ok", "nsupdate", "published", 1, "published", nil)
+	if err == nil || result.Status != "reconcile_required" || result.SyncStatus != "reconcile_required" {
+		t.Fatalf("state write failure must require reconciliation, result=%+v err=%v", result, err)
 	}
 }

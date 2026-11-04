@@ -82,8 +82,68 @@ func TestLoadAuditRejectsTamperedHashChain(t *testing.T) {
 	original := auditEntries
 	defer func() { auditEntries = original }()
 	auditEntries = nil
+	defer setAuditIntegrityFailure(nil)
 	loadAudit()
 	if len(auditEntries) != 0 {
 		t.Fatalf("tampered audit entries must not be loaded: %+v", auditEntries)
+	}
+}
+
+func TestCorruptAuditFailsClosedAndPreservesEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	t.Setenv("AUDIT_FILE", path)
+	original := auditEntries
+	auditEntries = nil
+	defer func() {
+		auditEntries = original
+		setAuditIntegrityFailure(nil)
+	}()
+	originalContent := []byte(`[{"Timestamp":"tampered"}]`)
+	if err := os.WriteFile(path, originalContent, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadAudit(); err == nil {
+		t.Fatal("corrupt audit file must enter an error state")
+	}
+	request := httptest.NewRequest("GET", "/", nil)
+	if err := auditEvent(request, "admin", "test", "should-not-write"); err == nil {
+		t.Fatal("audit writes must fail closed after integrity failure")
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != string(originalContent) {
+		t.Fatalf("corrupt evidence was overwritten: %s", content)
+	}
+}
+
+func TestAuditRotationBoundaryMustMatchPreviousFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.json")
+	first := AuditEntry{Timestamp: "2026-01-01T00:00:00Z", Actor: "admin", Action: "one", Result: "success"}
+	first.Hash = auditHash(first)
+	second := AuditEntry{Timestamp: "2026-01-01T00:00:01Z", Actor: "admin", Action: "two", Result: "success", PrevHash: first.Hash}
+	second.Hash = auditHash(second)
+	previous, _ := json.Marshal([]AuditEntry{first})
+	current, _ := json.Marshal([]AuditEntry{second})
+	if err := os.WriteFile(path+".1", previous, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, current, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	var entries []AuditEntry
+	if err := json.Unmarshal(current, &entries); err != nil || !validAuditRotationBoundary(path, entries) {
+		t.Fatal("valid rotation boundary was rejected")
+	}
+	second.PrevHash = "wrong"
+	second.Hash = auditHash(second)
+	current, _ = json.Marshal([]AuditEntry{second})
+	if err := os.WriteFile(path, current, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal(current, &entries) != nil || validAuditRotationBoundary(path, entries) {
+		t.Fatal("invalid rotation boundary was accepted")
 	}
 }

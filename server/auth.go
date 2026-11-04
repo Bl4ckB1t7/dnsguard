@@ -441,6 +441,10 @@ func authMiddleware(next http.Handler) http.Handler {
 		if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		}
+		if auditIntegrityError() != nil && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "审计系统异常，管理写操作已暂停，请先恢复审计文件"})
+			return
+		}
 		if !authEnabled() {
 			next.ServeHTTP(w, r)
 			return

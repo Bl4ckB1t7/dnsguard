@@ -59,10 +59,11 @@ type RPZRecord struct {
 }
 
 type dnsState struct {
-	Nodes     []DNSNode    `json:"nodes"`
-	Rules     []RPZRule    `json:"rules"`
-	Published []RPZRule    `json:"published"`
-	Versions  []RPZVersion `json:"versions"`
+	Nodes         []DNSNode    `json:"nodes"`
+	Rules         []RPZRule    `json:"rules"`
+	Published     []RPZRule    `json:"published"`
+	Versions      []RPZVersion `json:"versions"`
+	RulesRevision uint64       `json:"rulesRevision,omitempty"`
 }
 
 type RPZVersion struct {
@@ -379,6 +380,15 @@ func rpzRuleType(rule RPZRule) string {
 
 func rpzRuleFingerprint(rule RPZRule) string {
 	return rule.Action + "\x00" + rpzRuleType(rule) + "\x00" + rule.Value + "\x00" + rule.Reason
+}
+
+func rpzRuleInSnapshot(rule RPZRule, snapshot []RPZRule) bool {
+	for _, candidate := range snapshot {
+		if candidate.Domain == rule.Domain && rpzRuleFingerprint(candidate) == rpzRuleFingerprint(rule) {
+			return true
+		}
+	}
+	return false
 }
 
 func rpzRuleSummary(rule RPZRule) string {
@@ -1124,11 +1134,14 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		previousRules := copyRPZRules(state.Rules)
+		previousRevision := state.RulesRevision
 		state.Rules = append(state.Rules, rule)
+		state.RulesRevision++
 		dnsMu.Unlock()
 		if err := saveDNSState(); err != nil {
 			dnsMu.Lock()
 			state.Rules = previousRules
+			state.RulesRevision = previousRevision
 			dnsMu.Unlock()
 			dnsStateMutationMu.Unlock()
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则保存失败"})
@@ -1170,6 +1183,7 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 	dnsStateMutationMu.Lock()
 	dnsMu.Lock()
 	previousRules := copyRPZRules(state.Rules)
+	previousRevision := state.RulesRevision
 	kept := make([]RPZRule, 0, len(state.Rules))
 	deleted := make([]RPZRule, 0, len(selected))
 	for _, rule := range state.Rules {
@@ -1180,6 +1194,9 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 		kept = append(kept, rule)
 	}
 	state.Rules = kept
+	if len(deleted) > 0 {
+		state.RulesRevision++
+	}
 	dnsMu.Unlock()
 	if len(deleted) == 0 {
 		dnsStateMutationMu.Unlock()
@@ -1189,6 +1206,7 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 	if err := saveDNSState(); err != nil {
 		dnsMu.Lock()
 		state.Rules = previousRules
+		state.RulesRevision = previousRevision
 		dnsMu.Unlock()
 		dnsStateMutationMu.Unlock()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量删除失败"})
@@ -1272,6 +1290,7 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		previous := state.Rules[index]
+		previousRevision := state.RulesRevision
 		updated := previous
 		updated.Domain = request.Domain
 		updated.Action = action
@@ -1281,10 +1300,12 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 		updated.Status = "draft"
 		updated.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		state.Rules[index] = updated
+		state.RulesRevision++
 		dnsMu.Unlock()
 		if err := saveDNSState(); err != nil {
 			dnsMu.Lock()
 			state.Rules[index] = previous
+			state.RulesRevision = previousRevision
 			dnsMu.Unlock()
 			dnsStateMutationMu.Unlock()
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则保存失败"})
@@ -1304,6 +1325,7 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 	dnsStateMutationMu.Lock()
 	dnsMu.Lock()
 	previousRules := copyRPZRules(state.Rules)
+	previousRevision := state.RulesRevision
 	index := -1
 	for i, rule := range state.Rules {
 		if rule.ID == id {
@@ -1315,6 +1337,7 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 	if index >= 0 {
 		removed = state.Rules[index]
 		state.Rules = append(state.Rules[:index], state.Rules[index+1:]...)
+		state.RulesRevision++
 	}
 	dnsMu.Unlock()
 	if index < 0 {
@@ -1325,6 +1348,7 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 	if err := saveDNSState(); err != nil {
 		dnsMu.Lock()
 		state.Rules = previousRules
+		state.RulesRevision = previousRevision
 		dnsMu.Unlock()
 		dnsStateMutationMu.Unlock()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则删除失败"})

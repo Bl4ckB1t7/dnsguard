@@ -28,6 +28,8 @@ type AuditEntry struct {
 var auditMu sync.RWMutex
 var auditEntries []AuditEntry
 var auditFileMu sync.Mutex
+var auditHealthMu sync.RWMutex
+var auditIntegrityFailure string
 
 func auditFilePath() string {
 	if path := os.Getenv("AUDIT_FILE"); path != "" {
@@ -89,22 +91,73 @@ func rotateAuditFiles(path string) error {
 	return nil
 }
 
-func loadAudit() {
-	content, err := os.ReadFile(auditFilePath())
-	if err != nil {
+func setAuditIntegrityFailure(err error) {
+	auditHealthMu.Lock()
+	defer auditHealthMu.Unlock()
+	if err == nil {
+		auditIntegrityFailure = ""
 		return
 	}
+	auditIntegrityFailure = err.Error()
+}
+
+func auditIntegrityError() error {
+	auditHealthMu.RLock()
+	reason := auditIntegrityFailure
+	auditHealthMu.RUnlock()
+	if reason == "" {
+		return nil
+	}
+	return fmt.Errorf("审计文件处于异常状态: %s", reason)
+}
+
+func loadAudit() error {
+	content, err := os.ReadFile(auditFilePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			setAuditIntegrityFailure(nil)
+			return nil
+		}
+		wrapped := fmt.Errorf("读取审计文件失败: %w", err)
+		setAuditIntegrityFailure(wrapped)
+		return wrapped
+	}
 	var loaded []AuditEntry
-	if json.Unmarshal(content, &loaded) == nil && validAuditChain(loaded) {
+	if json.Unmarshal(content, &loaded) == nil && validAuditChain(loaded) && validAuditRotationBoundary(auditFilePath(), loaded) {
 		auditMu.Lock()
 		auditEntries = loaded
 		if len(auditEntries) > auditMaxEntries() {
 			auditEntries = auditEntries[len(auditEntries)-auditMaxEntries():]
 		}
 		auditMu.Unlock()
-	} else {
-		log.Printf("audit file failed integrity validation: %s", auditFilePath())
+		setAuditIntegrityFailure(nil)
+		return nil
 	}
+	wrapped := fmt.Errorf("审计文件格式或哈希链校验失败: %s", auditFilePath())
+	setAuditIntegrityFailure(wrapped)
+	log.Printf("audit file failed integrity validation: %s", auditFilePath())
+	return wrapped
+}
+
+func validAuditRotationBoundary(path string, entries []AuditEntry) bool {
+	if len(entries) == 0 || entries[0].PrevHash == "" {
+		return true
+	}
+	// A bounded audit file can start in the middle of a chain without a
+	// rotation sidecar. Its first retained entry is still internally verified;
+	// the external boundary is intentionally unrecoverable from this file alone.
+	if len(entries) >= auditMaxEntries() {
+		return true
+	}
+	content, err := os.ReadFile(path + ".1")
+	if err != nil {
+		return false
+	}
+	var previous []AuditEntry
+	if json.Unmarshal(content, &previous) != nil || !validAuditChain(previous) || len(previous) == 0 {
+		return false
+	}
+	return previous[len(previous)-1].Hash == entries[0].PrevHash
 }
 
 func validAuditChain(entries []AuditEntry) bool {
@@ -120,8 +173,14 @@ func validAuditChain(entries []AuditEntry) bool {
 }
 
 func auditEvent(r *http.Request, actor, action, result string) error {
+	if err := auditIntegrityError(); err != nil {
+		return err
+	}
 	auditFileMu.Lock()
 	defer auditFileMu.Unlock()
+	if err := auditIntegrityError(); err != nil {
+		return err
+	}
 	path := auditFilePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("创建审计目录失败: %w", err)
@@ -173,6 +232,7 @@ func auditEvent(r *http.Request, actor, action, result string) error {
 		return nil
 	}); err != nil {
 		log.Printf("audit event write failed: action=%s result=%s error=%v", action, result, err)
+		setAuditIntegrityFailure(fmt.Errorf("审计写入失败: %w", err))
 		return err
 	}
 	return nil
@@ -180,11 +240,13 @@ func auditEvent(r *http.Request, actor, action, result string) error {
 
 // recordCriticalAudit keeps the business result visible while making an audit
 // persistence failure operationally visible instead of silently discarding it.
-func recordCriticalAudit(r *http.Request, actor, action, result string) {
+func recordCriticalAudit(r *http.Request, actor, action, result string) error {
 	if err := auditEvent(r, actor, action, result); err != nil {
 		log.Printf("critical audit unavailable: action=%s result=%s error=%v", action, result, err)
 		queueTelegramAlert("audit_write_failed", fmt.Sprintf("🚨 域盾 DNSGuard 审计写入失败\n动作：%s\n结果：%s\n原因：%s", action, result, err.Error()))
+		return err
 	}
+	return nil
 }
 
 func audit(w http.ResponseWriter, r *http.Request) {
