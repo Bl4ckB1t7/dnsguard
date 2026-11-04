@@ -1,120 +1,134 @@
-# 域盾（DNSGuard）
+# 域盾 DNSGuard
 
-DNSGuard 是企业 DNS 的 RPZ 控制面，负责规则管理、受控发布、节点状态、审计、版本和告警配置。BIND Primary/Secondary 始终是 DNS 数据面：DNSGuard 不参与客户端 DNS 查询，控制面停止时，BIND 继续提供已经加载的解析服务。
+![域盾 DNSGuard](docs/images/dnsguard-overview.png)
 
-## V1.0 支持边界
+**域盾（DNSGuard）是一个简单、可审计的企业 DNS RPZ 管理平台。**
 
-- **生产部署唯一支持 Docker Compose**：安装、启动、停止、升级、备份、恢复和回滚都使用 Compose。
-- Compose 只运行 `dnsguard-api` 和 `dnsguard-web`，不会安装、修改或重启生产 BIND。
-- 不使用数据库、Redis、Kafka、Kubernetes 或其他额外基础设施。
-- JSON 文件是控制面持久化格式，必须持久化 `docker-data/`。
-- `tests/` 和 `dev/bind-rpz/` 仅用于开发和隔离验收，不是生产部署入口。
+它把日常的 RPZ 规则维护、发布、同步检查和操作审计集中到一个 Web 页面中，减少手工修改 Zone 文件和重启 BIND 带来的风险。
 
-完整交付手册：[`deploy/docker/README.md`](deploy/docker/README.md)。
-正式版本说明：[`RELEASE_NOTES.md`](RELEASE_NOTES.md)。
+> DNSGuard 是 **DNS 控制面**。BIND Primary 和 Secondary 仍然独立提供 DNS 解析；即使 DNSGuard 停止，BIND 也会继续使用当前已加载的 Zone 工作。
 
-## 解决的问题
+## 它解决什么问题？
 
-企业手工维护 RPZ 容易出现 Zone 格式错误、漏同步、Serial 不一致、误删和无法追踪。DNSGuard 将规则变更、发布预览、`named-checkzone`、`nsupdate + TSIG`、NOTIFY/IXFR/AXFR 状态检查和审计集中到控制面，同时保持 BIND 数据面独立。
+企业 DNS 运维中，常见问题是：
 
-## 主要功能
+- 手工修改 RPZ，容易写错格式；
+- 多台 Secondary 同步后，难以确认 Serial 是否一致；
+- 规则是谁加的、什么时候发布的，不容易追踪；
+- 发布失败后，人工判断和恢复过程不统一。
 
-- RPZ passthru 白名单和 A 记录重定向；域名规则同时生成精确及泛域名触发器。
-- 发布前规则与 Zone 校验，发布后检查 Primary/Secondary SOA Serial 和实际解析效果。
-- 发布任务互斥、不可变规则快照、有限重试、故障诊断和 `reconcile_required` 人工核对状态。
-- JSON 原子写入、备份、版本记录和审计哈希链。
-- DNS 节点增删改、SOA 健康状态和同步异常识别。
-- Web 首次初始化向导：Bootstrap Token、管理员、Primary/Secondary、TSIG 和发布门禁。
-- CSRF、Session、Cookie 安全属性、登录限速、验证码、密码修改和管理操作审计。
-- Docker Compose 非 root、只读根文件系统、内部 API 网络、HTTPS 和资源限制。
+DNSGuard 的目标很简单：
 
-## 生产架构
+**在一个页面管理规则，点击发布，系统负责检查结果并留下记录。**
 
-```mermaid
-flowchart TD
-    A[管理员浏览器] --> B[dnsguard-web Nginx HTTPS]
-    B --> C[dnsguard-api 内部网络]
-    C --> D[JSON 持久化 docker-data]
-    C --> E[named-checkzone]
-    C --> F[nsupdate + TSIG]
-    F --> G[BIND RPZ Primary]
-    G -->|NOTIFY / IXFR / AXFR| H[BIND Secondary 集群]
-    C --> I[dig SOA/解析验证]
+## 你可以用它做什么？
+
+- 管理 RPZ 白名单（passthru）；
+- 将指定域名重定向到 A 记录；
+- 管理一台 Primary 和多台 Secondary；
+- 通过 `nsupdate + TSIG` 更新 Primary；
+- 检查 Secondary 的 NOTIFY / IXFR / AXFR 同步结果；
+- 发布后核对 SOA Serial 和实际解析效果；
+- 查看版本、发布任务和审计记录；
+- 在故障状态下保留人工核对和恢复路径。
+
+## 工作方式
+
+```text
+管理员浏览器
+      │ HTTPS
+      ▼
+DNSGuard Web + API
+      │
+      ├── JSON 文件保存规则、节点、任务和审计记录
+      ├── nsupdate + TSIG 更新 BIND Primary
+      └── dig 检查 Primary / Secondary 的 Serial 和解析结果
+                                      │
+                         NOTIFY / IXFR / AXFR
+                                      ▼
+                              BIND Secondary 集群
 ```
 
-生产 BIND 不放入 DNSGuard Compose。DNSGuard 只需要从控制面网络访问 Primary 的动态更新端口和所有 Secondary 的 DNS 查询端口。
+生产环境中，DNSGuard 不接管客户端 DNS 查询，也不会安装、重启或修改生产 BIND 服务。
 
-## Docker Compose 快速安装
+## 生产部署：只需要 Docker Compose
 
-目标服务器不需要安装 Go、Node.js、npm 或手动创建服务文件。准备 Docker Engine、Compose Plugin、生产 TSIG 和 HTTPS 证书后执行：
+V1.0 生产环境只支持 Docker Compose。目标服务器不需要安装 Go、Node.js、npm，也不需要手动创建服务文件。
+
+### 1. 获取代码
 
 ```bash
 git clone https://github.com/Bl4ckB1t7/dnsguard.git
 cd dnsguard
-git checkout v1.0.0
+```
+
+### 2. 准备配置和密钥
+
+```bash
 cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
 install -d -m 0750 docker-data secrets tls bind-logs
+```
+
+编辑 `deploy/docker/dnsguard.env`，填写：
+
+- BIND Primary 地址和 RPZ Zone；
+- Secondary 地址允许范围；
+- `AUTH_SECRET` 和 `MONITORING_TOKEN`；
+- 发布超时和重试参数。
+
+将生产文件放入受保护目录：
+
+```bash
 install -m 0640 PATH_TO_PRODUCTION_RPZ_KEY secrets/rpz-manager.key
 install -m 0644 PATH_TO_FULLCHAIN_PEM tls/fullchain.pem
 install -o 101 -g 101 -m 0640 PATH_TO_PRIVATE_KEY tls/privkey.pem
+
 umask 077
 openssl rand -hex 32 > secrets/bootstrap.token
 chown 10001:10001 secrets/bootstrap.token
 chmod 0600 secrets/bootstrap.token
+```
+
+不要把 TSIG、Bootstrap Token、HTTPS 私钥、生产环境文件或 `docker-data/` 提交到 Git。
+
+### 3. 启动
+
+```bash
 ./scripts/docker-init.sh
 docker compose up -d
 docker compose ps
 ```
 
-编辑 `deploy/docker/dnsguard.env` 中的 `AUTH_SECRET`、`MONITORING_TOKEN`、`RPZ_PRIMARY`、`RPZ_ZONE`、允许网段和节点地址。不要把该文件、TSIG、Bootstrap Token、证书私钥或 `docker-data/` 提交到 Git。
+默认只有 Web 容器对外提供 HTTPS，API 只在 Docker 内部网络中通信。
 
-默认只有 Web 暴露 HTTPS 端口，API 没有宿主机端口。生产入口必须使用 HTTPS，并限制管理网段访问。详细首次初始化、检查、故障处理和升级流程见 Docker 手册。
+## 第一次登录
 
-## 一次性迁移旧部署数据
+浏览器打开 HTTPS 地址后，系统会自动进入初始化页面：
 
-Docker Only 不会自动读取或删除旧主机上的数据。迁移前先停止旧控制面并保留原目录副本；不要覆盖原目录，也不要将旧服务和新 Compose 同时绑定同一端口。
+1. 从服务器上的 `secrets/bootstrap.token` 读取 Bootstrap Token；
+2. 创建管理员账号和密码；
+3. 添加 BIND Primary；
+4. 添加一台或多台 Secondary；
+5. 配置 TSIG 并执行连接检查；
+6. 检查通过后开启 RPZ 发布。
 
-1. 备份旧配置、认证文件、节点文件、状态、审计、版本、发布任务、Telegram 配置、RPZ 产物、TSIG 和证书。
-2. 在新仓库准备 `docker-data/`、`secrets/`、`tls/` 和 `bind-logs/`。
-3. 将旧状态文件复制到 `docker-data/`，将 TSIG 复制到 `secrets/rpz-manager.key`，将证书复制到 `tls/`。
-4. 按容器 UID 修正权限：`docker-data/` 与 TSIG 归 UID/GID `10001:10001`，TLS 私钥可读于 `101:101`，认证文件 `0600`，Bootstrap Token `0600`。
-5. 检查 `AUTH_FILE`、`DNS_NODE_CONFIG_FILE`、`DNS_STATE_FILE`、`AUDIT_FILE` 等容器内路径，不要把 `/var/lib/dnsguard` 当成宿主机路径写入备份命令。
-6. 执行 `./scripts/docker-init.sh` 和 `docker compose config`，确认已有认证和节点文件未被覆盖，再启动 Compose。
-7. 登录后核对节点、RPZ 规则、版本、任务和审计哈希链，并分别 `dig` 查询 Primary/Secondary 的 Serial 和关键规则。
-8. 确认新环境稳定后，再由人工下线旧控制面。迁移不自动修改 BIND Zone；状态文件恢复也不等于 RPZ 已回滚。
+Bootstrap Token 只用于首次初始化，初始化完成后自动失效。已有数据升级时不会重新开放初始化页面，也不会覆盖已有管理员和节点配置。
 
-## 开发与隔离测试
+## 日常操作
 
-本地开发仍可直接使用 Go 和 React，但这不是生产部署方式：
+在“RPZ 规则”中添加、修改或删除规则，然后通过“发布”提交到 BIND Primary。系统会：
 
-```bash
-npm ci
-npm run build
-(cd server && go test ./... -count=1)
-```
+1. 检查规则和 Zone 格式；
+2. 固定本次发布的规则快照；
+3. 使用 TSIG 更新 Primary；
+4. 等待 Secondary 同步；
+5. 检查各节点 SOA Serial；
+6. 验证关键域名的实际解析结果；
+7. 保存发布任务和审计记录。
 
-隔离 BIND/RPZ 联调环境：
+如果 Primary 成功但部分 Secondary 没有同步，系统会显示同步异常，不会把整个集群直接标记为成功，也不会未经核对自动回滚。
 
-```bash
-./scripts/start-bind-rpz.sh
-./scripts/test-functional.sh
-./scripts/stop-bind-rpz.sh
-```
-
-自动化验收：
-
-```bash
-(cd server && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
-npm run build
-./tests/backup-restore.sh
-./tests/docker-initialization-wizard.sh
-./tests/docker-production-deployment.sh
-./tests/bind-cluster/run-acceptance.sh
-```
-
-所有 BIND 测试均使用隔离容器和测试 TSIG，禁止指向生产 DNS。Docker 测试生成的状态、密钥、日志和报告位于被忽略的 runtime 目录。
-
-## 日常运维
+常用命令：
 
 ```bash
 docker compose ps
@@ -122,14 +136,13 @@ docker compose logs --tail=200 dnsguard-api
 docker compose logs --tail=200 dnsguard-web
 docker compose stop
 docker compose start
-docker compose down
 ```
 
-发布异常时不要删除 `docker-data/`，不要直接修改 BIND Zone 文件。出现 `reconcile_required` 时，先人工核对 Primary/所有 Secondary 的 SOA Serial 和实际解析结果，再决定重试或回滚。
+## 备份与恢复
 
-## 备份和恢复
+规则、节点、认证、审计、版本和发布任务都保存在 `docker-data/`，需要纳入备份。
 
-备份脚本只支持 Docker Compose：
+普通状态备份：
 
 ```bash
 docker compose stop
@@ -141,23 +154,57 @@ BACKUP_DIR=/secure/backup/dnsguard \
 ./scripts/backup-dnsguard.sh
 ```
 
-恢复前必须 `docker compose down`。普通状态恢复不会自动恢复 TSIG/私钥；敏感文件必须显式使用 `RESTORE_INCLUDE_SENSITIVE=true`。`deploy/docker/dnsguard.env` 含有 `AUTH_SECRET` 等敏感配置，只有在备份和恢复时分别设置 `BACKUP_INCLUDE_SENSITIVE=true`、`RESTORE_INCLUDE_SENSITIVE=true`，并指定 `DNSGUARD_ENV_FILE`，才会纳入或恢复为归档中的 `config/dnsguard.env`。归档包含 SHA-256 manifest，恢复脚本会检查路径、校验和、权限、UID/GID，并拒绝运行中的 Compose 恢复。恢复后重新启动并人工核对 BIND，不能把旧 JSON 当成 Zone 回滚。
+TSIG、HTTPS 私钥和含有 `AUTH_SECRET` 的环境文件属于敏感数据，只有明确需要时才备份：
 
-## 目录结构
-
-```text
-compose.yaml                 Docker Compose 唯一生产入口
-Dockerfile                   Go/React 多阶段镜像构建
-deploy/docker/               Docker 配置、环境模板和交付手册
-scripts/docker-init.sh       Docker 初始化与安全预检查
-scripts/backup-dnsguard.sh   Docker 宿主机路径备份
-scripts/restore-dnsguard.sh  Docker 宿主机路径恢复
-server/                      Go API 与单元测试
-src/                         React 前端
-dev/bind-rpz/                本地 BIND 联调
-tests/                       隔离验收测试
+```bash
+BACKUP_INCLUDE_SENSITIVE=true \
+DNSGUARD_ENV_FILE="$PWD/deploy/docker/dnsguard.env" \
+DNSGUARD_BACKUP_MODE=docker \
+DNSGUARD_DATA_DIR="$PWD/docker-data" \
+DNSGUARD_SECRET_DIR="$PWD/secrets" \
+DNSGUARD_TLS_DIR="$PWD/tls" \
+BACKUP_DIR=/secure/backup/dnsguard-sensitive \
+./scripts/backup-dnsguard.sh
 ```
+
+恢复前必须停止 Compose。敏感文件恢复必须显式设置 `RESTORE_INCLUDE_SENSITIVE=true`。恢复 JSON 不等于回滚 BIND Zone；恢复后仍需人工核对 Primary、Secondary 的 Serial 和实际解析结果。
+
+详细的备份、恢复、升级、回滚和旧部署迁移说明见：
+
+- [`deploy/docker/README.md`](deploy/docker/README.md)
+- [`RELEASE_NOTES.md`](RELEASE_NOTES.md)
 
 ## 安全边界
 
-DNSGuard 只管理 RPZ 控制面。生产变更必须确认 DNS 节点、RPZ Zone、TSIG 和管理网络均已授权。不要在生产环境执行故障注入，不要将生产密钥、密码、Token、证书或日志提交到仓库。
+- 生产 BIND 不放入 DNSGuard Compose；
+- API 不直接暴露宿主机端口；
+- 容器使用非 root 用户和 HTTPS；
+- TSIG 不进入镜像、Git 或普通日志；
+- 管理操作使用认证、Session、CSRF 和审计保护；
+- 发布失败时保留诊断证据，不盲目重放或自动回滚；
+- 不要在生产环境运行故障注入测试。
+
+## 本地开发和隔离测试
+
+本地开发仍可使用 Go 和 React，但这不是生产部署方式：
+
+```bash
+npm ci
+npm run build
+(cd server && go test ./... -count=1)
+```
+
+完整隔离验收：
+
+```bash
+./tests/backup-restore.sh
+./tests/docker-initialization-wizard.sh
+./tests/docker-production-deployment.sh
+./tests/bind-cluster/run-acceptance.sh
+```
+
+这些测试使用独立 Docker 网络、测试 TSIG 和临时目录，不连接生产 DNS。
+
+## 许可证
+
+本项目使用 [MIT License](LICENSE)。
