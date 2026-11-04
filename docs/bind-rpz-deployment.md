@@ -161,7 +161,33 @@ DNSGuard 当前会为每条域名规则生成两个 QNAME 触发项：
 - `passthru`：生成 RPZ passthru，允许该请求继续正常解析；
 - `A`：将匹配结果重定向到指定 IPv4 地址。
 
-## 6. 发布前检查
+## 6. 一键对接检查
+
+仓库提供 `scripts/rpz-connect.sh`，用于把 BIND 准备情况一次性检查出来。默认只读，不修改 `named.conf`、不 reload/restart BIND、不发布 RPZ 规则：
+
+```bash
+cp deploy/docker/rpz-connect.env.example /tmp/rpz-connect.env
+# 编辑 /tmp/rpz-connect.env，填写实际地址和宿主机上的 TSIG 文件路径
+./scripts/rpz-connect.sh --env-file /tmp/rpz-connect.env --render /tmp/dnsguard-rpz-rendered
+```
+
+脚本会检查 `dig`/`nsupdate` 工具、TSIG 文件权限、Primary/Secondary SOA Serial 和节点一致性，并生成不含密钥内容的 DNSGuard/BIND 配置模板。它不会自动安装或修改生产 BIND。
+
+如需验证 TSIG 动态更新权限，必须显式执行写入测试：
+
+```bash
+./scripts/rpz-connect.sh \
+  --env-file /tmp/rpz-connect.env \
+  --write-test --confirm WRITE-TEST
+```
+
+该模式只向 Primary 写入一个随机临时 TXT 记录，验证后立即删除并再次查询确认。清理失败时脚本返回失败，并要求人工核对该临时记录；它不会继续执行正式 RPZ 发布。
+
+如果设置 `RPZ_RECURSOR`、`RPZ_CHECK_NAME` 和 `RPZ_EXPECTED_A`，脚本还会通过递归 DNS 查询指定测试域名并核对预期 A 记录；未同时设置这三个值时，实际策略验证会明确显示为 `NOT RUN`。
+
+脚本输出使用 `PASS`、`FAIL`、`WARN`，适合安装验收和故障排查。`--write-test` 不应在未经审批的生产变更窗口外执行。
+
+## 7. 发布前检查
 
 在 Primary 或配置检查主机执行只读检查：
 
@@ -194,7 +220,7 @@ dig @RECURSOR_IP sub.example.com A +short
 
 使用测试域名和测试 IP，避免在生产验证中误导真实用户流量。`passthru` 规则应验证其不再被 RPZ 改写；A 规则应验证返回预期 IPv4。
 
-## 7. 变更、故障和回滚边界
+## 8. 变更、故障和回滚边界
 
 - 不要通过编辑 Zone 文件并重启 BIND 来发布 DNSGuard 管理的规则；动态更新会产生 journal，直接改文件可能造成状态不一致。
 - DNSGuard 停止时，BIND 继续提供当前已加载的 Zone；不要因为控制面不可用而重启 BIND。
@@ -202,7 +228,7 @@ dig @RECURSOR_IP sub.example.com A +short
 - DNSGuard 的版本回滚不等于 RPZ Zone 回滚。RPZ 回滚必须从已审计版本创建新的受控发布任务，并重新验证 Primary、全部 Secondary 和实际解析。
 - 如果恢复了旧的 DNSGuard JSON 状态，必须执行 `reconcile_required` 人工核对；恢复文件不会自动修改 BIND 当前 Zone。
 
-## 8. 隔离验收
+## 9. 隔离验收
 
 仓库提供不连接生产 DNS 的三节点 BIND 验收环境：
 

@@ -19,6 +19,8 @@ DNSGuard 不会安装或管理生产 BIND。启动 Compose 前，请先准备 RP
 
 准备完成后，确认 DNSGuard 所在主机能够访问 Primary 和全部 Secondary 的 TCP/UDP 53 端口。不要把生产 BIND 放进本 Compose，也不要把生产 TSIG 写入 Git 或环境变量模板。
 
+可使用仓库提供的一键只读检查脚本：`scripts/rpz-connect.sh`。配置模板为 `deploy/docker/rpz-connect.env.example`；脚本默认只检查连通性、SOA、Serial 和密钥权限，不会修改 BIND。TSIG 写权限测试必须显式使用 `--write-test --confirm WRITE-TEST`。
+
 ## 3. 获取正式版本
 
 发布后固定使用 Git Tag，不要直接跟随 `main`：

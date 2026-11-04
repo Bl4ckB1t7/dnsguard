@@ -53,6 +53,8 @@ flowchart TD
 
 完整的 BIND 配置模板、端口要求、规则匹配说明和发布前检查见：[BIND RPZ 部署与 DNSGuard 对接](docs/bind-rpz-deployment.md)。文档中的地址、密钥和域名均为占位符，不要直接用于生产。
 
+仓库还提供一键只读对接检查：`./scripts/rpz-connect.sh --env-file deploy/docker/rpz-connect.env.example`。它只检查节点、SOA、Serial 和 TSIG 文件权限，不会自动修改或重启 BIND。
+
 ## 快速开始
 
 DNSGuard V1.0 采用 **Docker Compose Only** 部署。
