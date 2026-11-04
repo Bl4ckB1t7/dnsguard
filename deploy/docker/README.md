@@ -13,7 +13,13 @@ Docker Compose 是 DNSGuard 的推荐生产部署方式。Compose 只运行 DNSG
 - 生产 RPZ TSIG key 文件和 HTTPS 证书/私钥。
 - 管理入口只允许从管理网段访问；不要把管理端口直接暴露到公网。
 
-## 2. 获取正式版本
+## 2. 先准备 BIND RPZ 集群
+
+DNSGuard 不会安装或管理生产 BIND。启动 Compose 前，请先准备 RPZ Primary、至少一台 Secondary、TSIG 动态更新权限、NOTIFY / IXFR / AXFR 和递归 DNS 的 `response-policy`。建议先阅读：[BIND RPZ 部署与 DNSGuard 对接](../../docs/bind-rpz-deployment.md)。
+
+准备完成后，确认 DNSGuard 所在主机能够访问 Primary 和全部 Secondary 的 TCP/UDP 53 端口。不要把生产 BIND 放进本 Compose，也不要把生产 TSIG 写入 Git 或环境变量模板。
+
+## 3. 获取正式版本
 
 发布后固定使用 Git Tag，不要直接跟随 `main`：
 
@@ -25,7 +31,7 @@ git checkout v1.0.0
 
 如果使用内部镜像仓库，也应固定镜像 digest 或已批准的版本号，不使用 `latest`。
 
-## 3. 准备配置和密钥
+## 4. 准备配置和密钥
 
 ```bash
 cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
@@ -58,7 +64,7 @@ chmod 0600 secrets/bootstrap.token
 TSIG key、Bootstrap Token、证书和私钥只通过受保护的 bind mount 进入容器；项目不会
 生成或修改生产 BIND 的 `named.conf`、TSIG 配置或服务状态。
 
-## 4. 初始化、启动和健康检查
+## 5. 初始化、启动和健康检查
 
 ```bash
 ./scripts/docker-init.sh
@@ -86,7 +92,7 @@ docker compose up -d
 docker compose ps
 ```
 
-## 5. Web 首次初始化向导
+## 6. Web 首次初始化向导
 
 1. 从部署终端读取 `secrets/bootstrap.token`，不要通过聊天、日志或 URL 传递。
 2. 在浏览器向导输入一次性 Bootstrap Token。
@@ -107,7 +113,7 @@ Primary，页面必须明确展示影响；如果写入成功但清理失败，�
 初始化后可在已认证后台修改管理员密码、节点配置和 TSIG 路径。任何变更都需要经过
 认证、CSRF 校验并留下审计记录。
 
-## 6. 持久化数据和权限
+## 7. 持久化数据和权限
 
 | 宿主机目录 | 容器路径 | 内容 |
 |---|---|---|
@@ -120,7 +126,7 @@ API 以 `10001:10001` 运行，Web 以 `101:101` 运行；根文件系统只读�
 `no-new-privileges`、丢弃 capabilities、资源限制和日志轮转。不要删除 `docker-data`
 来处理发布异常。
 
-## 7. 备份
+## 8. 备份
 
 Docker 备份必须在**宿主机**执行，不能直接把 `/var/lib/dnsguard` 当作宿主机路径。
 备份脚本的 Docker 模式会读取 bind mount 的真实目录，并递归覆盖规则、节点、认证、
@@ -161,7 +167,7 @@ sha256sum /secure/backup/dnsguard-sensitive/dnsguard-*.tar.gz > /secure/backup/d
 显式设置 `BACKUP_INCLUDE_SENSITIVE=true` 且通过 `DNSGUARD_ENV_FILE` 指定时才会以
 归档内 `config/dnsguard.env` 备份；不要把这类归档放入普通备份库。
 
-## 8. 恢复演练和正式恢复
+## 9. 恢复演练和正式恢复
 
 先停止控制面并确认备份校验通过：
 
@@ -201,7 +207,7 @@ DNSGUARD_ENV_FILE="$PWD/deploy/docker/dnsguard.env" \
 5. 若任务显示 `reconcile_required`，先人工核对 BIND 实际状态，不要自动重放或把旧 JSON 误当作 Zone 回滚；
 6. 恢复旧状态不会修改生产 BIND 当前 Zone，也不能宣称 RPZ 已回滚。需要回滚 Zone 时，必须在后台创建新的受控 RPZ 发布/回滚任务并完成集群验证。
 
-## 9. 升级和回滚
+## 10. 升级和回滚
 
 升级前：
 
@@ -230,7 +236,7 @@ docker compose up -d
 验证 Primary/全部 Secondary Serial 和实际解析效果。禁止清空 `docker-data`、直接
 覆盖状态文件或未经验证自动回滚。
 
-## 10. 常见错误
+## 11. 常见错误
 
 - `AUTH_SECRET` 或 `MONITORING_TOKEN` 是 `REPLACE_` 占位值：重新编辑 env。
 - `RPZ_KEY_FILE is not readable`：检查 key 位于 `secrets/`，权限允许 UID 10001 读取。

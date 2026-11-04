@@ -47,6 +47,12 @@ flowchart TD
 
 生产部署只包含 `dnsguard-api` 和 `dnsguard-web` 两个 Docker 服务。BIND DNS 服务器保持独立运行。
 
+## BIND RPZ 如何接入
+
+先准备 BIND RPZ Primary、Secondary、TSIG、Zone Transfer 和递归 DNS 的 `response-policy`，再运行 DNSGuard 初始化向导。DNSGuard 通过 `nsupdate + TSIG` 更新 Primary，由 BIND 原生的 NOTIFY / IXFR / AXFR 同步到 Secondary。
+
+完整的 BIND 配置模板、端口要求、规则匹配说明和发布前检查见：[BIND RPZ 部署与 DNSGuard 对接](docs/bind-rpz-deployment.md)。文档中的地址、密钥和域名均为占位符，不要直接用于生产。
+
 ## 快速开始
 
 DNSGuard V1.0 采用 **Docker Compose Only** 部署。
