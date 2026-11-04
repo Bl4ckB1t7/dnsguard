@@ -2,6 +2,8 @@
 
 **轻量级 BIND RPZ 安全策略管理平台**
 
+> **让每一次解析，都有安全边界。**
+
 <p align="center">
   <img src="docs/images/dnsguard-overview.png" alt="DNSGuard 产品概览" width="100%">
 </p>
