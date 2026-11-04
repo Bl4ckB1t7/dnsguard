@@ -91,6 +91,11 @@ var nodeSequence atomic.Uint64
 var stateFileMu sync.Mutex
 var nodeConfigFileMu sync.Mutex
 
+// dnsStateMutationMu keeps an in-memory mutation and its durable write as one
+// serialized operation. Without it, a failed write could be restored over a
+// concurrent successful mutation.
+var dnsStateMutationMu sync.Mutex
+
 func nextRuleID() string {
 	return fmt.Sprintf("rule-%d-%d", time.Now().UTC().UnixNano(), ruleSequence.Add(1))
 }
@@ -445,6 +450,15 @@ func withStateFileLock(action func() error) error {
 	return withFileLock(dnsStatePath(), action)
 }
 
+func syncParentDir(path string) error {
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
 func nodeConfigsFromState() []DNSNodeConfig {
 	dnsMu.RLock()
 	defer dnsMu.RUnlock()
@@ -483,7 +497,10 @@ func saveDNSNodeConfig() error {
 		if err := file.Close(); err != nil {
 			return err
 		}
-		return os.Rename(tmp, path)
+		if err := os.Rename(tmp, path); err != nil {
+			return err
+		}
+		return syncParentDir(path)
 	})
 }
 
@@ -537,17 +554,37 @@ func loadDNSNodeConfig() error {
 	return saveDNSNodeConfig()
 }
 
-func loadDNSState() {
-	content, err := os.ReadFile(dnsStatePath())
-	if err == nil && json.Unmarshal(content, &state) == nil {
-		normalizeRuleIDs()
-		return
+func loadDNSState() error {
+	path := dnsStatePath()
+	content, contentErr := os.ReadFile(path)
+	if contentErr == nil {
+		var loaded dnsState
+		if err := json.Unmarshal(content, &loaded); err == nil {
+			state = loaded
+			return normalizeRuleIDs()
+		}
+	} else if !os.IsNotExist(contentErr) {
+		return fmt.Errorf("读取 DNS 状态文件失败: %w", contentErr)
 	}
-	backup, backupErr := os.ReadFile(dnsStatePath() + ".bak")
-	if backupErr == nil && json.Unmarshal(backup, &state) == nil {
-		_ = saveDNSState()
-		return
+
+	backup, backupErr := os.ReadFile(path + ".bak")
+	if backupErr == nil {
+		var loaded dnsState
+		if err := json.Unmarshal(backup, &loaded); err == nil {
+			state = loaded
+			if err := saveDNSState(); err != nil {
+				return fmt.Errorf("恢复 DNS 状态备份后写回失败: %w", err)
+			}
+			return normalizeRuleIDs()
+		}
+	} else if !os.IsNotExist(backupErr) {
+		return fmt.Errorf("读取 DNS 状态备份失败: %w", backupErr)
 	}
+
+	if !os.IsNotExist(contentErr) || !os.IsNotExist(backupErr) {
+		return fmt.Errorf("DNS 状态文件损坏且备份不可用: %s", path)
+	}
+
 	state = dnsState{
 		Nodes: []DNSNode{
 			{ID: "primary-1", Name: "RPZ-PRIMARY", Role: "隐藏主节点", Address: "BIND_PRIMARY", Status: "healthy", RPZVersion: "RPZ_VERSION", LastSync: "刚刚"},
@@ -558,10 +595,13 @@ func loadDNSState() {
 		Published: []RPZRule{},
 		Versions:  []RPZVersion{},
 	}
-	_ = saveDNSState()
+	if err := saveDNSState(); err != nil {
+		return fmt.Errorf("初始化 DNS 状态文件失败: %w", err)
+	}
+	return nil
 }
 
-func normalizeRuleIDs() {
+func normalizeRuleIDs() error {
 	seen := make(map[string]bool)
 	changed := false
 	for index := range state.Rules {
@@ -578,8 +618,9 @@ func normalizeRuleIDs() {
 		}
 	}
 	if changed {
-		_ = saveDNSState()
+		return saveDNSState()
 	}
+	return nil
 }
 
 func saveDNSState() error {
@@ -619,7 +660,10 @@ func saveDNSState() error {
 		if err := file.Close(); err != nil {
 			return err
 		}
-		return os.Rename(tmp, path)
+		if err := os.Rename(tmp, path); err != nil {
+			return err
+		}
+		return syncParentDir(path)
 	})
 }
 
@@ -973,20 +1017,28 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 			action = "redirect"
 		}
 		rule := RPZRule{ID: nextRuleID(), Domain: request.Domain, Action: action, Type: request.Type, Value: request.Value, Reason: strings.TrimSpace(request.Reason), Status: "draft", UpdatedAt: now}
+		dnsStateMutationMu.Lock()
 		dnsMu.Lock()
 		for _, existing := range state.Rules {
 			if existing.Domain == rule.Domain {
 				dnsMu.Unlock()
+				dnsStateMutationMu.Unlock()
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "该域名已有规则"})
 				return
 			}
 		}
+		previousRules := copyRPZRules(state.Rules)
 		state.Rules = append(state.Rules, rule)
 		dnsMu.Unlock()
 		if err := saveDNSState(); err != nil {
+			dnsMu.Lock()
+			state.Rules = previousRules
+			dnsMu.Unlock()
+			dnsStateMutationMu.Unlock()
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则保存失败"})
 			return
 		}
+		dnsStateMutationMu.Unlock()
 		auditEvent(r, authUsername(), "rpz.rule.create", rpzAuditDetail(rule))
 		queueTelegramAlert("rpz_rule_create", rpzRuleTelegramMessage("新增规则", rule))
 		writeJSON(w, http.StatusCreated, rule)
@@ -1019,7 +1071,9 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ids required"})
 		return
 	}
+	dnsStateMutationMu.Lock()
 	dnsMu.Lock()
+	previousRules := copyRPZRules(state.Rules)
 	kept := make([]RPZRule, 0, len(state.Rules))
 	deleted := make([]RPZRule, 0, len(selected))
 	for _, rule := range state.Rules {
@@ -1032,13 +1086,19 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 	state.Rules = kept
 	dnsMu.Unlock()
 	if len(deleted) == 0 {
+		dnsStateMutationMu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "规则不存在"})
 		return
 	}
 	if err := saveDNSState(); err != nil {
+		dnsMu.Lock()
+		state.Rules = previousRules
+		dnsMu.Unlock()
+		dnsStateMutationMu.Unlock()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量删除失败"})
 		return
 	}
+	dnsStateMutationMu.Unlock()
 	for _, rule := range deleted {
 		auditEvent(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(rule))
 		queueTelegramAlert("rpz_rule_delete", rpzRuleTelegramMessage("批量删除规则", rule))
@@ -1092,6 +1152,7 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 		if request.Type == "A" {
 			action = "redirect"
 		}
+		dnsStateMutationMu.Lock()
 		dnsMu.Lock()
 		index := -1
 		for i, rule := range state.Rules {
@@ -1102,12 +1163,14 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if index < 0 {
 			dnsMu.Unlock()
+			dnsStateMutationMu.Unlock()
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "规则不存在"})
 			return
 		}
 		for i, rule := range state.Rules {
 			if i != index && rule.Domain == request.Domain {
 				dnsMu.Unlock()
+				dnsStateMutationMu.Unlock()
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "该域名已有规则"})
 				return
 			}
@@ -1127,9 +1190,11 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 			dnsMu.Lock()
 			state.Rules[index] = previous
 			dnsMu.Unlock()
+			dnsStateMutationMu.Unlock()
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则保存失败"})
 			return
 		}
+		dnsStateMutationMu.Unlock()
 		auditEvent(r, authUsername(), "rpz.rule.update", rpzAuditDetail(updated))
 		queueTelegramAlert("rpz_rule_update", rpzRuleTelegramMessage("编辑规则", updated))
 		writeJSON(w, http.StatusOK, updated)
@@ -1140,7 +1205,9 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	dnsStateMutationMu.Lock()
 	dnsMu.Lock()
+	previousRules := copyRPZRules(state.Rules)
 	index := -1
 	for i, rule := range state.Rules {
 		if rule.ID == id {
@@ -1155,13 +1222,19 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 	}
 	dnsMu.Unlock()
 	if index < 0 {
+		dnsStateMutationMu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "规则不存在"})
 		return
 	}
 	if err := saveDNSState(); err != nil {
+		dnsMu.Lock()
+		state.Rules = previousRules
+		dnsMu.Unlock()
+		dnsStateMutationMu.Unlock()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "规则删除失败"})
 		return
 	}
+	dnsStateMutationMu.Unlock()
 	auditEvent(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(removed))
 	queueTelegramAlert("rpz_rule_delete", rpzRuleTelegramMessage("删除规则", removed))
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})

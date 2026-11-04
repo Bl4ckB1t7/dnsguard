@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -58,12 +60,104 @@ func rpzStatusSnapshot() rpzRuntime {
 	return rpzRuntimeState
 }
 
+func publishJobsPath() string {
+	if path := strings.TrimSpace(os.Getenv("RPZ_PUBLISH_JOBS_FILE")); path != "" {
+		return path
+	}
+	return dnsStatePath() + ".jobs.json"
+}
+
+func persistPublishJobs() error {
+	path := publishJobsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	publishJobMu.RLock()
+	jobs := make([]PublishJob, 0, len(publishJobs))
+	for _, job := range publishJobs {
+		jobs = append(jobs, job)
+	}
+	publishJobMu.RUnlock()
+	content, err := json.MarshalIndent(jobs, "", "  ")
+	if err != nil {
+		return err
+	}
+	return withFileLock(path, func() error {
+		tmp := path + ".tmp"
+		file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write(content); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := file.Sync(); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			return err
+		}
+		return syncParentDir(path)
+	})
+}
+
+func loadPublishJobs() error {
+	content, err := os.ReadFile(publishJobsPath())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取 RPZ 发布任务失败: %w", err)
+	}
+	var jobs []PublishJob
+	if err := json.Unmarshal(content, &jobs); err != nil {
+		return fmt.Errorf("RPZ 发布任务文件损坏: %w", err)
+	}
+	recovered := false
+	now := time.Now().UTC().Format(time.RFC3339)
+	latestRecovered := PublishJob{}
+	publishJobMu.Lock()
+	publishJobs = make(map[string]PublishJob, len(jobs))
+	for _, job := range jobs {
+		if job.Status == "queued" || job.Status == "running" {
+			job.Status = "reconcile_required"
+			job.Error = "DNSGuard 重启时任务未完成，必须核对 Primary/Secondary 实际状态后再处理"
+			job.FinishedAt = now
+			recovered = true
+			if latestRecovered.ID == "" || job.CreatedAt > latestRecovered.CreatedAt {
+				latestRecovered = job
+			}
+		}
+		publishJobs[job.ID] = job
+	}
+	publishJobMu.Unlock()
+	if recovered {
+		if err := persistPublishJobs(); err != nil {
+			return fmt.Errorf("保存恢复后的 RPZ 发布任务失败: %w", err)
+		}
+		rpzRuntimeMu.Lock()
+		rpzRuntimeState.JobID = latestRecovered.ID
+		rpzRuntimeState.JobStatus = "reconcile_required"
+		rpzRuntimeState.Message = "存在 DNSGuard 重启前未完成的 RPZ 发布任务，请先核对节点状态"
+		rpzRuntimeMu.Unlock()
+	}
+	return nil
+}
+
 func updatePublishJob(id string, update func(*PublishJob)) PublishJob {
 	publishJobMu.Lock()
 	job := publishJobs[id]
 	update(&job)
 	publishJobs[id] = job
 	publishJobMu.Unlock()
+	if err := persistPublishJobs(); err != nil {
+		log.Printf("persist RPZ publish job %s failed: %v", id, err)
+	}
 	return job
 }
 
@@ -172,6 +266,9 @@ func writeRPZArtifact(content string) (string, error) {
 	if err := os.Rename(tmp, path); err != nil {
 		return "", err
 	}
+	if err := syncParentDir(path); err != nil {
+		return "", err
+	}
 	return path, nil
 }
 
@@ -199,6 +296,140 @@ func verifyRPZPrimarySerial(ctx context.Context, previous int64) error {
 		return fmt.Errorf("RPZ Primary SOA Serial 发生回退: previous=%d actual=%s", previous, actual)
 	}
 	return nil
+}
+
+func queryDNSNode(ctx context.Context, address, name, recordType string) ([]string, error) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return nil, fmt.Errorf("DNS 节点地址为空")
+	}
+	if !dnsNodeAddressAllowed(address) {
+		return nil, fmt.Errorf("DNS 节点地址不在允许范围内")
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		host = strings.Trim(address, "[]")
+		port = "53"
+	}
+	if host == "" || strings.TrimSpace(name) == "" || strings.TrimSpace(recordType) == "" {
+		return nil, fmt.Errorf("DNS 查询参数无效")
+	}
+	command := exec.CommandContext(ctx, "dig", "@"+host, "-p", port, name, recordType, "+short", "+time=2", "+tries=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("dig 失败: %s", strings.TrimSpace(string(output)))
+	}
+	lines := strings.Fields(string(output))
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("DNS 响应为空")
+	}
+	return lines, nil
+}
+
+func verifyRPZRuleAnswer(ctx context.Context, node DNSNode, rule RPZRule) error {
+	recordType := rpzRuleType(rule)
+	expected := "rpz-passthru."
+	if recordType == "A" {
+		expected = strings.TrimSpace(rule.Value)
+	}
+	for _, trigger := range rpzQNAMETriggers(rule.Domain) {
+		name := trigger + "." + rpzZoneName() + "."
+		answers, err := queryDNSNode(ctx, node.Address, name, recordType)
+		if err != nil {
+			return fmt.Errorf("节点 %s 规则 %s 查询失败: %w", node.Name, name, err)
+		}
+		matched := false
+		for _, answer := range answers {
+			if strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(answer), "."), strings.TrimSuffix(expected, ".")) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("节点 %s 规则 %s 返回 %q，期望 %q", node.Name, name, strings.Join(answers, " "), expected)
+		}
+	}
+	return nil
+}
+
+func verifyRPZClusterOnce(ctx context.Context, previousSerial int64, rules []RPZRule) error {
+	dnsMu.RLock()
+	nodes := append([]DNSNode(nil), state.Nodes...)
+	dnsMu.RUnlock()
+	if len(nodes) == 0 {
+		return fmt.Errorf("未配置 DNS 节点")
+	}
+	primarySerial := int64(-1)
+	serials := make(map[string]int64, len(nodes))
+	var failures []string
+	for _, node := range nodes {
+		serialText, err := probeDNSNode(ctx, node.Address)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s(%s): %v", node.Name, node.Address, err))
+			continue
+		}
+		serial, err := strconv.ParseInt(serialText, 10, 64)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s(%s): Serial 无效 %s", node.Name, node.Address, serialText))
+			continue
+		}
+		serials[node.ID] = serial
+		if strings.Contains(node.Role, "主") || node.ID == "primary-1" || primarySerial < 0 {
+			if primarySerial < 0 || strings.Contains(node.Role, "主") || node.ID == "primary-1" {
+				primarySerial = serial
+			}
+		}
+	}
+	if primarySerial < 0 {
+		failures = append(failures, "Primary 未能完成 SOA 探测")
+	} else if primarySerial <= previousSerial {
+		failures = append(failures, fmt.Sprintf("Primary SOA Serial 未严格递增: previous=%d actual=%d", previousSerial, primarySerial))
+	}
+	for _, node := range nodes {
+		if node.ID == "primary-1" || strings.Contains(node.Role, "主") {
+			continue
+		}
+		if serial, ok := serials[node.ID]; !ok {
+			continue
+		} else if serial != primarySerial {
+			failures = append(failures, fmt.Sprintf("Secondary %s Serial=%d，Primary=%d", node.Name, serial, primarySerial))
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("RPZ 集群 SOA 校验失败: %s", strings.Join(failures, "; "))
+	}
+	for _, node := range nodes {
+		for _, rule := range rules {
+			if err := verifyRPZRuleAnswer(ctx, node, rule); err != nil {
+				return fmt.Errorf("RPZ 关键规则校验失败: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func verifyRPZCluster(ctx context.Context, previousSerial int64, rules []RPZRule) error {
+	var lastErr error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err := verifyRPZClusterOnce(ctx, previousSerial, rules); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt == 19 {
+			break
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("RPZ 集群校验超时: %w", lastErr)
+		case <-timer.C:
+		}
+	}
+	return lastErr
 }
 
 func runNSUpdate(ctx context.Context, current, previous []RPZRule) error {
@@ -342,7 +573,7 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 		if err != nil {
 			return publishResult{Status: status, Attempts: attempts}, err
 		}
-		if err := verifyRPZPrimarySerial(ctx, previousSerial); err != nil {
+		if err := verifyRPZCluster(ctx, previousSerial, current); err != nil {
 			return publishResult{Status: status, Attempts: attempts}, err
 		}
 		status = "published"
@@ -352,7 +583,11 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	dnsStateMutationMu.Lock()
 	dnsMu.Lock()
+	previousRulesState := copyRPZRules(state.Rules)
+	previousPublishedState := copyRPZRules(state.Published)
+	previousVersionsState := append([]RPZVersion(nil), state.Versions...)
 	for index := range state.Rules {
 		state.Rules[index].Status = status
 		state.Rules[index].UpdatedAt = now
@@ -367,8 +602,15 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 	}
 	dnsMu.Unlock()
 	if err := saveDNSState(); err != nil {
+		dnsMu.Lock()
+		state.Rules = previousRulesState
+		state.Published = previousPublishedState
+		state.Versions = previousVersionsState
+		dnsMu.Unlock()
+		dnsStateMutationMu.Unlock()
 		return publishResult{}, fmt.Errorf("状态保存失败")
 	}
+	dnsStateMutationMu.Unlock()
 	rpzRuntimeMu.Lock()
 	rpzRuntimeState = rpzRuntime{Mode: mode, LastPublish: now, Message: message, JobStatus: "succeeded"}
 	rpzRuntimeMu.Unlock()
@@ -423,6 +665,13 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	dnsMu.RLock()
+	pending := !rpzRulesEqual(state.Rules, state.Published)
+	dnsMu.RUnlock()
+	if !pending {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "没有待发布的 RPZ 变更"})
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	job := PublishJob{ID: "publish-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10), Status: "queued", CreatedAt: now}
 	if !reservePublishJob(job.ID) {
@@ -440,6 +689,14 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	publishJobMu.Unlock()
+	if err := persistPublishJobs(); err != nil {
+		releasePublishJob(job.ID)
+		publishJobMu.Lock()
+		delete(publishJobs, job.ID)
+		publishJobMu.Unlock()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "RPZ 发布任务持久化失败"})
+		return
+	}
 	rpzRuntimeMu.Lock()
 	rpzRuntimeState.JobID = job.ID
 	rpzRuntimeState.JobStatus = "queued"
@@ -496,7 +753,9 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	dnsStateMutationMu.Lock()
 	dnsMu.Lock()
+	previousRules := copyRPZRules(state.Rules)
 	state.Rules = copyRPZRules(target.Rules)
 	for index := range state.Rules {
 		state.Rules[index].Status = "draft"
@@ -504,9 +763,14 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 	}
 	dnsMu.Unlock()
 	if err := saveDNSState(); err != nil {
+		dnsMu.Lock()
+		state.Rules = previousRules
+		dnsMu.Unlock()
+		dnsStateMutationMu.Unlock()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "回滚状态保存失败"})
 		return
 	}
+	dnsStateMutationMu.Unlock()
 	auditEvent(r, authUsername(), "rpz.rollback", target.ID)
 	queueTelegramAlert("rpz_rollback", fmt.Sprintf("↩️ 域盾 DNSGuard RPZ 回滚\n版本：%s\n规则数：%d", target.ID, len(target.Rules)))
 	publishRPZ(w, r)

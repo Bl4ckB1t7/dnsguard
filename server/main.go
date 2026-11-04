@@ -60,7 +60,12 @@ func main() {
 	if err := validateSecurityConfig(); err != nil {
 		log.Fatal(err)
 	}
-	loadDNSState()
+	if err := loadDNSState(); err != nil {
+		log.Fatal(err)
+	}
+	if err := loadPublishJobs(); err != nil {
+		log.Fatal(err)
+	}
 	if err := loadDNSNodeConfig(); err != nil {
 		log.Fatal(err)
 	}

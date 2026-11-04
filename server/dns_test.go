@@ -62,6 +62,40 @@ func TestRPZRuleUpdateChangesTargetAndRequiresPublish(t *testing.T) {
 	}
 }
 
+func TestRPZRuleCreateRollsBackWhenStateWriteFails(t *testing.T) {
+	t.Setenv("DNS_STATE_FILE", "/dev/null/dns-state.json")
+	original := state
+	defer func() { state = original }()
+	state = dnsState{}
+	request := httptest.NewRequest(http.MethodPost, "/api/dns/rpz", strings.NewReader(`{"domain":"write-failure.example.com","reason":"test"}`))
+	request.RemoteAddr = "127.0.0.1:1234"
+	recorder := httptest.NewRecorder()
+	dnsRules(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected state write failure, got status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(state.Rules) != 0 {
+		t.Fatalf("failed create must not remain in memory: %+v", state.Rules)
+	}
+}
+
+func TestRPZRuleDeleteRollsBackWhenStateWriteFails(t *testing.T) {
+	t.Setenv("DNS_STATE_FILE", "/dev/null/dns-state.json")
+	original := state
+	defer func() { state = original }()
+	state = dnsState{Rules: []RPZRule{{ID: "rule-1", Domain: "delete-failure.example.com", Action: "passthru", Type: "CNAME"}}}
+	request := httptest.NewRequest(http.MethodDelete, "/api/dns/rpz/rule-1", nil)
+	request.RemoteAddr = "127.0.0.1:1234"
+	recorder := httptest.NewRecorder()
+	dnsRuleByID(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected state write failure, got status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(state.Rules) != 1 || state.Rules[0].ID != "rule-1" {
+		t.Fatalf("failed delete must restore the rule: %+v", state.Rules)
+	}
+}
+
 func TestCompileRPZIncludesExactAndWildcardTriggers(t *testing.T) {
 	t.Setenv("RPZ_ZONE", "rpz.local")
 	content, err := compileRPZ([]RPZRule{{Domain: "baidu.com", Reason: "test"}})
@@ -176,6 +210,26 @@ func TestSaveDNSStateCreatesAtomicBackup(t *testing.T) {
 	}
 	if restored.Nodes[0].Name != "" {
 		t.Fatalf("backup should contain the previous version, got %+v", restored.Nodes[0])
+	}
+}
+
+func TestLoadDNSStateFailsClosedWhenMainAndBackupAreCorrupt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dns-state.json")
+	t.Setenv("DNS_STATE_FILE", path)
+	if err := os.WriteFile(path, []byte("{not-json"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("also-not-json"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	original := state
+	defer func() { state = original }()
+	state = dnsState{Rules: []RPZRule{{Domain: "must-remain.example.com"}}}
+	if err := loadDNSState(); err == nil {
+		t.Fatal("corrupt state and backup must fail closed")
+	}
+	if len(state.Rules) != 1 || state.Rules[0].Domain != "must-remain.example.com" {
+		t.Fatalf("failed load must not replace in-memory state: %+v", state)
 	}
 }
 

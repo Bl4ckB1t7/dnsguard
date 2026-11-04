@@ -120,8 +120,9 @@ bulk_json=$(printf '%s\n' "${BULK_IDS[@]}" | python3 -c 'import json,sys; print(
 deleted=$(curl -fsS -H 'Content-Type: application/json' -d "{\"ids\":$bulk_json}" "$API_URL/api/dns/rpz/bulk" | python3 -c 'import json,sys; print(json.load(sys.stdin)["deleted"])')
 [[ "$deleted" == "3" ]]
 BULK_IDS=()
-PUBLISH_JOB_ID=$(curl -fsS -X POST "$API_URL/api/dns/rpz/publish" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-wait_publish_job
-pass "RPZ bulk delete and publish task"
+duplicate_publish_response=$(curl -sS -X POST "$API_URL/api/dns/rpz/publish" -w '\n%{http_code}')
+duplicate_publish_code="${duplicate_publish_response##*$'\n'}"
+[[ "$duplicate_publish_code" == "409" ]]
+pass "RPZ duplicate publish rejected"
 
 printf 'Functional tests passed: %d\n' "$((PASSED + 1))"

@@ -58,16 +58,24 @@ if [[ "$ROOT" != "$INSTALL_DIR" ]]; then
   tar --exclude=.git --exclude=node_modules --exclude=dist --exclude=.run --exclude=data --exclude=dev \
     -C "$ROOT" -cf - . | tar -C "$INSTALL_DIR" -xf -
 fi
-chown -R "$SYSTEM_USER:$SYSTEM_GROUP" "$INSTALL_DIR" "$DATA_DIR" "$LOG_DIR"
+
+# Build from the root-owned release tree before handing the runtime account
+# only the mutable data and log directories. The service user must not be able
+# to replace code that a later root setup step could execute.
+install -d -o root -g root -m 0755 "$INSTALL_DIR/.home" "$INSTALL_DIR/.run"
+env HOME="$INSTALL_DIR/.home" npm ci --ignore-scripts --prefix "$INSTALL_DIR"
+env HOME="$INSTALL_DIR/.home" npm run build --prefix "$INSTALL_DIR"
+(cd "$INSTALL_DIR/server" && go build -o "$INSTALL_DIR/.run/dnsguard-api" .)
+
+chown -R root:root "$INSTALL_DIR"
+find "$INSTALL_DIR" -type d -exec chmod 0755 {} +
+find "$INSTALL_DIR" -type f -exec chmod 0644 {} +
+chmod 0755 "$INSTALL_DIR/.run/dnsguard-api"
+chown -R "$SYSTEM_USER:$SYSTEM_GROUP" "$DATA_DIR" "$LOG_DIR"
 
 if [[ ! -f "$CONFIG_DIR/dnsguard.env" ]]; then
   install -o root -g "$SYSTEM_GROUP" -m 0640 "$INSTALL_DIR/.env.example" "$CONFIG_DIR/dnsguard.env"
 fi
-
-install -d -o "$SYSTEM_USER" -g "$SYSTEM_GROUP" -m 0700 "$INSTALL_DIR/.home" "$INSTALL_DIR/.run"
-runuser -u "$SYSTEM_USER" -- env HOME="$INSTALL_DIR/.home" npm ci --ignore-scripts --prefix "$INSTALL_DIR"
-runuser -u "$SYSTEM_USER" -- env HOME="$INSTALL_DIR/.home" npm run build --prefix "$INSTALL_DIR"
-runuser -u "$SYSTEM_USER" -- env HOME="$INSTALL_DIR/.home" sh -c "cd '$INSTALL_DIR/server' && go build -o '$INSTALL_DIR/.run/dnsguard-api' ."
 
 render_unit() {
   local source=$1 target=$2

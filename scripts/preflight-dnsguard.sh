@@ -6,6 +6,12 @@ if [[ ! -r "$CONFIG_FILE" ]]; then
   echo "Configuration file is not readable: $CONFIG_FILE" >&2
   exit 2
 fi
+CONFIG_OWNER_UID="$(stat -c '%u' "$CONFIG_FILE" 2>/dev/null || true)"
+CONFIG_MODE="$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || true)"
+[[ "$CONFIG_OWNER_UID" == "0" ]] || { echo "Configuration file must be root-owned: $CONFIG_FILE" >&2; exit 2; }
+[[ "$CONFIG_MODE" =~ ^[0-7]{3,4}$ ]] || { echo "Configuration file mode is invalid: $CONFIG_FILE" >&2; exit 2; }
+CONFIG_MODE_VALUE=$((8#$CONFIG_MODE))
+(( (CONFIG_MODE_VALUE & 22) == 0 )) || { echo "Configuration file must not be group/world writable: $CONFIG_FILE" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 

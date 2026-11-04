@@ -2,7 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +30,44 @@ func TestPublishJobExecutionSlot(t *testing.T) {
 	releasePublishJob("job-1")
 	if active := activePublishJob(); active != "" {
 		t.Fatalf("publish slot remains occupied by %q", active)
+	}
+}
+
+func TestPublishRejectsWhenThereAreNoPendingChanges(t *testing.T) {
+	original := state
+	defer func() { state = original }()
+	state = dnsState{Rules: []RPZRule{{ID: "rule-1", Domain: "example.com", Action: "passthru", Type: "CNAME"}}, Published: []RPZRule{{ID: "published-1", Domain: "example.com", Action: "passthru", Type: "CNAME"}}}
+	request := httptest.NewRequest(http.MethodPost, "/api/dns/rpz/publish", strings.NewReader(`{}`))
+	recorder := httptest.NewRecorder()
+	publishRPZ(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected duplicate/no-op publish to be rejected, got status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestLoadPublishJobsRecoversInFlightTask(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "publish-jobs.json")
+	t.Setenv("RPZ_PUBLISH_JOBS_FILE", path)
+	content, err := json.Marshal([]PublishJob{{ID: "job-1", Status: "running", CreatedAt: "2026-01-01T00:00:00Z"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	originalJobs := publishJobs
+	originalRuntime := rpzRuntimeState
+	defer func() {
+		publishJobs = originalJobs
+		rpzRuntimeState = originalRuntime
+	}()
+	publishJobs = map[string]PublishJob{}
+	if err := loadPublishJobs(); err != nil {
+		t.Fatal(err)
+	}
+	job, ok := getPublishJob("job-1")
+	if !ok || job.Status != "reconcile_required" || job.Error == "" {
+		t.Fatalf("in-flight task was not recovered safely: ok=%v job=%+v", ok, job)
 	}
 }
 

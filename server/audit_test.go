@@ -67,3 +67,23 @@ func TestAuditSearchAndPagination(t *testing.T) {
 		t.Fatalf("unexpected search result: %+v", response)
 	}
 }
+
+func TestLoadAuditRejectsTamperedHashChain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	t.Setenv("AUDIT_FILE", path)
+	entries := []AuditEntry{{Timestamp: "2026-01-01T00:00:00Z", Actor: "admin", Action: "rule.create", Result: "success", Hash: "tampered"}}
+	content, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	original := auditEntries
+	defer func() { auditEntries = original }()
+	auditEntries = nil
+	loadAudit()
+	if len(auditEntries) != 0 {
+		t.Fatalf("tampered audit entries must not be loaded: %+v", auditEntries)
+	}
+}

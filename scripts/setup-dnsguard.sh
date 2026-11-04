@@ -19,7 +19,7 @@ done
 
 mkdir -p "$CONFIG_DIR" "$DATA_DIR/rpz"
 chown root:"$SYSTEM_GROUP" "$CONFIG_DIR"
-chmod 0770 "$CONFIG_DIR"
+chmod 0750 "$CONFIG_DIR"
 chmod 0750 "$DATA_DIR" "$DATA_DIR/rpz"
 
 ask_required() {

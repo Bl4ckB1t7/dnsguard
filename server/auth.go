@@ -311,7 +311,10 @@ func saveAuthFile(updated authStore) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryName, path)
+	if err := os.Rename(temporaryName, path); err != nil {
+		return err
+	}
+	return syncParentDir(path)
 }
 
 func authPasswordChange(w http.ResponseWriter, r *http.Request) {

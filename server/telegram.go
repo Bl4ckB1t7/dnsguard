@@ -174,6 +174,9 @@ func saveTelegramConfig(config TelegramConfig) error {
 	if err := os.Rename(temporaryName, path); err != nil {
 		return err
 	}
+	if err := syncParentDir(path); err != nil {
+		return err
+	}
 	telegramConfigMu.Lock()
 	telegramConfig = config
 	telegramConfigMu.Unlock()

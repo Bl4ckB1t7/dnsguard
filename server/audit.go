@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -93,14 +94,28 @@ func loadAudit() {
 		return
 	}
 	var loaded []AuditEntry
-	if json.Unmarshal(content, &loaded) == nil {
+	if json.Unmarshal(content, &loaded) == nil && validAuditChain(loaded) {
 		auditMu.Lock()
 		auditEntries = loaded
 		if len(auditEntries) > auditMaxEntries() {
 			auditEntries = auditEntries[len(auditEntries)-auditMaxEntries():]
 		}
 		auditMu.Unlock()
+	} else {
+		log.Printf("audit file failed integrity validation: %s", auditFilePath())
 	}
+}
+
+func validAuditChain(entries []AuditEntry) bool {
+	for index, entry := range entries {
+		if entry.Hash == "" || auditHash(entry) != entry.Hash {
+			return false
+		}
+		if index > 0 && entry.PrevHash != entries[index-1].Hash {
+			return false
+		}
+	}
+	return true
 }
 
 func auditEvent(r *http.Request, actor, action, result string) {
@@ -110,7 +125,7 @@ func auditEvent(r *http.Request, actor, action, result string) {
 	if os.MkdirAll(filepath.Dir(path), 0o755) != nil {
 		return
 	}
-	_ = withFileLock(path, func() error {
+	if err := withFileLock(path, func() error {
 		rotated := false
 		if limit := auditRotateBytes(); limit > 0 {
 			if info, err := os.Stat(path); err == nil && info.Size() >= limit {
@@ -121,22 +136,23 @@ func auditEvent(r *http.Request, actor, action, result string) {
 			}
 		}
 		ip := requestIP(r)
-		auditMu.Lock()
+		auditMu.RLock()
 		previousHash := ""
 		if len(auditEntries) > 0 {
 			previousHash = auditEntries[len(auditEntries)-1].Hash
 		}
+		entries := append([]AuditEntry(nil), auditEntries...)
+		auditMu.RUnlock()
 		if rotated {
-			auditEntries = nil
+			entries = nil
 		}
 		entry := AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339), Actor: actor, Action: action, Result: result, IP: ip, PrevHash: previousHash}
 		entry.Hash = auditHash(entry)
-		auditEntries = append(auditEntries, entry)
-		if len(auditEntries) > auditMaxEntries() {
-			auditEntries = auditEntries[len(auditEntries)-auditMaxEntries():]
+		entries = append(entries, entry)
+		if len(entries) > auditMaxEntries() {
+			entries = entries[len(entries)-auditMaxEntries():]
 		}
-		content, marshalErr := json.MarshalIndent(auditEntries, "", "  ")
-		auditMu.Unlock()
+		content, marshalErr := json.MarshalIndent(entries, "", "  ")
 		if marshalErr != nil {
 			return marshalErr
 		}
@@ -144,8 +160,19 @@ func auditEvent(r *http.Request, actor, action, result string) {
 		if err := os.WriteFile(temporary, content, 0o640); err != nil {
 			return err
 		}
-		return os.Rename(temporary, path)
-	})
+		if err := os.Rename(temporary, path); err != nil {
+			return err
+		}
+		if err := syncParentDir(path); err != nil {
+			return err
+		}
+		auditMu.Lock()
+		auditEntries = entries
+		auditMu.Unlock()
+		return nil
+	}); err != nil {
+		log.Printf("audit event write failed: action=%s result=%s error=%v", action, result, err)
+	}
 }
 
 func audit(w http.ResponseWriter, r *http.Request) {
