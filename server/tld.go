@@ -48,11 +48,13 @@ type TLDStatus struct {
 	PolicyRecursion     string   `json:"policyRecursionStatus,omitempty"`
 	PolicyTrigger       string   `json:"policyTrigger,omitempty"`
 	TLDs                []string `json:"-"`
+	PublishedTLDs       []string `json:"-"`
 }
 
 type tldStateFile struct {
 	TLDStatus
-	TLDs []string `json:"tlds,omitempty"`
+	TLDs          []string `json:"tlds,omitempty"`
+	PublishedTLDs []string `json:"publishedTlds,omitempty"`
 }
 
 var (
@@ -166,6 +168,7 @@ func loadTLDState() error {
 	}
 	loaded := persisted.TLDStatus
 	loaded.TLDs = append([]string(nil), persisted.TLDs...)
+	loaded.PublishedTLDs = append([]string(nil), persisted.PublishedTLDs...)
 	if loaded.Source == "" {
 		loaded.Source = tldSourceURL()
 	}
@@ -178,7 +181,7 @@ func saveTLDState(status TLDStatus) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	content, err := json.MarshalIndent(tldStateFile{TLDStatus: status, TLDs: status.TLDs}, "", "  ")
+	content, err := json.MarshalIndent(tldStateFile{TLDStatus: status, TLDs: status.TLDs, PublishedTLDs: status.PublishedTLDs}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -345,6 +348,7 @@ var (
 	lastTLDPolicySerial int64
 	runTLDNSUpdateFunc  = runTLDNSUpdate
 	verifyTLDPolicyFunc = verifyTLDPolicy
+	queryTLDEntriesFunc = queryTLDPolicyEntries
 )
 
 func normalizeTLDEntries(entries []string) ([]string, error) {
@@ -447,7 +451,116 @@ func validateTLDPolicy(ctx context.Context, path string) error {
 	return nil
 }
 
+type tldUpdateOperation struct {
+	Entry  string
+	Delete bool
+}
+
+func tldPublishBatchTLDs() int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("TLD_PUBLISH_BATCH_TLDS")))
+	if err != nil || value < 1 || value > 500 {
+		return 100
+	}
+	return value
+}
+
+func tldPublishBatchBytes() int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("TLD_PUBLISH_BATCH_BYTES")))
+	if err != nil || value < 4096 || value > 64*1024 {
+		return 32 * 1024
+	}
+	return value
+}
+
+func tldSetDiff(current, previous []string) (adds, removes []string, err error) {
+	normalizedCurrent, err := normalizeTLDEntries(current)
+	if err != nil {
+		return nil, nil, err
+	}
+	normalizedPrevious := []string{}
+	if len(previous) > 0 {
+		normalizedPrevious, err = normalizeTLDEntries(previous)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	currentSet := make(map[string]struct{}, len(normalizedCurrent))
+	previousSet := make(map[string]struct{}, len(normalizedPrevious))
+	for _, entry := range normalizedPrevious {
+		previousSet[entry] = struct{}{}
+	}
+	for _, entry := range normalizedCurrent {
+		currentSet[entry] = struct{}{}
+		if _, exists := previousSet[entry]; !exists {
+			adds = append(adds, entry)
+		}
+	}
+	for _, entry := range normalizedPrevious {
+		if _, exists := currentSet[entry]; !exists {
+			removes = append(removes, entry)
+		}
+	}
+	// The normalized input is sorted, so sorting the result keeps batch
+	// contents deterministic and makes audit/reproduction easier.
+	sort.Strings(adds)
+	sort.Strings(removes)
+	return adds, removes, nil
+}
+
+func tldUpdateLines(operation tldUpdateOperation) []string {
+	label := strings.ToLower(operation.Entry)
+	zone := tldPolicyZone()
+	if operation.Delete {
+		return []string{
+			fmt.Sprintf("update delete %s.%s. CNAME\n", label, zone),
+			fmt.Sprintf("update delete *.%s.%s. CNAME\n", label, zone),
+		}
+	}
+	return []string{
+		fmt.Sprintf("update add %s.%s. %d CNAME .\n", label, zone, tldPolicyTTL()),
+		fmt.Sprintf("update add *.%s.%s. %d CNAME .\n", label, zone, tldPolicyTTL()),
+	}
+}
+
+func buildTLDUpdateBatches(adds, removes []string) [][]tldUpdateOperation {
+	operations := make([]tldUpdateOperation, 0, len(adds)+len(removes))
+	for _, entry := range removes {
+		operations = append(operations, tldUpdateOperation{Entry: entry, Delete: true})
+	}
+	for _, entry := range adds {
+		operations = append(operations, tldUpdateOperation{Entry: entry})
+	}
+	maxTLDs := tldPublishBatchTLDs()
+	maxBytes := tldPublishBatchBytes()
+	headerBytes := len(fmt.Sprintf("server %s %s\nzone %s\n", rpzConfig("RPZ_PRIMARY", ""), rpzConfig("RPZ_PRIMARY_PORT", "53"), tldPolicyZone()))
+	batches := make([][]tldUpdateOperation, 0)
+	current := make([]tldUpdateOperation, 0, maxTLDs)
+	currentBytes := headerBytes + len("send\n")
+	for _, operation := range operations {
+		lines := tldUpdateLines(operation)
+		operationBytes := len(lines[0]) + len(lines[1])
+		if len(current) > 0 && (len(current) >= maxTLDs || currentBytes+operationBytes > maxBytes) {
+			batches = append(batches, current)
+			current = make([]tldUpdateOperation, 0, maxTLDs)
+			currentBytes = headerBytes + len("send\n")
+		}
+		current = append(current, operation)
+		currentBytes += operationBytes
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
+}
+
 func runTLDNSUpdate(ctx context.Context, current, previous []string) error {
+	adds, removes, err := tldSetDiff(current, previous)
+	if err != nil {
+		return err
+	}
+	if len(adds) == 0 && len(removes) == 0 {
+		return nil
+	}
 	server := rpzConfig("RPZ_PRIMARY", "")
 	port := rpzConfig("RPZ_PRIMARY_PORT", "53")
 	keyFile := strings.TrimSpace(os.Getenv("RPZ_KEY_FILE"))
@@ -459,32 +572,22 @@ func runTLDNSUpdate(ctx context.Context, current, previous []string) error {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o007 != 0 {
 		return fmt.Errorf("RPZ_KEY_FILE 不可安全读取")
 	}
-	normalizedCurrent, err := normalizeTLDEntries(current)
-	if err != nil {
-		return err
-	}
-	normalizedPrevious, err := normalizeTLDEntries(previous)
-	if err != nil && len(previous) > 0 {
-		return err
-	}
-	var input strings.Builder
-	fmt.Fprintf(&input, "server %s %s\nzone %s\n", server, port, zone)
-	for _, entry := range normalizedPrevious {
-		label := strings.ToLower(entry)
-		fmt.Fprintf(&input, "update delete %s.%s. CNAME\n", label, zone)
-		fmt.Fprintf(&input, "update delete *.%s.%s. CNAME\n", label, zone)
-	}
-	for _, entry := range normalizedCurrent {
-		label := strings.ToLower(entry)
-		fmt.Fprintf(&input, "update add %s.%s. %d CNAME .\n", label, zone, tldPolicyTTL())
-		fmt.Fprintf(&input, "update add *.%s.%s. %d CNAME .\n", label, zone, tldPolicyTTL())
-	}
-	input.WriteString("send\n")
-	command := exec.CommandContext(ctx, "nsupdate", "-k", keyFile) // #nosec G702 -- executable is fixed and keyFile is protected deployment configuration.
-	command.Stdin = strings.NewReader(input.String())
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("TLD DENY nsupdate 失败: %s", strings.TrimSpace(string(output)))
+	batches := buildTLDUpdateBatches(adds, removes)
+	for index, batch := range batches {
+		var input strings.Builder
+		fmt.Fprintf(&input, "server %s %s\nzone %s\n", server, port, zone)
+		for _, operation := range batch {
+			for _, line := range tldUpdateLines(operation) {
+				input.WriteString(line)
+			}
+		}
+		input.WriteString("send\n")
+		command := exec.CommandContext(ctx, "nsupdate", "-k", keyFile) // #nosec G702 -- executable is fixed and keyFile is protected deployment configuration.
+		command.Stdin = strings.NewReader(input.String())
+		output, updateErr := command.CombinedOutput()
+		if updateErr != nil {
+			return fmt.Errorf("TLD DENY nsupdate 批次 %d/%d 失败；已完成 %d/%d 批，结果可能不确定，需人工核对: %s", index+1, len(batches), index, len(batches), strings.TrimSpace(string(output)))
+		}
 	}
 	return nil
 }
@@ -505,6 +608,80 @@ func queryTLDPolicySerial(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("TLD DENY SOA Serial 无效")
 	}
 	return fields[2], nil
+}
+
+func parseTLDPolicyAXFR(content, zone string) ([]string, error) {
+	zone = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
+	if !domainPattern.MatchString(zone) {
+		return nil, fmt.Errorf("TLD DENY Zone 无效")
+	}
+	suffix := "." + zone
+	presence := make(map[string]uint8)
+	for _, raw := range strings.Split(content, "\n") {
+		fields := strings.Fields(raw)
+		if len(fields) < 5 {
+			continue
+		}
+		typeIndex := -1
+		for index, field := range fields {
+			if strings.EqualFold(field, "CNAME") {
+				typeIndex = index
+				break
+			}
+		}
+		if typeIndex < 1 || typeIndex+1 >= len(fields) {
+			continue
+		}
+		if strings.TrimSuffix(fields[typeIndex+1], ".") != "" {
+			return nil, fmt.Errorf("TLD DENY Zone 存在非拒绝 CNAME: %s", strings.Join(fields, " "))
+		}
+		name := strings.TrimSuffix(strings.ToLower(fields[0]), ".")
+		if !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		relative := strings.TrimSuffix(strings.TrimSuffix(name, suffix), ".")
+		bit := uint8(1)
+		if strings.HasPrefix(relative, "*.") {
+			bit = 2
+			relative = strings.TrimPrefix(relative, "*.")
+		}
+		entry := strings.ToUpper(relative)
+		if !tldLabelRE.MatchString(entry) {
+			return nil, fmt.Errorf("TLD DENY Zone 存在非 TLD 触发项: %s", relative)
+		}
+		presence[entry] |= bit
+	}
+	entries := make([]string, 0, len(presence))
+	for entry, bits := range presence {
+		if bits != 3 {
+			return nil, fmt.Errorf("TLD DENY Zone 触发项不完整: %s", entry)
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("TLD DENY Zone 未找到 CNAME . 触发项")
+	}
+	sort.Strings(entries)
+	return entries, nil
+}
+
+func queryTLDPolicyEntries(ctx context.Context) ([]string, error) {
+	server := rpzConfig("RPZ_PRIMARY", "")
+	port := rpzConfig("RPZ_PRIMARY_PORT", "53")
+	keyFile := strings.TrimSpace(os.Getenv("RPZ_KEY_FILE"))
+	if server == "" || keyFile == "" {
+		return nil, fmt.Errorf("TLD DENY AXFR 核对缺少 RPZ_PRIMARY 或 RPZ_KEY_FILE")
+	}
+	info, err := os.Stat(keyFile)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o007 != 0 {
+		return nil, fmt.Errorf("RPZ_KEY_FILE 不可安全读取")
+	}
+	command := exec.CommandContext(ctx, "dig", "@"+server, "-p", port, "-k", keyFile, tldPolicyZone(), "AXFR", "+tcp", "+noall", "+answer", "+time=5", "+tries=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("TLD DENY AXFR 核对失败: %s", strings.TrimSpace(string(output)))
+	}
+	return parseTLDPolicyAXFR(string(output), tldPolicyZone())
 }
 
 type tldPolicyVerification struct {
@@ -746,7 +923,7 @@ func syncTLDNow(ctx context.Context) error {
 	if previous.Source == "" {
 		previous.Source = tldSourceURL()
 	}
-	updated, unchanged, err := fetchTLDDocument(ctx, tldSourceURL(), previous)
+	updated, _, err := fetchTLDDocument(ctx, tldSourceURL(), previous)
 	if err != nil {
 		failed := previous
 		failed.Status = "error"
@@ -757,6 +934,7 @@ func syncTLDNow(ctx context.Context) error {
 		_ = saveTLDState(failed)
 		return err
 	}
+	updated.PublishedTLDs = append([]string(nil), previous.PublishedTLDs...)
 	if !tldPolicyPublishEnabled() {
 		updated.PolicyStatus = "not_configured"
 		updated.PolicyMessage = "未启用 TLD DENY RPZ 发布；仅同步 TLD 数据"
@@ -768,8 +946,12 @@ func syncTLDNow(ctx context.Context) error {
 		updated.PolicySerial = previous.PolicySerial
 		updated.PolicyLastPublished = previous.PolicyLastPublished
 		updated.PolicyMessage = "上次 TLD DENY 发布结果需人工核对；核对完成前禁止自动重放"
-	} else if previous.PolicyStatus == "published" && tldEntriesEqual(previous.TLDs, updated.TLDs) &&
-		(previous.SHA256 == updated.SHA256 || unchanged) {
+	} else if previous.PolicyStatus == "pending" {
+		updated.PolicyStatus = "reconcile_required"
+		updated.PolicySerial = previous.PolicySerial
+		updated.PolicyLastPublished = previous.PolicyLastPublished
+		updated.PolicyMessage = "检测到上次 TLD DENY 发布停留在 pending；禁止自动重放，请先人工核对 Primary/Secondary"
+	} else if previous.PolicyStatus == "published" && len(previous.PublishedTLDs) > 0 && tldEntriesEqual(previous.PublishedTLDs, updated.TLDs) {
 		updated.PolicyStatus = previous.PolicyStatus
 		updated.PolicySerial = previous.PolicySerial
 		updated.PolicyLastPublished = previous.PolicyLastPublished
@@ -778,7 +960,7 @@ func syncTLDNow(ctx context.Context) error {
 		updated.PolicySecondary = previous.PolicySecondary
 		updated.PolicyRecursion = previous.PolicyRecursion
 		updated.PolicyTrigger = previous.PolicyTrigger
-	} else if (previous.PolicyStatus == "sync_exception" || previous.PolicyStatus == "pending_verification") && tldEntriesEqual(previous.TLDs, updated.TLDs) {
+	} else if (previous.PolicyStatus == "sync_exception" || previous.PolicyStatus == "pending_verification") && len(previous.PublishedTLDs) > 0 && tldEntriesEqual(previous.PublishedTLDs, updated.TLDs) {
 		updated.PolicyStatus = "pending_verification"
 		updated.PolicySerial = previous.PolicySerial
 		updated.PolicyLastPublished = previous.PolicyLastPublished
@@ -788,7 +970,7 @@ func syncTLDNow(ctx context.Context) error {
 		updated.PolicyRecursion = previous.PolicyRecursion
 		updated.PolicyTrigger = previous.PolicyTrigger
 	} else {
-		if previous.PolicyStatus == "published" && len(previous.TLDs) == 0 {
+		if previous.PolicyStatus == "published" && len(previous.PublishedTLDs) == 0 {
 			updated.PolicyStatus = "reconcile_required"
 			updated.PolicyMessage = "历史 TLD 状态缺少已发布条目，禁止盲目覆盖；请先人工核对 deny RPZ"
 		} else {
@@ -835,7 +1017,7 @@ func syncTLDNow(ctx context.Context) error {
 		return nil
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, tldPublishTimeout())
-	verification, publishErr := publishTLDPolicy(publishCtx, updated.TLDs, previous.TLDs, previous.PolicySerial)
+	verification, publishErr := publishTLDPolicy(publishCtx, updated.TLDs, previous.PublishedTLDs, previous.PolicySerial)
 	cancel()
 	if publishErr != nil {
 		failed := updated
@@ -863,6 +1045,7 @@ func syncTLDNow(ctx context.Context) error {
 	updated.PolicySecondary = verification.SecondaryStatus
 	updated.PolicyRecursion = verification.RecursionStatus
 	updated.PolicyTrigger = verification.Representative
+	updated.PublishedTLDs = append([]string(nil), updated.TLDs...)
 	updated.PolicyMessage = "TLD DENY RPZ 已通过 Primary、Secondary 和代表性触发项验收；递归检查按配置执行"
 	if err := saveTLDState(updated); err != nil {
 		failed := updated
@@ -873,6 +1056,81 @@ func syncTLDNow(ctx context.Context) error {
 	}
 	setTLDStatus(updated)
 	return nil
+}
+
+func reconcileTLDPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	tldSyncMu.Lock()
+	defer tldSyncMu.Unlock()
+	current := tldStatusSnapshot()
+	if current.PolicyStatus != "reconcile_required" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "当前没有需要人工核对的 TLD DENY 发布任务"})
+		return
+	}
+	if len(current.TLDs) == 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "当前 TLD 列表为空，不能恢复发布"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), tldPublishTimeout())
+	defer cancel()
+	actual, err := queryTLDEntriesFunc(ctx)
+	if err != nil {
+		current.PolicyMessage = "人工核对失败，未改变 reconcile_required 状态: " + err.Error()
+		setTLDStatus(current)
+		_ = saveTLDState(current)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": current.PolicyMessage})
+		return
+	}
+	if !tldEntriesEqual(current.TLDs, actual) {
+		current.PolicyMessage = fmt.Sprintf("人工核对发现实际 Zone 与待发布列表不一致: expected=%d actual=%d；未恢复自动发布", len(current.TLDs), len(actual))
+		setTLDStatus(current)
+		_ = saveTLDState(current)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": current.PolicyMessage})
+		return
+	}
+	verification, verifyErr := verifyTLDPolicyFunc(ctx, current.TLDs)
+	if verifyErr != nil {
+		current.PolicyMessage = "人工核对的 Zone 内容一致，但节点或递归验收未通过: " + verifyErr.Error()
+		current.PolicySerial = verification.PrimarySerial
+		current.PolicyZoneStatus = verification.ZoneStatus
+		current.PolicySecondary = verification.SecondaryStatus
+		current.PolicyRecursion = verification.RecursionStatus
+		current.PolicyTrigger = verification.Representative
+		setTLDStatus(current)
+		if persistErr := saveTLDState(current); persistErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": persistErr.Error()})
+			return
+		}
+		writeJSON(w, http.StatusConflict, map[string]string{"error": current.PolicyMessage})
+		return
+	}
+	current.PolicyStatus = "published"
+	current.PublishedTLDs = append([]string(nil), current.TLDs...)
+	current.PolicySerial = verification.PrimarySerial
+	current.PolicyZoneStatus = verification.ZoneStatus
+	current.PolicySecondary = verification.SecondaryStatus
+	current.PolicyRecursion = verification.RecursionStatus
+	current.PolicyTrigger = verification.Representative
+	current.PolicyLastPublished = time.Now().UTC().Format(time.RFC3339)
+	current.PolicyMessage = "管理员已核对 AXFR、Primary、Secondary 和代表性触发项，TLD DENY 自动发布已恢复"
+	if err := saveTLDState(current); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "恢复状态保存失败，仍需人工核对: " + err.Error()})
+		return
+	}
+	setTLDStatus(current)
+	if err := recordCriticalAudit(r, authUsername(), "tld.policy.reconcile", fmt.Sprintf("success: %d TLDs, serial=%s", len(actual), verification.PrimarySerial)); err != nil {
+		current.PolicyStatus = "reconcile_required"
+		current.PolicyMessage = "恢复后审计记录失败，已重新锁定人工核对: " + err.Error()
+		setTLDStatus(current)
+		_ = saveTLDState(current)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": current.PolicyMessage})
+		return
+	}
+	writeJSON(w, http.StatusOK, current)
 }
 
 func startTLDSyncMonitor() {

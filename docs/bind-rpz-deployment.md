@@ -35,6 +35,7 @@ DNSGuard 只需要能够访问：
 - `SECONDARY_2_IP`
 - `RECURSOR_IP`
 - `TLD_DENY_ZONE`
+- `DNSGUARD_IP`
 
 先在隔离环境用实际 BIND 版本验证配置，再安排生产变更窗口。
 
@@ -134,6 +135,8 @@ zone "TLD_DENY_ZONE" {
     allow-transfer {
         SECONDARY_1_IP;
         SECONDARY_2_IP;
+        // 仅用于人工 reconcile 的只读 AXFR 核对。
+        DNSGUARD_IP;
     };
 };
 ```
@@ -214,14 +217,30 @@ TLD_DENY_PUBLISH_ENABLED=false
 TLD_DENY_ZONE=TLD_DENY_ZONE
 TLD_DENY_TTL_SECONDS=300
 TLD_PUBLISH_TIMEOUT_SECONDS=120
+TLD_PUBLISH_BATCH_TLDS=100
+TLD_PUBLISH_BATCH_BYTES=32768
 TLD_DENY_ARTIFACT_FILE=/var/lib/dnsguard/rpz/TLD_DENY_ZONE.db
 ```
 
 `TLD_SYNC_TIMEOUT_SECONDS` 只限制 TLD 下载和格式校验；`TLD_PUBLISH_TIMEOUT_SECONDS` 单独限制批量 `nsupdate`、Primary/Secondary SOA 和代表性触发项的发布验收。发布超时不会自动重放，而是进入人工核对状态。
+`TLD_PUBLISH_BATCH_TLDS` 和 `TLD_PUBLISH_BATCH_BYTES` 分别限制单批 TLD 变更数和 DNS UPDATE 文本大小，默认 100 个 TLD、32 KiB；实际批次以先达到的限制为准。
 
 控制台会分别显示 `DENY Zone`、`Secondary` 和递归检查状态：Zone 发布成功不等于 Secondary 已同步，Secondary 已同步也不等于递归路径已经验证。需要验证递归效果时，额外配置 `TLD_DENY_RECURSOR`、`TLD_DENY_CHECK_NAME`，可选设置 `TLD_DENY_EXPECTED_RCODE`（默认 `NXDOMAIN`）；未配置时显示“递归未配置”，不会伪装成通过。
 
 如果 IANA 列表相对上一份有效列表减少超过 10%，DNSGuard 会保留旧列表和已发布策略，记录新旧数量并拒绝自动发布。首次同步没有旧列表基线，不执行该比例判断。
+
+### 3.2 `reconcile_required` 人工恢复
+
+当某个批次超时、Primary 状态无法确认、或发布状态文件保存失败时，系统会进入 `reconcile_required`，并停止自动重放。此时不会把部分批次误记为完整发布，也不会自动删除或回滚 Zone 中已有记录。
+
+恢复步骤：
+
+1. 先在 Primary 上确认动态更新日志、TLD deny Zone SOA 和 AXFR 权限；再确认每台 Secondary 的 SOA Serial。
+2. 登录 DNSGuard，在 TLD 数据状态卡片点击“人工核对并恢复”。该操作通过认证和 CSRF 保护的 `POST /api/dns/tld/reconcile` 执行。
+3. DNSGuard 使用 TSIG 对 Primary 执行只读 AXFR，要求实际 Zone 中每个 TLD 的精确和通配 `CNAME .` 触发项都存在，并且集合与当前待发布列表完全一致。
+4. 通过后，系统再次核对 Primary、Secondary、代表性触发项和已配置的递归检查，成功才清除 `reconcile_required` 并恢复自动同步；任何不一致都保持锁定并返回原因。
+
+该恢复动作不会发送 DNS UPDATE，不会修改 `named.conf`、`response-policy` 或重启 BIND，并会写入审计记录。不要直接编辑 JSON 状态文件或把状态字符串改成 `published`。
 
 首次初始化向导中：
 

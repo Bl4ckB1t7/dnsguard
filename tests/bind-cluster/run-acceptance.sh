@@ -221,11 +221,19 @@ deep.redirect IN A 192.0.2.102
 EOF
   cp "$RUNTIME_DIR/primary-data/app.test.zone" "$RUNTIME_DIR/secondary-1-data/app.test.zone"
   cp "$RUNTIME_DIR/primary-data/app.test.zone" "$RUNTIME_DIR/secondary-2-data/app.test.zone"
-  cat >"$RUNTIME_DIR/tlds.txt" <<'EOF'
-# Version 1, Last Updated DNSGuard isolated acceptance fixture
-COM
-NET
-EOF
+  local tld_fixture_count="${TLD_FIXTURE_COUNT:-2}"
+  if ! [[ "$tld_fixture_count" =~ ^[0-9]+$ ]] || ((tld_fixture_count < 2 || tld_fixture_count > 5000)); then
+    echo "TLD_FIXTURE_COUNT must be between 2 and 5000" >&2
+    return 2
+  fi
+  {
+    echo '# Version 1, Last Updated DNSGuard isolated acceptance fixture'
+    echo 'COM'
+    echo 'NET'
+    for index in $(seq 1 $((tld_fixture_count - 2))); do
+      printf 'TEST%04d\n' "$index"
+    done
+  } >"$RUNTIME_DIR/tlds.txt"
   for dir in "$RUNTIME_DIR"/*-data "$RUNTIME_DIR"/*-logs; do
     chmod 0775 "$dir"
     chown -R 53:53 "$dir" 2>/dev/null || true
@@ -568,7 +576,7 @@ case_tld_default_deny() {
   done
   evidence_answer="$(dig +tcp +time=2 +tries=1 +comments +norecurse @127.0.0.1 -p 15353 "$deny_trigger" CNAME 2>&1 || true)"
   grep -Eq '(^|[[:space:]])CNAME[[:space:]]+\.[[:space:]]*$' <<<"$evidence_answer" || { echo "deny_trigger=$deny_trigger did not show CNAME ."; return 1; }
-  echo "baseline=$baseline_answer deep-baseline=$deep_baseline_answer policy_rcode=$policy_rcode whitelist+subdomain+redirect+deny verified on all nodes; deny_trigger=$deny_trigger zone=$deny_zone"
+  echo "tld_fixture_count=${TLD_FIXTURE_COUNT:-2} baseline=$baseline_answer deep-baseline=$deep_baseline_answer policy_rcode=$policy_rcode whitelist+subdomain+redirect+deny verified on all nodes; deny_trigger=$deny_trigger zone=$deny_zone"
 }
 
 case_duplicate_publish_guard() {

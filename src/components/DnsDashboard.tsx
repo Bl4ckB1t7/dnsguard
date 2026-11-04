@@ -164,6 +164,20 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
     }
   };
 
+  const reconcileTLD = async () => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await readJSON<TLDStatus>("/api/dns/tld/reconcile", { method: "POST", headers: { "Content-Type": "application/json", ...csrfHeaders() }, body: "{}" });
+      setNotice("TLD DENY 已完成 AXFR、节点和代表性触发项核对，自动发布已恢复。");
+      await load();
+    } catch (error) {
+      setNotice(`TLD DENY 人工核对未通过：${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const openTelegramPanel = async () => {
     setShowTelegramPanel(true);
     setNotice("");
@@ -490,7 +504,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       <section className="dns-cards">
         <article><span>DNS 节点</span><strong>{overview ? `${overview.healthyNodes}/${overview.nodes}` : "—"}</strong><small>健康节点</small></article>
         <article><span>RPZ 规则</span><strong>{overview?.rules ?? "—"}</strong><small>{overview?.publishedRules ?? 0} 条已发布</small></article>
-        <article className={tldStatus?.status === "ready" ? "" : "muted"}><span>TLD 数据状态</span><strong>{tldStatus?.tldCount?.toLocaleString() ?? "—"}</strong><small>{tldStatus?.status === "ready" ? `数据已同步 · ${tldStatus.version ?? "无版本"}` : tldStatus?.status === "error" ? "同步异常，保留上一份状态" : "等待 TLD 数据同步"}{tldStatus?.policyStatus === "published" ? " · DENY 已发布" : tldStatus?.policyStatus === "reconcile_required" ? " · DENY 需人工核对" : tldStatus?.policyStatus === "sync_exception" ? " · DENY 同步异常" : tldStatus?.policyStatus === "not_configured" ? " · DENY 未启用" : ""}{tldStatus?.policySecondaryStatus === "synced" ? " · Secondary 已同步" : tldStatus?.policySecondaryStatus === "sync_exception" ? " · Secondary 未完成" : ""}{tldStatus?.policyRecursionStatus === "verified" ? " · 递归已验证" : tldStatus?.policyRecursionStatus === "not_configured" ? " · 递归未配置" : ""}</small></article>
+        <article className={tldStatus?.status === "ready" ? "" : "muted"}><span>TLD 数据状态</span><strong>{tldStatus?.tldCount?.toLocaleString() ?? "—"}</strong><small>{tldStatus?.status === "ready" ? `数据已同步 · ${tldStatus.version ?? "无版本"}` : tldStatus?.status === "error" ? "同步异常，保留上一份状态" : "等待 TLD 数据同步"}{tldStatus?.policyStatus === "published" ? " · DENY 已发布" : tldStatus?.policyStatus === "reconcile_required" ? " · DENY 需人工核对" : tldStatus?.policyStatus === "sync_exception" ? " · DENY 同步异常" : tldStatus?.policyStatus === "not_configured" ? " · DENY 未启用" : ""}{tldStatus?.policySecondaryStatus === "synced" ? " · Secondary 已同步" : tldStatus?.policySecondaryStatus === "sync_exception" ? " · Secondary 未完成" : ""}{tldStatus?.policyRecursionStatus === "verified" ? " · 递归已验证" : tldStatus?.policyRecursionStatus === "not_configured" ? " · 递归未配置" : ""}</small>{tldStatus?.policyStatus === "reconcile_required" && <button className="ghost" type="button" disabled={busy} onClick={() => void reconcileTLD()}>人工核对并恢复</button>}</article>
         <article><span>最后同步</span><strong className="sync-value">{overview?.lastSync ?? "—"}</strong><small>Primary → Secondary</small></article>
       </section>
 

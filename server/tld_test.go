@@ -31,6 +31,68 @@ func TestCompileTLDPolicyIncludesExactAndWildcardDenyTriggers(t *testing.T) {
 	}
 }
 
+func TestTLDSetDiffOnlyReturnsChangedEntries(t *testing.T) {
+	adds, removes, err := tldSetDiff([]string{"COM", "ORG"}, []string{"COM", "NET"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(adds, ",") != "ORG" || strings.Join(removes, ",") != "NET" {
+		t.Fatalf("unexpected TLD diff: adds=%v removes=%v", adds, removes)
+	}
+	adds, removes, err = tldSetDiff([]string{"COM"}, []string{"COM"})
+	if err != nil || len(adds) != 0 || len(removes) != 0 {
+		t.Fatalf("identical lists must produce no updates: adds=%v removes=%v err=%v", adds, removes, err)
+	}
+}
+
+func TestParseTLDPolicyAXFRRequiresExactAndWildcardTriggers(t *testing.T) {
+	content := "com.deny.rpz.local. 60 IN CNAME .\n*.com.deny.rpz.local. 60 IN CNAME .\nnet.deny.rpz.local. 60 IN CNAME .\n*.net.deny.rpz.local. 60 IN CNAME .\n"
+	entries, err := parseTLDPolicyAXFR(content, "deny.rpz.local")
+	if err != nil || strings.Join(entries, ",") != "COM,NET" {
+		t.Fatalf("unexpected AXFR entries: entries=%v err=%v", entries, err)
+	}
+	if _, err := parseTLDPolicyAXFR("com.deny.rpz.local. 60 IN CNAME .\n", "deny.rpz.local"); err == nil {
+		t.Fatal("incomplete exact/wildcard pair should be rejected")
+	}
+}
+
+func TestRunTLDNSUpdateUsesIncrementalBatches(t *testing.T) {
+	runtime := t.TempDir()
+	keyPath := filepath.Join(runtime, "rpz.key")
+	if err := os.WriteFile(keyPath, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(runtime, "nsupdate.log")
+	binDir := filepath.Join(runtime, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "nsupdate"), []byte("#!/bin/sh\ncat >> '"+logPath+"'\nprintf '\\n---BATCH---\\n' >> '"+logPath+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("RPZ_PRIMARY", "127.0.0.1")
+	t.Setenv("RPZ_PRIMARY_PORT", "5353")
+	t.Setenv("RPZ_KEY_FILE", keyPath)
+	t.Setenv("TLD_DENY_ZONE", "deny.rpz.local")
+	t.Setenv("TLD_PUBLISH_BATCH_TLDS", "1")
+	t.Setenv("TLD_PUBLISH_BATCH_BYTES", "4096")
+	if err := runTLDNSUpdate(context.Background(), []string{"COM", "ORG"}, []string{"COM", "NET"}); err != nil {
+		t.Fatalf("runTLDNSUpdate returned error: %v", err)
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if strings.Contains(text, "com.deny.rpz.local") || !strings.Contains(text, "org.deny.rpz.local") || !strings.Contains(text, "net.deny.rpz.local") {
+		t.Fatalf("incremental update contained wrong records: %s", text)
+	}
+	if strings.Count(text, "---BATCH---") != 2 {
+		t.Fatalf("expected one batch per changed TLD, got log=%s", text)
+	}
+}
+
 func TestSyncTLDNowPublishesSeparateDenyPolicy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("# Version 9, Last Updated test\nCOM\nNET\n"))
@@ -248,6 +310,48 @@ func TestPublishTLDPolicyTimeoutRequiresReconciliation(t *testing.T) {
 	verification, err := publishTLDPolicy(ctx, []string{"COM"}, nil, "")
 	if err == nil || verification.ZoneStatus != "reconcile_required" {
 		t.Fatalf("timeout should require reconciliation: verification=%+v err=%v", verification, err)
+	}
+}
+
+func TestReconcileTLDPolicyRequiresExactZoneSetBeforeRecovery(t *testing.T) {
+	runtime := t.TempDir()
+	t.Setenv("TLD_STATE_FILE", filepath.Join(runtime, "tld-state.json"))
+	t.Setenv("AUDIT_FILE", filepath.Join(runtime, "audit.json"))
+	t.Setenv("TLD_DENY_ZONE", "deny.rpz.local")
+	previousState := tldStatusSnapshot()
+	previousEntries := queryTLDEntriesFunc
+	previousVerify := verifyTLDPolicyFunc
+	previousAudit := auditEntries
+	defer func() {
+		setTLDStatus(previousState)
+		queryTLDEntriesFunc = previousEntries
+		verifyTLDPolicyFunc = previousVerify
+		auditEntries = previousAudit
+		setAuditIntegrityFailure(nil)
+	}()
+	auditEntries = nil
+	setAuditIntegrityFailure(nil)
+	setTLDStatus(TLDStatus{Status: "ready", PolicyStatus: "reconcile_required", TLDs: []string{"COM", "NET"}})
+	queryTLDEntriesFunc = func(context.Context) ([]string, error) {
+		return []string{"COM"}, nil
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/dns/tld/reconcile", strings.NewReader("{}"))
+	recorder := httptest.NewRecorder()
+	reconcileTLDPolicy(recorder, request)
+	if recorder.Code != http.StatusConflict || tldStatusSnapshot().PolicyStatus != "reconcile_required" {
+		t.Fatalf("mismatched AXFR set must remain locked: code=%d status=%+v", recorder.Code, tldStatusSnapshot())
+	}
+	queryTLDEntriesFunc = func(context.Context) ([]string, error) {
+		return []string{"COM", "NET"}, nil
+	}
+	verifyTLDPolicyFunc = func(context.Context, []string) (tldPolicyVerification, error) {
+		return tldPolicyVerification{PrimarySerial: "17", ZoneStatus: "published", SecondaryStatus: "synced", RecursionStatus: "not_configured", Representative: "com.deny.rpz.local."}, nil
+	}
+	recorder = httptest.NewRecorder()
+	reconcileTLDPolicy(recorder, request)
+	status := tldStatusSnapshot()
+	if recorder.Code != http.StatusOK || status.PolicyStatus != "published" || !tldEntriesEqual(status.PublishedTLDs, []string{"COM", "NET"}) {
+		t.Fatalf("matching AXFR set should recover safely: code=%d status=%+v body=%s", recorder.Code, status, recorder.Body.String())
 	}
 }
 
