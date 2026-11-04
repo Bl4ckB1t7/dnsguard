@@ -98,6 +98,7 @@ func TestSetupCompletesOnceAndRejectsRepeat(t *testing.T) {
 	setupChecksFunc = readySetupChecks
 	t.Cleanup(func() { setupChecksFunc = originalChecks })
 	request := validSetupRequest(key)
+	request.Username = "operator"
 	first := httptest.NewRequest(http.MethodPost, "/api/setup/complete", setupRequestBody(t, request))
 	first.Header.Set("X-DNSGuard-Bootstrap", "setup-bootstrap-token-012345678901234567890")
 	recorder := httptest.NewRecorder()
@@ -107,6 +108,9 @@ func TestSetupCompletesOnceAndRejectsRepeat(t *testing.T) {
 	}
 	if !isInitialized() {
 		t.Fatal("setup must persist initialized state")
+	}
+	if authUsername() != "operator" || !passwordValid("operator", request.Password) {
+		t.Fatal("configured administrator username/password must be usable after setup")
 	}
 	repeat := httptest.NewRequest(http.MethodPost, "/api/setup/complete", setupRequestBody(t, request))
 	repeat.Header.Set("X-DNSGuard-Bootstrap", "setup-bootstrap-token-012345678901234567890")

@@ -53,6 +53,12 @@ var authAttemptsMu sync.Mutex
 var authAttempts = map[string]authAttempt{}
 
 func authUsername() string {
+	authMu.RLock()
+	storedUsername := storedAuth.Username
+	authMu.RUnlock()
+	if storedUsername != "" {
+		return storedUsername
+	}
 	if value := os.Getenv("AUTH_USERNAME"); value != "" {
 		return value
 	}
