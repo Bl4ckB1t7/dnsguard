@@ -63,6 +63,7 @@ DNSGUARD_BIND_LOG_DIR=/srv/dnsguard/bind-logs
 - `RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key`；
 - `TLD_DENY_ENABLED=true`、`TLD_SOURCE_URL`、`TLD_SYNC_INTERVAL_SECONDS=86400`；
 - 隔离验收后才可启用 `TLD_DENY_PUBLISH_ENABLED=true`，并设置 `TLD_DENY_ZONE`、`TLD_DENY_TTL_SECONDS` 和 `TLD_DENY_ARTIFACT_FILE`；
+- `TLD_SYNC_TIMEOUT_SECONDS` 只控制 TLD 下载，`TLD_PUBLISH_TIMEOUT_SECONDS=120` 单独控制 deny RPZ 发布及 Primary/Secondary 验收；
 - `TRUSTED_PROXY_CIDRS` 和 HTTPS 反向代理选项（如使用企业入口）。
 
 不要把真实值写入 Git：
@@ -140,7 +141,9 @@ DNSGuard 默认每天检查一次 IANA TLD 列表，并将版本、数量、校�
 BIND。默认 `TLD_DENY_PUBLISH_ENABLED=false`，此时只展示 TLD 数据。管理员在隔离 BIND 环境
 完成第二个 deny Zone、response-policy 顺序和解析效果验证后，才可设置为 `true`。启用后
 DNSGuard 通过现有 `nsupdate + TSIG` 更新该 Zone，但不会自动修改 `named.conf`、重启 BIND
-或替管理员启用递归策略。
+或替管理员启用递归策略。发布成功状态会分别核对 Primary、已配置 Secondary 和代表性 TLD
+触发项；可选的递归验证通过 `TLD_DENY_RECURSOR`、`TLD_DENY_CHECK_NAME` 配置，未配置时明确显示未验证。
+新列表相对上一份有效列表减少超过 10% 时不会自动替换或发布。
 
 | 宿主机目录 | 容器路径 | 内容 |
 |---|---|---|

@@ -3,7 +3,7 @@ import { AuditPanel, type AuditEntry } from "./AuditPanel";
 import { DnsNodePanel, type DnsNode } from "./DnsNodePanel";
 
 type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; lastPublish: string; publishMessage: string; publishJobId: string; publishJobStatus: string };
-type TLDStatus = { status: string; source: string; version?: string; lastUpdated?: string; tldCount: number; sha256?: string; lastChecked?: string; lastSuccessfulSync?: string; message?: string; policyStatus?: string; policyMessage?: string };
+type TLDStatus = { status: string; source: string; version?: string; lastUpdated?: string; tldCount: number; sha256?: string; lastChecked?: string; lastSuccessfulSync?: string; message?: string; policyStatus?: string; policyMessage?: string; policyZoneStatus?: string; policySecondaryStatus?: string; policyRecursionStatus?: string };
 type Rule = { id: string; domain: string; action: string; type?: string; value?: string; reason: string; status: string; updatedAt: string };
 type RPZChange = { type: string; domain: string; before: string; after: string };
 type RPZPreview = { pending: boolean; currentCount: number; publishedCount: number; changes: RPZChange[] };
@@ -490,7 +490,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       <section className="dns-cards">
         <article><span>DNS 节点</span><strong>{overview ? `${overview.healthyNodes}/${overview.nodes}` : "—"}</strong><small>健康节点</small></article>
         <article><span>RPZ 规则</span><strong>{overview?.rules ?? "—"}</strong><small>{overview?.publishedRules ?? 0} 条已发布</small></article>
-        <article className={tldStatus?.status === "ready" ? "" : "muted"}><span>TLD 数据状态</span><strong>{tldStatus?.tldCount?.toLocaleString() ?? "—"}</strong><small>{tldStatus?.status === "ready" ? `数据已同步 · ${tldStatus.version ?? "无版本"}` : tldStatus?.status === "error" ? "同步异常，保留上一份状态" : "等待 TLD 数据同步"}{tldStatus?.policyStatus === "published" ? " · DENY 已发布" : tldStatus?.policyStatus === "reconcile_required" ? " · DENY 需人工核对" : tldStatus?.policyStatus === "not_configured" ? " · DENY 未启用" : ""}</small></article>
+        <article className={tldStatus?.status === "ready" ? "" : "muted"}><span>TLD 数据状态</span><strong>{tldStatus?.tldCount?.toLocaleString() ?? "—"}</strong><small>{tldStatus?.status === "ready" ? `数据已同步 · ${tldStatus.version ?? "无版本"}` : tldStatus?.status === "error" ? "同步异常，保留上一份状态" : "等待 TLD 数据同步"}{tldStatus?.policyStatus === "published" ? " · DENY 已发布" : tldStatus?.policyStatus === "reconcile_required" ? " · DENY 需人工核对" : tldStatus?.policyStatus === "sync_exception" ? " · DENY 同步异常" : tldStatus?.policyStatus === "not_configured" ? " · DENY 未启用" : ""}{tldStatus?.policySecondaryStatus === "synced" ? " · Secondary 已同步" : tldStatus?.policySecondaryStatus === "sync_exception" ? " · Secondary 未完成" : ""}{tldStatus?.policyRecursionStatus === "verified" ? " · 递归已验证" : tldStatus?.policyRecursionStatus === "not_configured" ? " · 递归未配置" : ""}</small></article>
         <article><span>最后同步</span><strong className="sync-value">{overview?.lastSync ?? "—"}</strong><small>Primary → Secondary</small></article>
       </section>
 

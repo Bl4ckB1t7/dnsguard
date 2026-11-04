@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompileTLDPolicyIncludesExactAndWildcardDenyTriggers(t *testing.T) {
@@ -62,15 +63,20 @@ func TestSyncTLDNowPublishesSeparateDenyPolicy(t *testing.T) {
 	t.Setenv("RPZ_KEY_FILE", keyPath)
 	previousState := tldStatusSnapshot()
 	previousUpdate := runTLDNSUpdateFunc
+	previousVerify := verifyTLDPolicyFunc
 	defer func() {
 		setTLDStatus(previousState)
 		runTLDNSUpdateFunc = previousUpdate
+		verifyTLDPolicyFunc = previousVerify
 	}()
 	var publishedCurrent, publishedPrevious []string
 	runTLDNSUpdateFunc = func(_ context.Context, current, previous []string) error {
 		publishedCurrent = append([]string(nil), current...)
 		publishedPrevious = append([]string(nil), previous...)
 		return nil
+	}
+	verifyTLDPolicyFunc = func(context.Context, []string) (tldPolicyVerification, error) {
+		return tldPolicyVerification{PrimarySerial: "42", ZoneStatus: "published", SecondaryStatus: "synced", RecursionStatus: "not_configured", Representative: "com.deny.rpz.local."}, nil
 	}
 	setTLDStatus(TLDStatus{Status: "pending", Source: server.URL})
 	if err := syncTLDNow(context.Background()); err != nil {
@@ -119,14 +125,19 @@ func TestSyncTLDNowDoesNotRepublishUnchangedPolicyWithoutHTTPValidators(t *testi
 	t.Setenv("RPZ_KEY_FILE", keyPath)
 	previousState := tldStatusSnapshot()
 	previousUpdate := runTLDNSUpdateFunc
+	previousVerify := verifyTLDPolicyFunc
 	defer func() {
 		setTLDStatus(previousState)
 		runTLDNSUpdateFunc = previousUpdate
+		verifyTLDPolicyFunc = previousVerify
 	}()
 	updateCalls := 0
 	runTLDNSUpdateFunc = func(_ context.Context, _, _ []string) error {
 		updateCalls++
 		return nil
+	}
+	verifyTLDPolicyFunc = func(context.Context, []string) (tldPolicyVerification, error) {
+		return tldPolicyVerification{PrimarySerial: "42", ZoneStatus: "published", SecondaryStatus: "synced", RecursionStatus: "not_configured", Representative: "com.deny.rpz.local."}, nil
 	}
 	setTLDStatus(TLDStatus{Status: "pending", Source: server.URL})
 	if err := syncTLDNow(context.Background()); err != nil {
@@ -201,6 +212,45 @@ func TestParseTLDDocumentValidatesHeaderAndEntries(t *testing.T) {
 	}
 }
 
+func TestValidateTLDCountChange(t *testing.T) {
+	previous := TLDStatus{TLDCount: 1436, TLDs: []string{"COM"}}
+	if err := validateTLDCountChange(previous, 1300); err != nil {
+		t.Fatalf("normal relative decrease should be accepted: %v", err)
+	}
+	if err := validateTLDCountChange(previous, 1290); err == nil {
+		t.Fatal("decrease greater than ten percent should be rejected")
+	}
+	if err := validateTLDCountChange(TLDStatus{}, 1); err != nil {
+		t.Fatalf("first sync should not use a previous-list threshold: %v", err)
+	}
+}
+
+func TestPublishTLDPolicyTimeoutRequiresReconciliation(t *testing.T) {
+	runtime := t.TempDir()
+	t.Setenv("TLD_DENY_ZONE", "deny.rpz.local")
+	t.Setenv("TLD_DENY_ARTIFACT_FILE", filepath.Join(runtime, "deny.rpz.local.db"))
+	binDir := filepath.Join(runtime, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "named-checkzone"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	previousUpdate := runTLDNSUpdateFunc
+	defer func() { runTLDNSUpdateFunc = previousUpdate }()
+	runTLDNSUpdateFunc = func(ctx context.Context, _, _ []string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	verification, err := publishTLDPolicy(ctx, []string{"COM"}, nil, "")
+	if err == nil || verification.ZoneStatus != "reconcile_required" {
+		t.Fatalf("timeout should require reconciliation: verification=%+v err=%v", verification, err)
+	}
+}
+
 func TestSyncTLDNowPersistsValidatedState(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("If-None-Match") != "" {
@@ -255,13 +305,14 @@ func TestSyncTLDNowKeepsPreviousCountOnInvalidDocument(t *testing.T) {
 	t.Setenv("TLD_STATE_FILE", filepath.Join(t.TempDir(), "tld-state.json"))
 	t.Setenv("TLD_SOURCE_URL", server.URL)
 	t.Setenv("TLD_DENY_ENABLED", "true")
+	t.Setenv("TLD_DENY_PUBLISH_ENABLED", "false")
 	t.Setenv("APP_ENV", "development")
-	setTLDStatus(TLDStatus{Status: "ready", Source: server.URL, TLDCount: 1436, Version: "old"})
+	setTLDStatus(TLDStatus{Status: "ready", Source: server.URL, TLDCount: 1436, Version: "old", TLDs: []string{"COM", "NET"}})
 	if err := syncTLDNow(context.Background()); err == nil {
 		t.Fatal("invalid document should fail")
 	}
 	status := tldStatusSnapshot()
-	if status.Status != "error" || status.TLDCount != 1436 || status.Version != "old" {
+	if status.Status != "error" || status.TLDCount != 1436 || status.Version != "old" || !tldEntriesEqual(status.TLDs, []string{"COM", "NET"}) {
 		t.Fatalf("invalid update must preserve previous count and version: %+v", status)
 	}
 }

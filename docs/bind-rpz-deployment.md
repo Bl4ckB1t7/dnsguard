@@ -213,8 +213,15 @@ RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key
 TLD_DENY_PUBLISH_ENABLED=false
 TLD_DENY_ZONE=TLD_DENY_ZONE
 TLD_DENY_TTL_SECONDS=300
+TLD_PUBLISH_TIMEOUT_SECONDS=120
 TLD_DENY_ARTIFACT_FILE=/var/lib/dnsguard/rpz/TLD_DENY_ZONE.db
 ```
+
+`TLD_SYNC_TIMEOUT_SECONDS` 只限制 TLD 下载和格式校验；`TLD_PUBLISH_TIMEOUT_SECONDS` 单独限制批量 `nsupdate`、Primary/Secondary SOA 和代表性触发项的发布验收。发布超时不会自动重放，而是进入人工核对状态。
+
+控制台会分别显示 `DENY Zone`、`Secondary` 和递归检查状态：Zone 发布成功不等于 Secondary 已同步，Secondary 已同步也不等于递归路径已经验证。需要验证递归效果时，额外配置 `TLD_DENY_RECURSOR`、`TLD_DENY_CHECK_NAME`，可选设置 `TLD_DENY_EXPECTED_RCODE`（默认 `NXDOMAIN`）；未配置时显示“递归未配置”，不会伪装成通过。
+
+如果 IANA 列表相对上一份有效列表减少超过 10%，DNSGuard 会保留旧列表和已发布策略，记录新旧数量并拒绝自动发布。首次同步没有旧列表基线，不执行该比例判断。
 
 首次初始化向导中：
 

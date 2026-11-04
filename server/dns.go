@@ -207,6 +207,10 @@ func configuredDNSAddress(node DNSNode) string {
 }
 
 func probeDNSNode(ctx context.Context, address string) (string, error) {
+	return probeDNSZone(ctx, address, rpzZoneName())
+}
+
+func probeDNSZone(ctx context.Context, address, zone string) (string, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
 		return "", fmt.Errorf("DNS 节点地址为空")
@@ -222,7 +226,11 @@ func probeDNSNode(ctx context.Context, address string) (string, error) {
 	if host == "" {
 		return "", fmt.Errorf("DNS 节点地址无效")
 	}
-	command := exec.CommandContext(ctx, "dig", "@"+host, "-p", port, rpzZoneName(), "SOA", "+short", "+time=2", "+tries=1")
+	zone = strings.TrimSpace(zone)
+	if zone == "" || !domainPattern.MatchString(strings.TrimSuffix(zone, ".")) {
+		return "", fmt.Errorf("DNS Zone 名称无效")
+	}
+	command := exec.CommandContext(ctx, "dig", "@"+host, "-p", port, zone, "SOA", "+short", "+time=2", "+tries=1")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("dig 失败: %s", strings.TrimSpace(string(output)))
