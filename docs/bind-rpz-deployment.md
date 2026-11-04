@@ -34,6 +34,7 @@ DNSGuard 只需要能够访问：
 - `SECONDARY_1_IP`
 - `SECONDARY_2_IP`
 - `RECURSOR_IP`
+- `TLD_DENY_ZONE`
 
 先在隔离环境用实际 BIND 版本验证配置，再安排生产变更窗口。
 
@@ -109,6 +110,56 @@ zone "RPZ_ZONE" {
 - DNSGuard -> Primary：UDP/TCP 53，用于 `nsupdate`；
 - DNSGuard -> Secondary：UDP/TCP 53，用于状态检查。
 
+### 2.4 可选：配置 TLD 默认拒绝 Zone
+
+如果要启用 DNSGuard 的 TLD 默认拒绝策略，在同一台 RPZ Primary 上再配置一个独立的 deny Zone。这个 Zone 由 DNSGuard 使用同一份 TSIG 通过 `nsupdate` 更新；DNSGuard 不会自动写入或修改下面的 BIND 配置。
+
+Primary 增加：
+
+```conf
+zone "TLD_DENY_ZONE" {
+    type primary;
+    file "/var/lib/bind/db.TLD_DENY_ZONE";
+
+    // 只允许 DNSGuard 管理该 deny Zone 的 CNAME 触发项。
+    update-policy {
+        grant dnsguard-rpz zonesub CNAME;
+    };
+
+    notify yes;
+    also-notify {
+        SECONDARY_1_IP;
+        SECONDARY_2_IP;
+    };
+    allow-transfer {
+        SECONDARY_1_IP;
+        SECONDARY_2_IP;
+    };
+};
+```
+
+每台 Secondary 增加：
+
+```conf
+zone "TLD_DENY_ZONE" {
+    type secondary;
+    primaries {
+        PRIMARY_IP;
+    };
+    file "/var/cache/bind/db.TLD_DENY_ZONE";
+    allow-notify { PRIMARY_IP; };
+};
+```
+
+配置完成后先只读校验，再安排 BIND 配置变更窗口：
+
+```bash
+named-checkconf
+named-checkzone TLD_DENY_ZONE /var/lib/bind/db.TLD_DENY_ZONE
+```
+
+首次创建的 Zone 至少应包含 SOA 和 NS 记录。不要把该 Zone 文件交给 DNSGuard 容器管理，也不要把生产 TSIG 写进仓库或环境变量。
+
 ## 3. 在递归 DNS 上启用 RPZ
 
 只有实际为客户端提供递归解析的 BIND 实例才需要启用 `response-policy`。在该实例的 `options` 中引用已同步的 RPZ Zone：
@@ -128,20 +179,12 @@ options {
 
 DNSGuard 控制台中的 TLD 数据状态用于展示和校验 IANA TLD 列表版本、数量与同步状态。默认情况下只同步列表，不发布 deny RPZ。完成隔离验收并明确设置 `TLD_DENY_PUBLISH_ENABLED=true` 后，DNSGuard 才会通过现有 `nsupdate + TSIG` 向管理员预先配置的第二个 deny Zone 发布 TLD 触发项；它仍然不会自动修改 `named.conf`、reload/restart BIND。
 
-生产 BIND 需要由管理员独立配置第二个动态 Zone，并在递归实例按顺序加载两个 RPZ：白名单/重定向 Zone 在前，TLD deny Zone 在后。示例（先在隔离环境验证）：
+生产 BIND 需要由管理员独立配置第二个动态 Zone（见 [2.4](#24-可选配置-tld-默认拒绝-zone)），并在递归实例按顺序加载两个 RPZ：白名单/重定向 Zone 在前，TLD deny Zone 在后。示例（先在隔离环境验证）：
 
 ```conf
 response-policy {
     zone "RPZ_ZONE";
     zone "TLD_DENY_ZONE";
-};
-
-zone "TLD_DENY_ZONE" {
-    type primary;
-    file "/var/lib/bind/db.TLD_DENY_ZONE";
-    update-policy { grant dnsguard-rpz zonesub CNAME; };
-    notify yes;
-    allow-transfer { SECONDARY_1_IP; SECONDARY_2_IP; };
 };
 ```
 
