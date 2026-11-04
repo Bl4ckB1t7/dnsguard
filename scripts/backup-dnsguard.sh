@@ -16,13 +16,14 @@ BACKUP_RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-14}"
 DNSGUARD_DATA_DIR="${DNSGUARD_DATA_DIR:-$ROOT/docker-data}"
 DNSGUARD_SECRET_DIR="${DNSGUARD_SECRET_DIR:-$ROOT/secrets}"
 DNSGUARD_TLS_DIR="${DNSGUARD_TLS_DIR:-$ROOT/tls}"
+DNSGUARD_ENV_FILE="${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}"
 
 [[ "$BACKUP_MODE" == docker ]] || {
   echo "DNSGUARD_BACKUP_MODE must be docker; DNSGuard V1.0 production backups are Docker Compose only" >&2
   exit 2
 }
 export BACKUP_DIR BACKUP_MODE
-export BACKUP_INCLUDE_SENSITIVE BACKUP_RETENTION_COUNT DNSGUARD_DATA_DIR DNSGUARD_SECRET_DIR DNSGUARD_TLS_DIR
+export BACKUP_INCLUDE_SENSITIVE BACKUP_RETENTION_COUNT DNSGUARD_DATA_DIR DNSGUARD_SECRET_DIR DNSGUARD_TLS_DIR DNSGUARD_ENV_FILE
 
 command -v python3 >/dev/null 2>&1 || { echo "Missing required command: python3" >&2; exit 2; }
 python3 - <<'PY'
@@ -47,6 +48,8 @@ manifest = {"format": 2, "mode": mode, "createdAt": datetime.now(timezone.utc).i
 def archive_path(source: Path, root: Path | None, prefix: str | None) -> Path:
     if root is not None:
         return Path(prefix or "") / source.relative_to(root)
+    if prefix is not None:
+        return Path(prefix)
     return Path(str(source).lstrip("/"))
 
 def add_file(stage: Path, source: Path, root: Path | None = None, prefix: str | None = None, sensitive: bool = False) -> None:
@@ -80,6 +83,10 @@ with tempfile.TemporaryDirectory(prefix="dnsguard-backup-") as temp:
         if os.environ.get("BACKUP_INCLUDE_SENSITIVE", "false").lower() == "true":
             add_tree(stage, Path(os.environ["DNSGUARD_SECRET_DIR"]), "secrets", True)
             add_tree(stage, Path(os.environ["DNSGUARD_TLS_DIR"]), "tls", True)
+            env_file = Path(os.environ["DNSGUARD_ENV_FILE"]).expanduser().resolve()
+            if not env_file.is_file() or env_file.is_symlink():
+                raise SystemExit(f"sensitive backup requires a regular Docker env file: {env_file}")
+            add_file(stage, env_file, None, "config/dnsguard.env", True)
     if not manifest["files"]:
         raise SystemExit("no configured DNSGuard files were found")
     (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

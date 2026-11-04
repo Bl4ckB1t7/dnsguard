@@ -43,6 +43,7 @@ docker compose up -d
 
 - 不使用数据库、Redis、消息队列或微服务；JSON 文件需要纳入受保护备份；
 - Docker 备份必须在宿主机以 `DNSGUARD_BACKUP_MODE=docker` 执行，不能把容器内路径当作宿主机路径；
+- `deploy/docker/dnsguard.env` 含敏感配置，必须与 TSIG/HTTPS 私钥一起通过显式敏感备份选项保护；
 - RPZ 命中统计依赖挂载的 BIND 日志，未接入日志时不影响发布；
 - 升级和回滚需要人工核对 BIND 集群状态，不提供未经验证的自动回滚。
 - 旧版本主机进程部署需要按手册人工迁移到 `docker-data/`、`secrets/` 和 `tls/`；不会自动删除旧数据或覆盖现有环境。

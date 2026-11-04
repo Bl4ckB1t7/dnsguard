@@ -16,6 +16,7 @@ DNSGUARD_DATA_DIR="${DNSGUARD_DATA_DIR:-$ROOT/docker-data}"
 DNSGUARD_SECRET_DIR="${DNSGUARD_SECRET_DIR:-$ROOT/secrets}"
 DNSGUARD_TLS_DIR="${DNSGUARD_TLS_DIR:-$ROOT/tls}"
 COMPOSE_ENV_FILE="${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}"
+DNSGUARD_ENV_FILE="$COMPOSE_ENV_FILE"
 [[ -n "$ARCHIVE" && -f "$ARCHIVE" ]] || { echo "Usage: $0 BACKUP_ARCHIVE" >&2; exit 2; }
 [[ "$BACKUP_MODE" == docker ]] || { echo "DNSGUARD_BACKUP_MODE must be docker; DNSGuard V1.0 production restores are Docker Compose only" >&2; exit 2; }
 
@@ -25,7 +26,7 @@ if command -v docker >/dev/null 2>&1 && [[ -f "$COMPOSE_ENV_FILE" ]] && docker c
 fi
 
 export ARCHIVE ROOT BACKUP_MODE RESTORE_INCLUDE_SENSITIVE
-export DNSGUARD_DATA_DIR DNSGUARD_SECRET_DIR DNSGUARD_TLS_DIR
+export DNSGUARD_DATA_DIR DNSGUARD_SECRET_DIR DNSGUARD_TLS_DIR DNSGUARD_ENV_FILE
 
 python3 - <<'PY'
 import hashlib
@@ -46,6 +47,8 @@ docker_roots = {
 }
 
 def destination_for(relative: Path) -> tuple[Path, bool]:
+    if relative == Path("config/dnsguard.env"):
+        return Path(os.environ["DNSGUARD_ENV_FILE"]).expanduser().resolve(), True
     if not relative.parts or relative.parts[0] not in docker_roots:
         raise SystemExit(f"invalid Docker backup path: {relative}")
     sensitive = relative.parts[0] in {"secrets", "tls"}

@@ -149,6 +149,7 @@ DNSGUARD_BACKUP_MODE=docker \
 DNSGUARD_DATA_DIR="$PWD/docker-data" \
 DNSGUARD_SECRET_DIR="$PWD/secrets" \
 DNSGUARD_TLS_DIR="$PWD/tls" \
+DNSGUARD_ENV_FILE="$PWD/deploy/docker/dnsguard.env" \
 ./scripts/backup-dnsguard.sh
 chmod 0600 /secure/backup/dnsguard-sensitive/dnsguard-*.tar.gz
 sha256sum /secure/backup/dnsguard-sensitive/dnsguard-*.tar.gz > /secure/backup/dnsguard-sensitive/SHA256SUMS
@@ -156,7 +157,9 @@ sha256sum /secure/backup/dnsguard-sensitive/dnsguard-*.tar.gz > /secure/backup/d
 
 归档自身带有每个文件的 SHA-256 manifest；外部 `SHA256SUMS` 用于传输完整性。备份
 目录应为 `0700`，归档应为 `0600`。默认不备份 TSIG/私钥，避免普通状态备份扩大
-密钥暴露范围。
+密钥暴露范围。`deploy/docker/dnsguard.env` 同样包含 `AUTH_SECRET` 等敏感配置，只有
+显式设置 `BACKUP_INCLUDE_SENSITIVE=true` 且通过 `DNSGUARD_ENV_FILE` 指定时才会以
+归档内 `config/dnsguard.env` 备份；不要把这类归档放入普通备份库。
 
 ## 8. 恢复演练和正式恢复
 
@@ -185,6 +188,7 @@ DNSGUARD_BACKUP_MODE=docker \
 DNSGUARD_DATA_DIR="$PWD/docker-data" \
 DNSGUARD_SECRET_DIR="$PWD/secrets" \
 DNSGUARD_TLS_DIR="$PWD/tls" \
+DNSGUARD_ENV_FILE="$PWD/deploy/docker/dnsguard.env" \
 ./scripts/restore-dnsguard.sh /secure/backup/dnsguard-sensitive/dnsguard-YYYYMMDDTHHMMSSZ.tar.gz
 ```
 
