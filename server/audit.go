@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -118,12 +119,12 @@ func validAuditChain(entries []AuditEntry) bool {
 	return true
 }
 
-func auditEvent(r *http.Request, actor, action, result string) {
+func auditEvent(r *http.Request, actor, action, result string) error {
 	auditFileMu.Lock()
 	defer auditFileMu.Unlock()
 	path := auditFilePath()
-	if os.MkdirAll(filepath.Dir(path), 0o755) != nil {
-		return
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("创建审计目录失败: %w", err)
 	}
 	if err := withFileLock(path, func() error {
 		rotated := false
@@ -172,6 +173,17 @@ func auditEvent(r *http.Request, actor, action, result string) {
 		return nil
 	}); err != nil {
 		log.Printf("audit event write failed: action=%s result=%s error=%v", action, result, err)
+		return err
+	}
+	return nil
+}
+
+// recordCriticalAudit keeps the business result visible while making an audit
+// persistence failure operationally visible instead of silently discarding it.
+func recordCriticalAudit(r *http.Request, actor, action, result string) {
+	if err := auditEvent(r, actor, action, result); err != nil {
+		log.Printf("critical audit unavailable: action=%s result=%s error=%v", action, result, err)
+		queueTelegramAlert("audit_write_failed", fmt.Sprintf("🚨 域盾 DNSGuard 审计写入失败\n动作：%s\n结果：%s\n原因：%s", action, result, err.Error()))
 	}
 }
 

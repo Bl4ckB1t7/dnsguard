@@ -45,6 +45,26 @@ func TestPublishRejectsWhenThereAreNoPendingChanges(t *testing.T) {
 	}
 }
 
+func TestPublishRejectsWhileReconciliationIsRequired(t *testing.T) {
+	originalState := state
+	originalJobs := publishJobs
+	originalActive := activePublishID
+	defer func() {
+		state = originalState
+		publishJobs = originalJobs
+		activePublishID = originalActive
+	}()
+	state = dnsState{Rules: []RPZRule{{Domain: "pending.example.com", Action: "passthru", Type: "CNAME"}}}
+	publishJobs = map[string]PublishJob{"job-reconcile": {ID: "job-reconcile", Status: "reconcile_required"}}
+	activePublishID = ""
+	request := httptest.NewRequest(http.MethodPost, "/api/dns/rpz/publish", strings.NewReader(`{}`))
+	recorder := httptest.NewRecorder()
+	publishRPZ(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "job-reconcile") {
+		t.Fatalf("reconciliation gate should reject publish, status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestLoadPublishJobsRecoversInFlightTask(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "publish-jobs.json")
 	t.Setenv("RPZ_PUBLISH_JOBS_FILE", path)

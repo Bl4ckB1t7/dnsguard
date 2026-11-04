@@ -104,6 +104,32 @@ func nextNodeID() string {
 	return fmt.Sprintf("node-%d-%d", time.Now().UTC().UnixNano(), nodeSequence.Add(1))
 }
 
+func rpzLogMaxBytes() int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("RPZ_LOG_MAX_BYTES")), 10, 64)
+	if err != nil || value < 64*1024 || value > 100*1024*1024 {
+		return 5 * 1024 * 1024
+	}
+	return value
+}
+
+func readRPZLogTail(path string, maxBytes int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxBytes {
+		if _, err := file.Seek(-maxBytes, io.SeekEnd); err != nil {
+			return nil, err
+		}
+	}
+	return io.ReadAll(io.LimitReader(file, maxBytes))
+}
+
 func rpzHitCount() (int, bool) {
 	files := make([]string, 0)
 	for _, item := range strings.Split(os.Getenv("RPZ_LOG_FILES"), ",") {
@@ -123,7 +149,7 @@ func rpzHitCount() (int, bool) {
 		window = configured
 	}
 	for _, path := range files {
-		content, err := os.ReadFile(path)
+		content, err := readRPZLogTail(path, rpzLogMaxBytes())
 		if err != nil {
 			continue
 		}
@@ -244,13 +270,13 @@ func refreshDNSHealth() {
 		result[index].Status = "healthy"
 		result[index].RPZVersion = serial
 		result[index].LastSync = now
-		if strings.Contains(result[index].Role, "主") || result[index].ID == "primary-1" {
+		if role, _ := dnsNodeRoleKind(result[index].Role); role == "primary" || result[index].ID == "primary-1" {
 			primarySerial = serial
 		}
 	}
 	if primarySerial != "" {
 		for index := range result {
-			if strings.Contains(result[index].Role, "辅") && result[index].Status == "healthy" && result[index].RPZVersion != primarySerial {
+			if role, _ := dnsNodeRoleKind(result[index].Role); role == "secondary" && result[index].Status == "healthy" && result[index].RPZVersion != primarySerial {
 				result[index].Status = "degraded"
 				result[index].LastSync = "RPZ Serial 不一致"
 			}
@@ -469,6 +495,53 @@ func nodeConfigsFromState() []DNSNodeConfig {
 	return configs
 }
 
+func dnsNodeRoleKind(role string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "primary", "主节点", "隐藏主节点":
+		return "primary", true
+	case "secondary", "辅节点", "递归辅节点":
+		return "secondary", true
+	default:
+		return "", false
+	}
+}
+
+func validateDNSNodeSet(nodes []DNSNode) error {
+	if len(nodes) == 0 {
+		return fmt.Errorf("至少配置一个 DNS 节点")
+	}
+	primaryCount := 0
+	seenIDs := make(map[string]struct{}, len(nodes))
+	seenAddresses := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		if strings.TrimSpace(node.ID) == "" || strings.TrimSpace(node.Name) == "" {
+			return fmt.Errorf("DNS 节点名称和 ID 不能为空")
+		}
+		if _, ok := dnsNodeRoleKind(node.Role); !ok {
+			return fmt.Errorf("DNS 节点 %s 的角色无效，只支持主节点或辅节点", node.Name)
+		}
+		if !dnsNodeAddressAllowed(node.Address) {
+			return fmt.Errorf("DNS 节点 %s 地址无效或不在允许范围内", node.Name)
+		}
+		if _, ok := seenIDs[node.ID]; ok {
+			return fmt.Errorf("DNS 节点 ID 重复: %s", node.ID)
+		}
+		seenIDs[node.ID] = struct{}{}
+		address := strings.ToLower(strings.TrimSpace(node.Address))
+		if _, ok := seenAddresses[address]; ok {
+			return fmt.Errorf("DNS 节点地址重复: %s", node.Address)
+		}
+		seenAddresses[address] = struct{}{}
+		if kind, _ := dnsNodeRoleKind(node.Role); kind == "primary" {
+			primaryCount++
+		}
+	}
+	if primaryCount != 1 {
+		return fmt.Errorf("DNS 节点必须且只能有一个主节点")
+	}
+	return nil
+}
+
 func saveDNSNodeConfig() error {
 	path := dnsNodeConfigPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -523,12 +596,12 @@ func loadDNSNodeConfig() error {
 		dnsMu.RUnlock()
 		nodes := make([]DNSNode, 0, len(configs))
 		for _, config := range configs {
-			if config.ID == "" || !dnsNodeAddressAllowed(config.Address) {
-				return fmt.Errorf("读取 DNS 节点配置失败: 节点 %q 地址无效", config.ID)
-			}
 			node := previous[config.ID]
 			node.ID, node.Name, node.Role, node.Address = config.ID, config.Name, config.Role, config.Address
 			nodes = append(nodes, node)
+		}
+		if err := validateDNSNodeSet(nodes); err != nil {
+			return fmt.Errorf("读取 DNS 节点配置失败: %w", err)
 		}
 		dnsMu.Lock()
 		state.Nodes = nodes
@@ -636,13 +709,30 @@ func saveDNSState() error {
 			return err
 		}
 		if previous, err := os.Open(path); err == nil {
-			backup, backupErr := os.Create(path + ".bak")
-			if backupErr == nil {
-				_, _ = io.Copy(backup, previous)
-				_ = backup.Sync()
-				_ = backup.Close()
+			backup, backupErr := os.OpenFile(path+".bak", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
+			if backupErr != nil {
+				_ = previous.Close()
+				return fmt.Errorf("创建 DNS 状态备份失败: %w", backupErr)
 			}
-			_ = previous.Close()
+			if _, backupErr = io.Copy(backup, previous); backupErr != nil {
+				_ = backup.Close()
+				_ = previous.Close()
+				return fmt.Errorf("复制 DNS 状态备份失败: %w", backupErr)
+			}
+			if backupErr = backup.Sync(); backupErr != nil {
+				_ = backup.Close()
+				_ = previous.Close()
+				return fmt.Errorf("同步 DNS 状态备份失败: %w", backupErr)
+			}
+			if backupErr = backup.Close(); backupErr != nil {
+				_ = previous.Close()
+				return fmt.Errorf("关闭 DNS 状态备份失败: %w", backupErr)
+			}
+			if backupErr = previous.Close(); backupErr != nil {
+				return fmt.Errorf("关闭 DNS 状态文件失败: %w", backupErr)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("读取现有 DNS 状态文件失败: %w", err)
 		}
 		tmp := path + ".tmp"
 		file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
@@ -805,6 +895,12 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 			state.Nodes = append(state.Nodes, auditNode)
 			created = true
 		}
+		if err := validateDNSNodeSet(state.Nodes); err != nil {
+			state.Nodes = previousNodes
+			dnsMu.Unlock()
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		dnsMu.Unlock()
 		if err := saveDNSNodeConfig(); err != nil {
 			dnsMu.Lock()
@@ -821,7 +917,7 @@ func dnsNodes(w http.ResponseWriter, r *http.Request) {
 		if created {
 			action = "dns.node.create"
 		}
-		auditEvent(r, authUsername(), action, auditNode.Name+" / "+auditNode.Role+" / "+auditNode.Address)
+		recordCriticalAudit(r, authUsername(), action, auditNode.Name+" / "+auditNode.Role+" / "+auditNode.Address)
 		writeJSON(w, http.StatusOK, map[string]any{"updated": true, "created": created, "nodeId": request.ID, "address": request.Address})
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -859,7 +955,7 @@ func dnsNodeByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	removed := state.Nodes[index]
-	if strings.Contains(removed.Role, "主") || removed.ID == "primary-1" {
+	if role, _ := dnsNodeRoleKind(removed.Role); role == "primary" || removed.ID == "primary-1" {
 		dnsMu.Unlock()
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "主节点不能直接删除，请先切换主节点角色"})
 		return
@@ -878,7 +974,7 @@ func dnsNodeByID(w http.ResponseWriter, r *http.Request) {
 	dnsHealthCache = nil
 	dnsHealthAt = time.Time{}
 	dnsHealthMu.Unlock()
-	auditEvent(r, authUsername(), "dns.node.delete", removed.Name+" / "+removed.Role+" / "+removed.Address)
+	recordCriticalAudit(r, authUsername(), "dns.node.delete", removed.Name+" / "+removed.Role+" / "+removed.Address)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "nodeId": removed.ID})
 }
 
@@ -1039,7 +1135,7 @@ func dnsRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		dnsStateMutationMu.Unlock()
-		auditEvent(r, authUsername(), "rpz.rule.create", rpzAuditDetail(rule))
+		recordCriticalAudit(r, authUsername(), "rpz.rule.create", rpzAuditDetail(rule))
 		queueTelegramAlert("rpz_rule_create", rpzRuleTelegramMessage("新增规则", rule))
 		writeJSON(w, http.StatusCreated, rule)
 	default:
@@ -1100,7 +1196,7 @@ func dnsBulkRules(w http.ResponseWriter, r *http.Request) {
 	}
 	dnsStateMutationMu.Unlock()
 	for _, rule := range deleted {
-		auditEvent(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(rule))
+		recordCriticalAudit(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(rule))
 		queueTelegramAlert("rpz_rule_delete", rpzRuleTelegramMessage("批量删除规则", rule))
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(deleted)})
@@ -1195,7 +1291,7 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		dnsStateMutationMu.Unlock()
-		auditEvent(r, authUsername(), "rpz.rule.update", rpzAuditDetail(updated))
+		recordCriticalAudit(r, authUsername(), "rpz.rule.update", rpzAuditDetail(updated))
 		queueTelegramAlert("rpz_rule_update", rpzRuleTelegramMessage("编辑规则", updated))
 		writeJSON(w, http.StatusOK, updated)
 		return
@@ -1235,7 +1331,7 @@ func dnsRuleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dnsStateMutationMu.Unlock()
-	auditEvent(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(removed))
+	recordCriticalAudit(r, authUsername(), "rpz.rule.delete", rpzAuditDetail(removed))
 	queueTelegramAlert("rpz_rule_delete", rpzRuleTelegramMessage("删除规则", removed))
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }

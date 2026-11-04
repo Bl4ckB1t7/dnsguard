@@ -7,6 +7,8 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -121,20 +123,20 @@ func passwordValid(username, password string) bool {
 	return false
 }
 
-func newSessionID() string {
+func newSessionID() (string, error) {
 	buffer := make([]byte, 24)
 	if _, err := rand.Read(buffer); err != nil {
-		return passwordDigest(strconv.FormatInt(time.Now().UnixNano(), 10))
+		return "", fmt.Errorf("生成会话随机数失败: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(buffer)
+	return base64.RawURLEncoding.EncodeToString(buffer), nil
 }
 
-func newCSRFToken() string {
+func newCSRFToken() (string, error) {
 	buffer := make([]byte, 24)
 	if _, err := rand.Read(buffer); err != nil {
-		return passwordDigest(strconv.FormatInt(time.Now().UnixNano(), 10))
+		return "", fmt.Errorf("生成 CSRF 随机数失败: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(buffer)
+	return base64.RawURLEncoding.EncodeToString(buffer), nil
 }
 
 func signSession(username string, expiry int64, sessionID string) string {
@@ -206,20 +208,31 @@ func authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if readJSONError := decodeJSON(r, &credentials); readJSONError != nil || !validateCaptcha(credentials.CaptchaID, credentials.Captcha) || !passwordValid(credentials.Username, credentials.Password) {
 		recordAuthFailure(ip)
-		auditEvent(r, credentials.Username, "login", "failure")
+		recordCriticalAudit(r, credentials.Username, "login", "failure")
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "用户名、密码或验证码错误"})
 		return
 	}
 	clearAuthFailures(ip)
 	expiry := time.Now().Add(8 * time.Hour).Unix()
-	sessionID := newSessionID()
+	sessionID, err := newSessionID()
+	if err != nil {
+		log.Printf("auth session creation failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "登录会话创建失败"})
+		return
+	}
+	csrfToken, err := newCSRFToken()
+	if err != nil {
+		log.Printf("auth CSRF creation failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "登录安全令牌创建失败"})
+		return
+	}
 	authMu.Lock()
 	activeSessions[credentials.Username] = sessionID
 	authMu.Unlock()
-	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	secure := r.TLS != nil || (trustedProxy(r) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: signSession(credentials.Username, expiry, sessionID), Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
-	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: newCSRFToken(), Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
-	auditEvent(r, credentials.Username, "login", "success")
+	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrfToken, Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
+	recordCriticalAudit(r, credentials.Username, "login", "success")
 	authMu.RLock()
 	mustChangePassword := storedAuth.MustChangePassword
 	authMu.RUnlock()
@@ -227,9 +240,11 @@ func authLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func requestIP(r *http.Request) string {
-	if os.Getenv("TRUST_PROXY_HEADERS") == "true" {
+	if trustedProxy(r) {
 		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
-			return forwarded
+			if net.ParseIP(forwarded) != nil {
+				return forwarded
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -237,6 +252,31 @@ func requestIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+func trustedProxy(r *http.Request) bool {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_PROXY_HEADERS")), "true") {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = strings.Trim(r.RemoteAddr, "[]")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	configured := strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if configured == "" {
+		configured = "127.0.0.0/8,::1/128"
+	}
+	for _, cidr := range strings.Split(configured, ",") {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func authRateLimited(ip string) (int, bool) {
@@ -351,7 +391,7 @@ func authPasswordChange(w http.ResponseWriter, r *http.Request) {
 	storedAuth = updatedAuth
 	delete(activeSessions, updatedAuth.Username)
 	authMu.Unlock()
-	auditEvent(r, updatedAuth.Username, "password.change", "success")
+	recordCriticalAudit(r, updatedAuth.Username, "password.change", "success")
 	writeJSON(w, http.StatusOK, map[string]bool{"changed": true})
 }
 
@@ -390,7 +430,7 @@ func authLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, MaxAge: -1, Expires: time.Unix(1, 0), SameSite: http.SameSiteLaxMode})
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: "", Path: "/", MaxAge: -1, Expires: time.Unix(1, 0), SameSite: http.SameSiteLaxMode})
-	auditEvent(r, authUsername(), "logout", "success")
+	recordCriticalAudit(r, authUsername(), "logout", "success")
 	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
 }
 

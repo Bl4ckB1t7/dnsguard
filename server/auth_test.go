@@ -53,3 +53,28 @@ func TestPasswordChangeRequiredMiddlewareBlocksDashboard(t *testing.T) {
 		t.Fatalf("expected 428, got %d", recorder.Code)
 	}
 }
+
+func TestRequestIPOnlyTrustsForwardedHeadersFromConfiguredProxy(t *testing.T) {
+	t.Setenv("TRUST_PROXY_HEADERS", "true")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "127.0.0.1/32")
+	trusted := httptest.NewRequest("GET", "/", nil)
+	trusted.RemoteAddr = "127.0.0.1:8080"
+	trusted.Header.Set("X-Forwarded-For", "198.51.100.10")
+	if got := requestIP(trusted); got != "198.51.100.10" {
+		t.Fatalf("trusted proxy IP = %q", got)
+	}
+	untrusted := httptest.NewRequest("GET", "/", nil)
+	untrusted.RemoteAddr = "198.51.100.20:8080"
+	untrusted.Header.Set("X-Forwarded-For", "198.51.100.10")
+	if got := requestIP(untrusted); got != "198.51.100.20" {
+		t.Fatalf("untrusted proxy must not control client IP, got %q", got)
+	}
+}
+
+func TestAuditEventReturnsWriteFailure(t *testing.T) {
+	t.Setenv("AUDIT_FILE", "/dev/null/dnsguard-audit.json")
+	request := httptest.NewRequest("GET", "/", nil)
+	if err := auditEvent(request, "admin", "test", "failure"); err == nil {
+		t.Fatal("audit write failure must be returned to the caller")
+	}
+}

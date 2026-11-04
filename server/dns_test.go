@@ -213,6 +213,31 @@ func TestSaveDNSStateCreatesAtomicBackup(t *testing.T) {
 	}
 }
 
+func TestSaveDNSStateFailsClosedWhenBackupCannotBeWritten(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "dns-state.json")
+	t.Setenv("DNS_STATE_FILE", statePath)
+	original := state
+	defer func() { state = original }()
+	state = dnsState{Rules: []RPZRule{{Domain: "old.example.com"}}}
+	if err := os.WriteFile(statePath, []byte(`{"rules":[{"domain":"old.example.com"}]}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(statePath+".bak", 0o750); err != nil {
+		t.Fatal(err)
+	}
+	state.Rules[0].Domain = "new.example.com"
+	if err := saveDNSState(); err == nil {
+		t.Fatal("save should fail when the backup path cannot be written")
+	}
+	content, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), "new.example.com") {
+		t.Fatalf("main state must not be replaced after backup failure: %s", content)
+	}
+}
+
 func TestLoadDNSStateFailsClosedWhenMainAndBackupAreCorrupt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dns-state.json")
 	t.Setenv("DNS_STATE_FILE", path)
@@ -298,6 +323,37 @@ func TestDNSNodeAddressAllowlist(t *testing.T) {
 		if got := dnsNodeAddressAllowed(test.address); got != test.allowed {
 			t.Errorf("dnsNodeAddressAllowed(%q) = %v, want %v", test.address, got, test.allowed)
 		}
+	}
+}
+
+func TestValidateDNSNodeSetRequiresOnePrimaryAndKnownRoles(t *testing.T) {
+	base := []DNSNode{
+		{ID: "primary", Name: "Primary", Role: "primary", Address: "127.0.0.2:5353"},
+		{ID: "secondary", Name: "Secondary", Role: "secondary", Address: "127.0.0.3:5353"},
+	}
+	if err := validateDNSNodeSet(base); err != nil {
+		t.Fatalf("valid node set rejected: %v", err)
+	}
+	base[1].Role = "other"
+	if err := validateDNSNodeSet(base); err == nil {
+		t.Fatal("unknown node role must be rejected")
+	}
+	base[1].Role = "primary"
+	if err := validateDNSNodeSet(base); err == nil {
+		t.Fatal("multiple primary nodes must be rejected")
+	}
+}
+
+func TestRPZHitCountReadsBoundedLogTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "named.log")
+	old := "01-Jan-2026 00:00:00.000 client 192.0.2.1#1234 (old.example.com): rpz QNAME NXDOMAIN\n"
+	if err := os.WriteFile(path, []byte(old+strings.Repeat("x", 70*1024)), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RPZ_LOG_FILES", path)
+	t.Setenv("RPZ_LOG_MAX_BYTES", "65536")
+	if count, readable := rpzHitCount(); !readable || count != 0 {
+		t.Fatalf("expected only bounded tail to be read, count=%d readable=%v", count, readable)
 	}
 }
 

@@ -399,6 +399,7 @@ sudo systemctl start dnsguard-api.service
 | `RPZ_KEY_FILE` | `/etc/dnsguard/keys/rpz-manager.key` | TSIG key |
 | `RPZ_PUBLISH_JOBS_FILE` | 默认使用 `DNS_STATE_FILE.jobs.json` | 发布任务快照，可显式指定独立路径 |
 | `RPZ_LOG_FILES` | BIND RPZ 日志 | 命中统计来源 |
+| `RPZ_LOG_MAX_BYTES` | `5242880` | 单次命中统计最多读取每个日志文件的尾部字节数 |
 | `LISTEN_ADDR` | `127.0.0.1:8080` | API 监听地址 |
 | `BIND_INTERFACE` | `BIND_INTERFACE` | Web 绑定地址来源 |
 | `WEB_BIND_ADDRESS` | 按现场填写 | 直接指定 Web IPv4 |
@@ -407,6 +408,8 @@ sudo systemctl start dnsguard-api.service
 | `TELEGRAM_CONFIG_FILE` | `/var/lib/dnsguard/telegram.json` | Telegram 服务端配置 |
 | `DNS_STATE_FILE` | `/var/lib/dnsguard/dns-state.json` | 规则和发布状态 |
 | `AUDIT_FILE` | `/var/lib/dnsguard/audit.json` | 审计日志 |
+| `TRUST_PROXY_HEADERS` | `false` | 是否读取反向代理传入的客户端地址 |
+| `TRUSTED_PROXY_CIDRS` | `127.0.0.0/8,::1/128` | 允许传递 X-Forwarded-For 的代理网段 |
 
 ### 文件权限
 

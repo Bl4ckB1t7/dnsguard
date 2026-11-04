@@ -226,7 +226,7 @@ func telegramSettings(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Telegram 配置保存失败"})
 			return
 		}
-		auditEvent(r, authUsername(), "telegram.settings.update", telegramSettingsAuditResult(config))
+		recordCriticalAudit(r, authUsername(), "telegram.settings.update", telegramSettingsAuditResult(config))
 		writeJSON(w, http.StatusOK, telegramSettingsPayload(config))
 	default:
 		w.Header().Set("Allow", "GET, PUT")
