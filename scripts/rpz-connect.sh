@@ -289,7 +289,9 @@ UPDATE
   case "$EXACT_QUERY_STATE" in
     ABSENT)
       if ((delete_status)); then
-        pass "临时记录已精确删除并确认清理: $name（更新结果曾不确定）"
+        fail "清理 UPDATE 返回失败；权威查询暂未发现本次 TXT，但仍需人工核对: $name"
+        TEST_RECORD_NEEDS_CLEANUP=0
+        return 1
       else
         pass "临时记录已精确删除并确认清理: $name"
       fi

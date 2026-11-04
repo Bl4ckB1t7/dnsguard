@@ -17,6 +17,9 @@ printf '%s\n' "$input" >>"$NSUPDATE_LOG"
 if [[ "${NSUPDATE_MODE:-}" == signal && "$input" == *'update add '* ]]; then
   sleep 30
 fi
+if [[ "${NSUPDATE_MODE:-}" == cleanup-fail && "$input" == *'update delete '* ]]; then
+  exit 1
+fi
 exit 0
 EOF
 chmod +x "$WORK/bin/nsupdate"
@@ -92,7 +95,13 @@ case " $* " in
   *'+short'*' SOA '*) printf '%s\n' 'localhost. hostmaster.localhost. 123 3600 900 2592000 60' ;;
   *' SOA '*) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1' ';; flags: qr aa; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0' ;;
   *' ANY '*) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 1' ';; flags: qr aa; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0' ;;
-  *' TXT '*) exit 1 ;;
+  *' TXT '*)
+    if [[ "${NSUPDATE_MODE:-}" == cleanup-fail ]]; then
+      printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 1' ';; flags: qr aa; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0'
+    else
+      exit 1
+    fi
+    ;;
 esac
 EOF
 chmod +x "$WORK/bin/dig"
@@ -112,6 +121,22 @@ if grep -q '^update delete .* TXT$' "$NSUPDATE_LOG"; then
   exit 1
 fi
 echo 'PASS: read-back timeout caused exact cleanup and a failed result'
+
+# A cleanup UPDATE failure must remain a failure even if a follow-up query does
+# not find the test record.  The result is still uncertain and needs manual
+# reconciliation rather than being reported as a clean success.
+: >"$NSUPDATE_LOG"
+set +e
+output="$(NSUPDATE_MODE=cleanup-fail env PATH="$WORK/bin:$PATH" \
+  RPZ_ZONE=rpz.local RPZ_PRIMARY=127.0.0.1:53 RPZ_SECONDARIES=127.0.0.2:53 \
+  RPZ_KEY_FILE="$KEY" RPZ_TEST_DOMAIN=foo._dnsguard-preflight.rpz.local \
+  "$ROOT/scripts/rpz-connect.sh" --write-test --confirm WRITE-TEST 2>&1)"
+code=$?
+set -e
+[[ "$code" -ne 0 ]]
+grep -q '清理 UPDATE 返回失败' <<<"$output"
+grep -q 'update delete .* TXT "dnsguard-preflight-' "$NSUPDATE_LOG"
+echo 'PASS: cleanup UPDATE failure was not hidden by an empty follow-up query'
 
 # If cleanup verification itself fails, the output must require manual
 # reconciliation and must not expose the full random TXT token.
