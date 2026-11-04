@@ -34,6 +34,8 @@ button, input { font: inherit; }
 .dns-cards article { padding: 18px; min-height: 90px; }
 .dns-cards span, .dns-cards small, .panel-heading span { display: block; color: #76acb9; font-size: 11px; letter-spacing: 1px; }
 .dns-cards strong { display: block; margin: 12px 0 6px; color: #d9ffff; font-size: 28px; }
+.dns-cards article.muted { opacity: .78; border-style: dashed; }
+.dns-cards article.muted strong { color: #8aaeb7; }
 .dns-cards .sync-value { font-size: 16px; margin-top: 18px; }
 .dns-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 16px; margin-bottom: 16px; align-items: stretch; }
 .dns-grid > .dns-panel { height: 100%; box-sizing: border-box; margin-bottom: 0; }

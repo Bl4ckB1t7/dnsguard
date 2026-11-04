@@ -486,7 +486,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       <section className="dns-cards">
         <article><span>DNS 节点</span><strong>{overview ? `${overview.healthyNodes}/${overview.nodes}` : "—"}</strong><small>健康节点</small></article>
         <article><span>RPZ 规则</span><strong>{overview?.rules ?? "—"}</strong><small>{overview?.publishedRules ?? 0} 条已发布</small></article>
-        {overview?.rpzHitStatus === "ready" && <article><span>RPZ 命中</span><strong>{overview.rpzHits?.toLocaleString() ?? "—"}</strong><small>BIND 日志去重累计</small></article>}
+        <article className={overview?.rpzHitStatus === "ready" ? "" : "muted"}><span>RPZ 命中</span><strong>{overview?.rpzHitStatus === "ready" ? overview.rpzHits?.toLocaleString() ?? "—" : "—"}</strong><small>{overview?.rpzHitStatus === "ready" ? "BIND 日志去重累计" : "日志未接入，不影响 RPZ 发布"}</small></article>
         <article><span>最后同步</span><strong className="sync-value">{overview?.lastSync ?? "—"}</strong><small>Primary → Secondary</small></article>
       </section>
 
