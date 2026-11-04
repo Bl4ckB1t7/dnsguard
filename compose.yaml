@@ -7,6 +7,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: api
+      # Build-time dependency downloads use the host resolver only; runtime
+      # containers remain on the isolated bridge network below.
+      network: host
     env_file:
       - ${DNSGUARD_ENV_FILE:-./deploy/docker/dnsguard.env}
     user: "10001:10001"
@@ -47,6 +50,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: web
+      # Build-time dependency downloads use the host resolver only; runtime
+      # containers remain on the isolated bridge network below.
+      network: host
     depends_on:
       dnsguard-api:
         condition: service_healthy

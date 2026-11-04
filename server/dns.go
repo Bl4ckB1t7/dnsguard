@@ -114,7 +114,7 @@ func rpzLogMaxBytes() int64 {
 }
 
 func readRPZLogTail(path string, maxBytes int64) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G703 -- RPZ_LOG_FILES is an administrator-controlled read-only log path.
 	if err != nil {
 		return nil, err
 	}

@@ -119,11 +119,33 @@ with tarfile.open(archive, "r:gz") as bundle:
             source.write_bytes(extracted.read())
             if hashlib.sha256(source.read_bytes()).hexdigest() != entry["sha256"]:
                 raise SystemExit(f"checksum mismatch: {relative}")
-            planned.append((source, destination))
-        for source, destination in planned:
+            os.chmod(source, members_by_name[str(relative)].mode & 0o7777)
+            owner = None
+            if mode == "docker":
+                if relative.parts[0] in {"docker-data", "secrets"}:
+                    owner = (10001, 10001)
+                elif relative.parts[0] == "tls":
+                    owner = (101, 101)
+            planned.append((source, destination, members_by_name[str(relative)].mode & 0o7777, owner))
+        for source, destination, mode_bits, owner in planned:
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(destination.name + ".restore.tmp")
             shutil.copy2(source, temporary)
+            os.chmod(temporary, mode_bits)
+            if owner is not None and os.geteuid() == 0:
+                os.chown(temporary, *owner)
             os.replace(temporary, destination)
+        if mode == "docker" and os.geteuid() == 0:
+            for root_name, owner in (("docker-data", (10001, 10001)), ("secrets", (10001, 10001)), ("tls", (101, 101))):
+                root_dir = docker_roots[root_name]
+                if not root_dir.exists():
+                    continue
+                for current, directories, _ in os.walk(root_dir):
+                    os.chown(current, *owner)
+                    os.chmod(current, 0o750)
+                    for directory in directories:
+                        path = Path(current) / directory
+                        os.chown(path, *owner)
+                        os.chmod(path, 0o750)
             print(f"restored {destination}")
 PY

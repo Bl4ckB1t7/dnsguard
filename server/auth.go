@@ -249,7 +249,9 @@ func authLogin(w http.ResponseWriter, r *http.Request) {
 	activeSessions[credentials.Username] = sessionID
 	authMu.Unlock()
 	secure := r.TLS != nil || (trustedProxy(r) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure is derived from TLS or an explicitly trusted proxy.
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: signSession(credentials.Username, expiry, sessionID), Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure,go.lang.security.audit.net.cookie-missing-httponly.cookie-missing-httponly -- CSRF is intentionally readable by the browser and secure follows TLS/proxy state.
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrfToken, Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
 	recordCriticalAudit(r, credentials.Username, "login", "success")
 	authMu.RLock()
@@ -447,7 +449,9 @@ func authLogout(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- deletion cookies carry no secret and expire immediately.
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, MaxAge: -1, Expires: time.Unix(1, 0), SameSite: http.SameSiteLaxMode})
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure,go.lang.security.audit.net.cookie-missing-httponly.cookie-missing-httponly -- logout clears the client-readable CSRF cookie immediately.
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: "", Path: "/", MaxAge: -1, Expires: time.Unix(1, 0), SameSite: http.SameSiteLaxMode})
 	recordCriticalAudit(r, authUsername(), "logout", "success")
 	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
