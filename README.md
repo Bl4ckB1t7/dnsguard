@@ -2,7 +2,9 @@
 
 **轻量级 BIND RPZ 安全策略管理平台**
 
-![DNSGuard 产品概览](docs/images/dnsguard-overview.png)
+<p align="center">
+  <img src="docs/images/dnsguard-overview.png" alt="DNSGuard 产品概览" width="100%">
+</p>
 
 DNSGuard 是一个面向企业和网络管理员的 DNS 安全策略控制面，通过 Web 界面管理 RPZ 规则、DNS 节点、发布任务和审计记录。
 
