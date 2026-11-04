@@ -52,9 +52,16 @@ Secondary 通过真实 NOTIFY 和 IXFR/AXFR 获取 `rpz.local`。`app.test` 是�
 - RPZ 实际递归效果：passthru、精确域名 A redirect、泛域名 A redirect
 - Secondary 同步延迟与恢复
 - Secondary 离线、Primary 离线
+- BIND Primary/Secondary 重启恢复
+- Secondary 本地 RPZ 数据丢失后的 AXFR 恢复
 - TSIG 错误
 - API 在 queued/running 阶段重启后的任务恢复
 - 发布中并发编辑、新增/修改/删除规则不污染固定快照
+- 并发发布互斥
+- 审计哈希链损坏后的 fail-closed 与恢复
+- RPZ 产物写入失败
+- 回滚期间 Primary 不可达
+- React 构建、页面和 API 代理冒烟测试
 - 发布失败后的恢复及 BIND 数据面独立性
 - 并发/重复发布拒绝
 

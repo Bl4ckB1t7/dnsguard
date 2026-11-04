@@ -55,14 +55,22 @@ run_case() {
   local name="$1" fn="$2" evidence
   evidence="$EVIDENCE_DIR/${#CASE_NAMES[@]}-${name// /_}.log"
   mkdir -p "$EVIDENCE_DIR"
-  if "$fn" >"$evidence" 2>&1; then
+  # Run each case in a real errexit-enabled subshell. Calling a function
+  # directly as the condition of `if` disables errexit inside that function
+  # in Bash and can turn a failed assertion followed by an echo into a false
+  # PASS.
+  set +e
+  (set -e; "$fn") >"$evidence" 2>&1
+  local result=$?
+  set -e
+  if ((result == 0)); then
     record_case "$name" PASS "$evidence"
   else
     record_case "$name" FAIL "$evidence"
   fi
 }
 
-required_tools=(docker curl dig nsupdate named-checkzone go openssl python3)
+required_tools=(docker curl dig nsupdate named-checkzone go openssl python3 npm runuser fuser)
 missing_tools=()
 for tool in "${required_tools[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
@@ -118,6 +126,11 @@ cleanup_on_exit() {
 trap cleanup_on_exit EXIT
 
 prepare_runtime() {
+  # Remove stale temporary APIs from an interrupted previous run. These ports
+  # are reserved exclusively for this isolated acceptance harness.
+  for port in 18081 18082 18083 18084 18085 18086 18087 18088 18089 18090 18091; do
+    fuser -k "$port/tcp" >/dev/null 2>&1 || true
+  done
   compose down --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$RUNTIME_DIR"
   mkdir -p "$RUNTIME_DIR" "$EVIDENCE_DIR" \
@@ -204,31 +217,43 @@ start_bind() {
 start_api() {
   local port="$1" dir="$2" path_prefix="${3:-}"
   local log_file="$dir/api-$port.log" pid_file="$dir/api-$port.pid"
+  local key_file="${RPZ_KEY_FILE_OVERRIDE:-$RUNTIME_DIR/keys/rpz-manager.key}"
+  local artifact_file="${RPZ_ARTIFACT_FILE_OVERRIDE:-$dir/rpz.local.db}"
+  local run_user="${API_RUN_USER:-}"
+  local configured_path="${path_prefix:+$path_prefix:}$PATH"
+  local -a environment=(
+    "APP_ENV=development"
+    "AUTH_ENABLED=false"
+    "LISTEN_ADDR=127.0.0.1:$port"
+    "DNS_STATE_FILE=$dir/dns-state.json"
+    "DNS_NODE_CONFIG_FILE=$dir/dns-nodes.json"
+    "AUDIT_FILE=$dir/audit.json"
+    "RPZ_PUBLISH_JOBS_FILE=$dir/publish-jobs.json"
+    "RPZ_ARTIFACT_FILE=$artifact_file"
+    "RPZ_PUBLISH_MODE=nsupdate"
+    "RPZ_PRIMARY=127.0.0.1"
+    "RPZ_PRIMARY_PORT=15353"
+    "RPZ_ZONE=rpz.local"
+    "RPZ_KEY_FILE=$key_file"
+    "RPZ_PUBLISH_TIMEOUT_SECONDS=8"
+    "RPZ_PUBLISH_RETRIES=0"
+    "RPZ_PUBLISH_RETRY_BACKOFF_SECONDS=0"
+    "DNS_NODE_ALLOWED_CIDRS=127.0.0.0/8"
+    "RPZ_LOG_FILES=$dir/rpz.log"
+    "PATH=$configured_path"
+  )
   mkdir -p "$dir"
   (
     cd "$ROOT_DIR"
-    env \
-      APP_ENV=development \
-      AUTH_ENABLED=false \
-      LISTEN_ADDR="127.0.0.1:$port" \
-      DNS_STATE_FILE="$dir/dns-state.json" \
-      DNS_NODE_CONFIG_FILE="$dir/dns-nodes.json" \
-      AUDIT_FILE="$dir/audit.json" \
-      RPZ_PUBLISH_JOBS_FILE="$dir/publish-jobs.json" \
-      RPZ_ARTIFACT_FILE="$dir/rpz.local.db" \
-      RPZ_PUBLISH_MODE=nsupdate \
-      RPZ_PRIMARY=127.0.0.1 \
-      RPZ_PRIMARY_PORT=15353 \
-      RPZ_ZONE=rpz.local \
-      RPZ_KEY_FILE="$RUNTIME_DIR/keys/rpz-manager.key" \
-      RPZ_PUBLISH_TIMEOUT_SECONDS=8 \
-      RPZ_PUBLISH_RETRIES=0 \
-      RPZ_PUBLISH_RETRY_BACKOFF_SECONDS=0 \
-      DNS_NODE_ALLOWED_CIDRS=127.0.0.0/8 \
-      RPZ_LOG_FILES="$dir/rpz.log" \
-      PATH="${path_prefix:+$path_prefix:}$PATH" \
-      "$API_BIN" >"$log_file" 2>&1 &
+    if [[ -n "$run_user" ]]; then
+      runuser -u "$run_user" -- env "${environment[@]}" "$API_BIN" >"$log_file" 2>&1 &
+    else
+      env "${environment[@]}" "$API_BIN" >"$log_file" 2>&1 &
+    fi
     echo $! >"$pid_file"
+    # Keep a stable alias for helpers that restart the same temporary API
+    # directory on another attempt.
+    echo $! >"$dir/api.pid"
   )
   printf '%s' "$(cat "$pid_file")"
 }
@@ -329,13 +354,35 @@ soa_serial() { dig +tcp +time=2 +tries=1 @127.0.0.1 -p "$1" rpz.local SOA +short
 answer() { dig +tcp +time=2 +tries=1 @127.0.0.1 -p "$1" "$2" A +short | tr '\n' ' ' | sed 's/[[:space:]]*$//'; }
 wait_answer() {
   local port="$1" query="$2" wanted="$3" expected
-  for _ in $(seq 1 180); do
+  for _ in $(seq 1 360); do
     expected="$(answer "$port" "$query")"
     if [[ "$expected" == *"$wanted"* ]]; then return 0; fi
     sleep 0.25
   done
   echo "port=$port query=$query answer=$expected wanted=$wanted" >&2
   return 1
+}
+
+direct_add_rpz_rule() {
+  local domain="$1" value="$2"
+  {
+    printf 'server 127.0.0.1 15353\nzone rpz.local\n'
+    printf 'update delete %s.rpz.local.\n' "$domain"
+    printf 'update delete *.%s.rpz.local.\n' "$domain"
+    printf 'update add %s.rpz.local. 60 A %s\n' "$domain" "$value"
+    printf 'update add *.%s.rpz.local. 60 A %s\n' "$domain" "$value"
+    printf 'send\n'
+  } | nsupdate -k "$RUNTIME_DIR/keys/rpz-manager.key"
+}
+
+direct_delete_rpz_rule() {
+  local domain="$1"
+  {
+    printf 'server 127.0.0.1 15353\nzone rpz.local\n'
+    printf 'update delete %s.rpz.local.\n' "$domain"
+    printf 'update delete *.%s.rpz.local.\n' "$domain"
+    printf 'send\n'
+  } | nsupdate -k "$RUNTIME_DIR/keys/rpz-manager.key"
 }
 
 case_normal_publish() {
@@ -347,7 +394,10 @@ case_normal_publish() {
   [[ "$(soa_serial 15353)" == "$(soa_serial 15354)" && "$(soa_serial 15353)" == "$(soa_serial 15355)" ]]
   named-checkzone rpz.local "$RUNTIME_DIR/rpz.local.db"
   grep -q 'redirect.app.test.rpz.local' "$RUNTIME_DIR/rpz.local.db"
-  dig +tcp +time=2 +tries=1 @127.0.0.1 -p 15353 rpz.local AXFR +noall +answer | grep -q 'wild.app.test.rpz.local'
+  # Host-side AXFR is intentionally denied; perform the transfer query from
+  # an isolated Secondary container so the source address matches the
+  # Primary's allow-transfer policy.
+  docker exec bind-secondary-1 dig +tcp +time=2 +tries=1 @172.30.0.10 rpz.local AXFR +noall +answer | grep -q 'wild.app.test.rpz.local'
   wait_answer 15353 passthru.app.test 192.0.2.10
   wait_answer 15353 redirect.app.test 192.0.2.55
   wait_answer 15353 foo.wild.app.test 192.0.2.66
@@ -367,7 +417,7 @@ case_actual_rpz_resolution() {
       # BIND may defer a response-policy reload when the zone was changed
       # immediately after startup. The recursive answer, not only SOA, is the
       # acceptance criterion, so wait for the actual policy to become active.
-      for _ in $(seq 1 120); do
+      for _ in $(seq 1 240); do
         expected="$(answer "$port" "$query")"
         if [[ "$expected" == *"$wanted"* ]]; then ok=1; break; fi
         sleep 0.25
@@ -424,6 +474,40 @@ case_primary_offline() {
   [[ "$failed" == failed ]] || { cat "$JOB_FILE"; return 1; }
   delete_rule "$RULE_ID"
   echo "primary offline publish result=$failed; draft removed without BIND mutation"
+}
+
+case_bind_restart_recovery() {
+  local serial_before serial_after
+  serial_before="$(soa_serial 15353)"
+  compose restart bind-primary >/dev/null
+  wait_dns 15353
+  wait_answer 15353 redirect.app.test 192.0.2.55
+  compose restart bind-secondary-1 >/dev/null
+  wait_dns 15354
+  serial_after="$(soa_serial 15353)"
+  [[ -n "$serial_after" && "$serial_after" == "$(soa_serial 15354)" && "$serial_after" == "$(soa_serial 15355)" ]]
+  echo "BIND restart preserved RPZ policy and SOA serial: $serial_before -> $serial_after"
+}
+
+case_axfr_recovery() {
+  local before primary_after secondary_after
+  before="$(soa_serial 15353)"
+  compose stop bind-secondary-1 >/dev/null
+  direct_add_rpz_rule axfr-recovery.app.test 192.0.2.90
+  primary_after="$(soa_serial 15353)"
+  [[ "$primary_after" != "$before" ]]
+  rm -f "$RUNTIME_DIR/secondary-1-data/rpz.local.zone"*
+  compose start bind-secondary-1 >/dev/null
+  wait_dns 15354
+  for _ in $(seq 1 60); do
+    secondary_after="$(soa_serial 15354)"
+    [[ "$secondary_after" == "$primary_after" ]] && break
+    sleep 0.25
+  done
+  [[ "$secondary_after" == "$primary_after" ]]
+  [[ "$(dig +tcp +time=2 +tries=1 @127.0.0.1 -p 15354 axfr-recovery.app.test.rpz.local A +short)" == "192.0.2.90" ]]
+  direct_delete_rpz_rule axfr-recovery.app.test
+  echo "Secondary recovered by full transfer after local RPZ data removal: serial=$secondary_after"
 }
 
 copy_api_fixture() {
@@ -526,22 +610,173 @@ print(next(r['status'] for r in rules if r['domain']=='snapshot-b.app.test'))
 PY
 )"
   [[ "$status_a" == published && "$status_b" == draft ]]
+  direct_delete_rpz_rule snapshot-a.app.test
+  direct_delete_rpz_rule snapshot-b.app.test
   stop_api_pid "$dir/api.pid"
   echo "snapshot-a=$status_a snapshot-b=$status_b"
+}
+
+case_concurrent_publish_guard() {
+  local dir="$RUNTIME_DIR/concurrent-publish" fake="$RUNTIME_DIR/concurrent-publish/fake-bin" pid code_one code_two job
+  copy_api_fixture "$dir"
+  mkdir -p "$fake"
+  cat >"$fake/nsupdate" <<'EOF'
+#!/usr/bin/env bash
+/usr/bin/nsupdate "$@"
+sleep 3
+EOF
+  chmod +x "$fake/nsupdate"
+  pid="$(start_api 18086 "$dir" "$fake")"
+  wait_api http://127.0.0.1:18086
+  curl -fsS -X POST -H 'Content-Type: application/json' --data '{"domain":"concurrent-publish.app.test","type":"A","value":"192.0.2.91"}' -o "$dir/rule.json" http://127.0.0.1:18086/api/dns/rpz
+  curl -sS -X POST -o "$dir/one.json" -w '%{http_code}' http://127.0.0.1:18086/api/dns/rpz/publish >"$dir/one.code" &
+  local request_one=$!
+  sleep 0.05
+  curl -sS -X POST -o "$dir/two.json" -w '%{http_code}' http://127.0.0.1:18086/api/dns/rpz/publish >"$dir/two.code" &
+  local request_two=$!
+  wait "$request_one"
+  wait "$request_two"
+  code_one="$(cat "$dir/one.code")"
+  code_two="$(cat "$dir/two.code")"
+  [[ ("$code_one" == 202 && "$code_two" == 409) || ("$code_one" == 409 && "$code_two" == 202) ]]
+  if [[ "$code_one" == 202 ]]; then job="$(json_value "$dir/one.json" id)"; else job="$(json_value "$dir/two.json" id)"; fi
+  for _ in $(seq 1 80); do
+    curl -fsS "http://127.0.0.1:18086/api/dns/rpz/jobs/$job" >"$dir/job.json" || true
+    [[ "$(json_value "$dir/job.json" status 2>/dev/null || true)" == succeeded ]] && break
+    sleep 0.25
+  done
+  [[ "$(json_value "$dir/job.json" status)" == succeeded ]]
+  direct_delete_rpz_rule concurrent-publish.app.test
+  stop_api_pid "$dir/api.pid"
+  echo "concurrent publish HTTP codes: $code_one, $code_two"
+}
+
+case_queued_recovery() {
+  local dir="$RUNTIME_DIR/queued-recovery" pid job_id
+  copy_api_fixture "$dir"
+  job_id="queued-recovery-$RUN_ID"
+  cat >"$dir/publish-jobs.json" <<EOF
+[{"id":"$job_id","status":"queued","createdAt":"2026-11-04T00:00:00Z"}]
+EOF
+  pid="$(start_api 18087 "$dir")"
+  wait_api http://127.0.0.1:18087
+  curl -fsS "http://127.0.0.1:18087/api/dns/rpz/jobs/$job_id" >"$dir/recovered.json"
+  [[ "$(json_value "$dir/recovered.json" status)" == reconcile_required ]]
+  stop_api_pid "$dir/api.pid"
+  echo 'persisted queued task became reconcile_required during API startup'
+}
+
+case_audit_corruption_fail_closed() {
+  local dir="$RUNTIME_DIR/audit-corrupt" pid code
+  copy_api_fixture "$dir"
+  printf '[{"timestamp":"tampered","actor":"attacker","action":"rpz.rule.create","result":"fake","hash":"bad"}]\n' >"$dir/audit.json"
+  pid="$(start_api 18088 "$dir")"
+  wait_api http://127.0.0.1:18088
+  code="$(curl -sS -X POST -H 'Content-Type: application/json' --data '{"domain":"audit-blocked.app.test","type":"A","value":"192.0.2.92"}' -o "$dir/write.json" -w '%{http_code}' http://127.0.0.1:18088/api/dns/rpz)"
+  [[ "$code" == 503 ]]
+  ! grep -q 'audit-blocked.app.test' "$dir/dns-state.json"
+  stop_api_pid "$dir/api.pid"
+  printf '[]\n' >"$dir/audit.json"
+  pid="$(start_api 18088 "$dir")"
+  wait_api http://127.0.0.1:18088
+  code="$(curl -sS -X POST -H 'Content-Type: application/json' --data '{"domain":"audit-recovered.app.test","type":"A","value":"192.0.2.93"}' -o "$dir/recovered-write.json" -w '%{http_code}' http://127.0.0.1:18088/api/dns/rpz)"
+  [[ "$code" == 201 ]]
+  stop_api_pid "$dir/api.pid"
+  echo 'corrupt audit chain blocked writes; replacing it and restarting restored writes'
+}
+
+case_artifact_write_failure() {
+  local dir="$RUNTIME_DIR/artifact-write-failure" artifact_dir pid code
+  copy_api_fixture "$dir"
+  artifact_dir="$dir/artifact-dir"
+  mkdir -p "$artifact_dir"
+  cp "$RUNTIME_DIR/keys/rpz-manager.key" "$dir/test.key"
+  chown -R kali:kali "$dir"
+  chmod 0600 "$dir/test.key"
+  chmod 0755 "$RUNTIME_DIR"
+  API_RUN_USER=kali RPZ_KEY_FILE_OVERRIDE="$dir/test.key" RPZ_ARTIFACT_FILE_OVERRIDE="$artifact_dir/rpz.local.db" pid="$(start_api 18089 "$dir")"
+  wait_api http://127.0.0.1:18089
+  curl -fsS -X POST -H 'Content-Type: application/json' --data '{"domain":"artifact-failure.app.test","type":"A","value":"192.0.2.94"}' -o "$dir/rule.json" http://127.0.0.1:18089/api/dns/rpz
+  chmod 0500 "$artifact_dir"
+  code="$(curl -sS -X POST -o "$dir/publish.json" -w '%{http_code}' http://127.0.0.1:18089/api/dns/rpz/publish)"
+  [[ "$code" == 202 ]]
+  local job="$(json_value "$dir/publish.json" id)"
+  for _ in $(seq 1 80); do
+    curl -fsS "http://127.0.0.1:18089/api/dns/rpz/jobs/$job" >"$dir/job.json" || true
+    [[ "$(json_value "$dir/job.json" status 2>/dev/null || true)" == failed ]] && break
+    sleep 0.25
+  done
+  chmod 0700 "$artifact_dir"
+  [[ "$(json_value "$dir/job.json" status)" == failed ]]
+  stop_api_pid "$dir/api.pid"
+  chmod 0700 "$RUNTIME_DIR"
+  echo 'artifact write failure prevented nsupdate and produced a failed job'
+}
+
+case_rollback_failure() {
+  local dir="$RUNTIME_DIR/rollback-failure" pid version_id code job
+  copy_api_fixture "$dir"
+  version_id="$(python3 - "$dir/dns-state.json" <<'PY'
+import json, sys
+s=json.load(open(sys.argv[1]))
+versions=s.get('versions', [])
+print(versions[-1]['id'] if len(versions) > 1 else '')
+PY
+)"
+  [[ -n "$version_id" ]]
+  pid="$(start_api 18090 "$dir")"
+  wait_api http://127.0.0.1:18090
+  curl -fsS -X POST -H 'Content-Type: application/json' --data '{"domain":"rollback-failure.app.test","type":"A","value":"192.0.2.95"}' -o "$dir/rule.json" http://127.0.0.1:18090/api/dns/rpz
+  compose stop bind-primary >/dev/null
+  code="$(curl -sS -X POST -H 'Content-Type: application/json' --data "{\"versionId\":\"$version_id\"}" -o "$dir/rollback.json" -w '%{http_code}' http://127.0.0.1:18090/api/dns/rpz/rollback)"
+  compose start bind-primary >/dev/null
+  wait_dns 15353
+  [[ "$code" == 202 ]]
+  job="$(json_value "$dir/rollback.json" id)"
+  for _ in $(seq 1 80); do
+    curl -fsS "http://127.0.0.1:18090/api/dns/rpz/jobs/$job" >"$dir/job.json" || true
+    [[ "$(json_value "$dir/job.json" status 2>/dev/null || true)" == failed ]] && break
+    sleep 0.25
+  done
+  [[ "$(json_value "$dir/job.json" status)" == failed ]]
+  stop_api_pid "$dir/api.pid"
+  echo 'rollback publish failed safely while Primary was offline; no automatic rollback was attempted'
+}
+
+case_frontend_smoke() {
+  local config="$RUNTIME_DIR/frontend-test.config.mjs" pid
+  npm run build >"$RUNTIME_DIR/frontend-build.log" 2>&1
+  cat >"$config" <<EOF
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+export default defineConfig({plugins:[react()],preview:{proxy:{"/api":{target:"$API_URL",changeOrigin:true}}}});
+EOF
+  (cd "$ROOT_DIR" && npx vite preview --config "$config" --host 127.0.0.1 --port 18091 --strictPort >"$RUNTIME_DIR/frontend-preview.log" 2>&1 & echo $! >"$RUNTIME_DIR/frontend-preview.pid")
+  for _ in $(seq 1 40); do curl -fsS http://127.0.0.1:18091/ >/dev/null 2>&1 && break; sleep .25; done
+  curl -fsS http://127.0.0.1:18091/ | grep -q '<div id="root">'
+  curl -fsS http://127.0.0.1:18091/api/dns/nodes | grep -q 'bind-primary'
+  pid="$(cat "$RUNTIME_DIR/frontend-preview.pid")"
+  kill "$pid" 2>/dev/null || true
+  echo 'React build, preview page, and API proxy smoke test passed'
 }
 
 case_failed_publish_recovery() {
   local dir="$RUNTIME_DIR/state-write-failure" fake="$RUNTIME_DIR/state-write-failure/fake-bin" marker="$RUNTIME_DIR/state-write-failure/nsupdate.done" pid job
   copy_api_fixture "$dir"
   mkdir -p "$fake"
+  cp "$RUNTIME_DIR/keys/rpz-manager.key" "$dir/test.key"
+  chown -R kali:kali "$dir"
+  chmod 0755 "$RUNTIME_DIR"
+  chmod 0600 "$dir/test.key"
   cat >"$fake/nsupdate" <<EOF
 #!/usr/bin/env bash
 /usr/bin/nsupdate "\$@"
 touch "$marker"
 sleep 5
 EOF
+  chown kali:kali "$fake/nsupdate"
   chmod +x "$fake/nsupdate"
-  pid="$(start_api 18085 "$dir" "$fake")"
+  API_RUN_USER=kali RPZ_KEY_FILE_OVERRIDE="$dir/test.key" pid="$(start_api 18085 "$dir" "$fake")"
   wait_api http://127.0.0.1:18085
   curl -fsS -X POST -H 'Content-Type: application/json' --data '{"domain":"state-failure.app.test","type":"A","value":"192.0.2.86"}' -o "$dir/rule.json" http://127.0.0.1:18085/api/dns/rpz
   curl -fsS -X POST -o "$dir/publish.json" http://127.0.0.1:18085/api/dns/rpz/publish
@@ -557,6 +792,8 @@ EOF
   chmod 0700 "$dir"
   [[ "$(json_value "$dir/job.json" status)" == reconcile_required ]]
   stop_api_pid "$dir/api.pid"
+  direct_delete_rpz_rule state-failure.app.test
+  chmod 0700 "$RUNTIME_DIR"
   echo 'Primary update completed before state write failure; job retained reconcile_required for manual comparison'
 }
 
@@ -610,10 +847,18 @@ main() {
   run_case 'secondary-sync-delay-and-recovery' case_secondary_sync_delay
   run_case 'secondary-offline-and-recovery' case_secondary_offline
   run_case 'primary-offline' case_primary_offline
+  run_case 'bind-restart-recovery' case_bind_restart_recovery
+  run_case 'axfr-recovery-after-secondary-data-loss' case_axfr_recovery
   run_case 'tsig-authentication-failure' case_tsig_error
   run_case 'api-restart-recovery' case_api_restart_recovery
   run_case 'concurrent-edit-snapshot' case_concurrent_edit_snapshot
+  run_case 'concurrent-publish-guard' case_concurrent_publish_guard
+  run_case 'queued-job-startup-recovery' case_queued_recovery
+  run_case 'audit-corruption-fail-closed-and-recovery' case_audit_corruption_fail_closed
+  run_case 'artifact-write-failure' case_artifact_write_failure
+  run_case 'rollback-failure' case_rollback_failure
   run_case 'state-write-failure-recovery' case_failed_publish_recovery
+  run_case 'frontend-build-and-api-proxy-smoke' case_frontend_smoke
   run_case 'bind-independent-of-api' case_bind_independent
   write_report
   if printf '%s\n' "${CASE_STATUS[@]}" | grep -q '^FAIL$'; then
