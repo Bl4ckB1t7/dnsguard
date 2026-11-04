@@ -85,11 +85,17 @@ cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
 # 编辑生产 Primary、Secondary、Secret 和允许网段
 install -d -m 0750 secrets tls bind-logs
 install -m 0640 PATH_TO_PRODUCTION_RPZ_KEY secrets/rpz-manager.key
+umask 077
+openssl rand -hex 32 > secrets/bootstrap.token
+chown 10001:10001 secrets/bootstrap.token
+chmod 0600 secrets/bootstrap.token
 install -m 0644 PATH_TO_FULLCHAIN_PEM tls/fullchain.pem
 install -o 101 -g 101 -m 0640 PATH_TO_PRIVATE_KEY tls/privkey.pem
 ./scripts/docker-init.sh
 docker compose up -d
 ```
+
+首次访问 HTTPS 地址会进入 Web 初始化向导。使用部署终端生成的 Bootstrap Token 设置管理员密码、RPZ Primary/Secondary 和受保护 TSIG Key 路径。向导会显示 SOA/Zone/Serial 检查，并明确提示一次临时 TXT 写入/清理测试；未通过前不会开放 RPZ 发布。初始化状态持久化在 `docker-data/initialization.json`，容器重建不会重新开放向导。
 
 Compose 默认只发布 Web 的 HTTPS 443 端口，API 没有宿主机端口；JSON 状态、审计、
 发布任务、认证文件、Telegram 配置和 RPZ 产物持久化到 `docker-data/`。初始化脚本

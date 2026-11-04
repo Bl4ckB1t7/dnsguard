@@ -173,22 +173,35 @@ func validSession(value string) bool {
 }
 
 func authMe(w http.ResponseWriter, r *http.Request) {
+	initialized := isInitialized()
 	if !authEnabled() {
-		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "authEnabled": false, "username": authUsername(), "mustChangePassword": false})
+		if !initialized {
+			writeJSON(w, http.StatusOK, map[string]any{"authenticated": false, "authEnabled": false, "initialized": false, "mustChangePassword": false})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "authEnabled": false, "initialized": true, "username": authUsername(), "mustChangePassword": false})
 		return
 	}
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil || !validSession(cookie.Value) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false})
+		status := http.StatusUnauthorized
+		if !initialized {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, map[string]any{"authenticated": false, "initialized": initialized})
 		return
 	}
 	authMu.RLock()
 	mustChangePassword := storedAuth.MustChangePassword
 	authMu.RUnlock()
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": authUsername(), "mustChangePassword": mustChangePassword})
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "initialized": true, "username": authUsername(), "mustChangePassword": mustChangePassword})
 }
 
 func authLogin(w http.ResponseWriter, r *http.Request) {
+	if !isInitialized() {
+		writeJSON(w, http.StatusPreconditionRequired, map[string]string{"error": "系统尚未完成初始化"})
+		return
+	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -445,6 +458,18 @@ func authMiddleware(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "审计系统异常，管理写操作已暂停，请先恢复审计文件"})
 			return
 		}
+		if r.URL.Path == "/api/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/setup/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !isInitialized() {
+			writeJSON(w, http.StatusPreconditionRequired, map[string]any{"error": "系统尚未完成初始化", "initialized": false})
+			return
+		}
 		if !authEnabled() {
 			next.ServeHTTP(w, r)
 			return
@@ -538,6 +563,6 @@ func setCORSHeaders(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodOptions {
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, X-DNSGuard-Bootstrap")
 	}
 }

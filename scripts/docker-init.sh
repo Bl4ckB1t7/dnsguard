@@ -25,7 +25,7 @@ set -a
 source "$ENV_FILE"
 set +a
 
-for value_name in AUTH_SECRET MONITORING_TOKEN RPZ_PRIMARY DNS_NODE_ADDRESSES; do
+for value_name in AUTH_SECRET MONITORING_TOKEN RPZ_PRIMARY; do
   value="${!value_name:-}"
   [[ -n "$value" && "$value" != REPLACE_* && "$value" != *DNS_PRIMARY* && "$value" != *DNS_SECONDARY_* ]] || die "$value_name is not configured in $ENV_FILE"
 done
@@ -44,8 +44,14 @@ chmod 0750 "$DATA_DIR" "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 KEY_FILE="$ROOT/secrets/rpz-manager.key"
 [[ -f "$KEY_FILE" ]] || die "copy the production RPZ TSIG key to $KEY_FILE; it will not be generated"
 [[ -f "$TLS_DIR/fullchain.pem" && -f "$TLS_DIR/privkey.pem" ]] || die "place HTTPS certificate and key in $TLS_DIR"
+BOOTSTRAP_FILE="$SECRET_DIR/bootstrap.token"
+if [[ ! -f "$DATA_DIR/auth.json" ]]; then
+  [[ -f "$BOOTSTRAP_FILE" ]] || die "create a protected one-time Bootstrap Token at $BOOTSTRAP_FILE before first start"
+  [[ "$(stat -c '%a' "$BOOTSTRAP_FILE")" =~ ^[0-7]*[0-6][0-6]$ ]] || die "Bootstrap Token must not be world-readable"
+  [[ "$(wc -c <"$BOOTSTRAP_FILE")" -ge 32 ]] || die "Bootstrap Token must contain at least 32 bytes"
+fi
 
-if [[ ! -f "$DATA_DIR/dns-nodes.json" ]]; then
+if [[ -n "${DNSGUARD_LEGACY_NODE_SEED:-}" && ! -f "$DATA_DIR/dns-nodes.json" ]]; then
   python3 - "$DATA_DIR/dns-nodes.json" "$DNS_NODE_ADDRESSES" <<'PY'
 import json
 import pathlib
@@ -74,34 +80,27 @@ fi
 echo "Building pinned DNSGuard images (no host Go/Node.js installation required)"
 docker compose --env-file "$ENV_FILE" -f compose.yaml build
 
-if [[ ! -f "$DATA_DIR/auth.json" ]]; then
-  echo "No administrator password hash exists. The next command prompts twice and writes only bcrypt output."
-  docker run --rm -it --user 0:0 \
-    -v "$DATA_DIR:/var/lib/dnsguard" \
-    "$IMAGE" /usr/local/bin/dnsguard-authgen \
-    -output /var/lib/dnsguard/auth.json -username "${AUTH_USERNAME:-admin}"
-fi
-
 # The API image uses UID/GID 10001. These operations change only local
 # bind-mounted files and never alter BIND's production TSIG configuration.
 docker run --rm --user 0:0 \
   -v "$DATA_DIR:/var/lib/dnsguard" \
   -v "$SECRET_DIR:/run/dnsguard-secrets" \
-  "$IMAGE" sh -c '
+  --entrypoint sh "$IMAGE" -c '
     chown -R 10001:10001 /var/lib/dnsguard /run/dnsguard-secrets
     find /var/lib/dnsguard -type d -exec chmod 0750 {} +
     find /var/lib/dnsguard -type f -exec chmod 0640 {} +
     [ ! -e /var/lib/dnsguard/auth.json ] || chmod 0600 /var/lib/dnsguard/auth.json
     chmod 0640 /run/dnsguard-secrets/rpz-manager.key
+    [ ! -e /run/dnsguard-secrets/bootstrap.token ] || chmod 0600 /run/dnsguard-secrets/bootstrap.token
   '
 
 docker run --rm --user 10001:10001 \
-  -v "$SECRET_DIR/rpz-manager.key:/run/key:ro" \
-  "$IMAGE" sh -c 'test -r /run/key'
+  -v "$SECRET_DIR:/run/dnsguard-secrets:ro" \
+  --entrypoint sh "$IMAGE" -c 'test -r /run/dnsguard-secrets/rpz-manager.key && { [ ! -e /run/dnsguard-secrets/bootstrap.token ] || test -r /run/dnsguard-secrets/bootstrap.token; }'
 
 docker run --rm --user 101:101 \
   -v "$TLS_DIR:/run/tls:ro" \
-  "$WEB_IMAGE" sh -c 'test -r /run/tls/fullchain.pem && test -r /run/tls/privkey.pem'
+  --entrypoint sh "$WEB_IMAGE" -c 'test -r /run/tls/fullchain.pem && test -r /run/tls/privkey.pem'
 
 docker compose --env-file "$ENV_FILE" -f compose.yaml config >/dev/null
 echo "Docker initialization complete. Start DNSGuard with: docker compose up -d"

@@ -24,8 +24,8 @@ services:
         source: ${DNSGUARD_DATA_DIR:-./docker-data}
         target: /var/lib/dnsguard
       - type: bind
-        source: ${DNSGUARD_SECRET_FILE:-./secrets/rpz-manager.key}
-        target: /run/dnsguard-secrets/rpz-manager.key
+        source: ${DNSGUARD_SECRET_DIR:-./secrets}
+        target: /run/dnsguard-secrets
         read_only: true
       - type: bind
         source: ${DNSGUARD_BIND_LOG_DIR:-./bind-logs}

@@ -5,8 +5,7 @@ WORKDIR /src/server
 COPY server/go.mod server/go.sum ./
 RUN go mod download
 COPY server/ ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/dnsguard-api . \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/dnsguard-authgen ./cmd/authgen
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/dnsguard-api .
 
 FROM node:22.12.0-bookworm-slim AS web-builder
 WORKDIR /src
@@ -24,7 +23,6 @@ RUN apt-get update \
     && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin dnsguard \
     && install -d -o 10001 -g 10001 -m 0750 /var/lib/dnsguard
 COPY --from=api-builder /out/dnsguard-api /usr/local/bin/dnsguard-api
-COPY --from=api-builder /out/dnsguard-authgen /usr/local/bin/dnsguard-authgen
 WORKDIR /var/lib/dnsguard
 USER 10001:10001
 ENV HOME=/nonexistent

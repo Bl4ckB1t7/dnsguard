@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { LoginPage } from "./components/LoginPage";
 import { DnsDashboard } from "./components/DnsDashboard";
+import { SetupWizard } from "./components/SetupWizard";
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
   const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [initialized, setInitialized] = useState<boolean | null>(null);
 
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "include" })
@@ -14,11 +16,13 @@ export function App() {
         setAuthenticated(response.ok && payload.authenticated === true);
         setAuthEnabled(payload.authEnabled !== false);
         setMustChangePassword(payload.mustChangePassword === true);
+        setInitialized(payload.initialized !== false);
       })
-      .catch(() => { setAuthenticated(false); setAuthEnabled(true); });
+      .catch(() => { setAuthenticated(false); setAuthEnabled(true); setInitialized(true); });
   }, []);
 
-  if (authenticated === null || authEnabled === null) return <div className="login-viewport" />;
+  if (authenticated === null || authEnabled === null || initialized === null) return <div className="login-viewport" />;
+  if (!initialized) return <SetupWizard onComplete={() => { setInitialized(true); setAuthenticated(true); setAuthEnabled(true); }} />;
   if (!authEnabled) return <DnsDashboard authEnabled={false} onLogout={() => undefined} />;
   if (!authenticated) return <LoginPage onLogin={(required) => { setAuthenticated(true); setMustChangePassword(required); }} />;
 

@@ -9,7 +9,7 @@ Docker Compose 是 DNSGuard 的推荐生产部署方式。Compose 只运行 DNSG
 - 到所有 Secondary 的 SOA 查询连通性。
 - 生产 RPZ TSIG key 文件；本项目不会生成、修改或安装 BIND key。
 - HTTPS 证书和私钥。
-- `python3`（仅用于一次性初始化节点 JSON，不需要 Go、Node.js 或 npm）。
+- `python3`（仅用于安全初始化检查，不需要 Go、Node.js 或 npm）。
 
 目标服务器不需要安装 Go、Node.js、npm、bind9-utils 或 systemd 服务。
 
@@ -28,6 +28,10 @@ cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
 ```bash
 install -d -m 0750 secrets tls bind-logs
 install -m 0640 PATH_TO_PRODUCTION_RPZ_KEY secrets/rpz-manager.key
+umask 077
+openssl rand -hex 32 > secrets/bootstrap.token
+chown 10001:10001 secrets/bootstrap.token
+chmod 0600 secrets/bootstrap.token
 install -m 0644 PATH_TO_FULLCHAIN_PEM tls/fullchain.pem
 install -o 101 -g 101 -m 0640 PATH_TO_PRIVATE_KEY tls/privkey.pem
 ```
@@ -38,7 +42,7 @@ install -o 101 -g 101 -m 0640 PATH_TO_PRIVATE_KEY tls/privkey.pem
 ./scripts/docker-init.sh
 ```
 
-初始化脚本会校验生产参数、创建节点配置、只在不存在时生成 bcrypt 管理员认证文件、构建固定版本镜像并设置 UID/GID `10001:10001` 权限。它不会覆盖已有认证、节点、规则、审计、版本、发布任务或 TSIG 文件，也不会生成或修改生产 BIND 的 TSIG 配置。
+初始化脚本会校验生产参数、构建固定版本镜像并设置 UID/GID `10001:10001` 权限。首次启动不再通过终端写入管理员密码；浏览器会显示 Web 初始化向导，Bootstrap Token 只作为一次性门禁使用。向导会创建 bcrypt 管理员认证、Primary/Secondary 配置和初始化状态。它不会覆盖已有认证、节点、规则、审计、版本、发布任务或 TSIG 文件，也不会生成或修改生产 BIND 的 TSIG 配置。已有 `auth.json` 和 `dns-nodes.json` 的 systemd/Docker 部署会被识别为已初始化，不会强制重新初始化。
 
 启动：
 
@@ -46,6 +50,8 @@ install -o 101 -g 101 -m 0640 PATH_TO_PRIVATE_KEY tls/privkey.pem
 docker compose up -d
 docker compose ps
 ```
+
+首次访问 HTTPS 页面时，输入部署终端生成的 Bootstrap Token。向导会先执行只读 SOA/Zone/Serial 检查，再执行一次明确告知影响的受控 TSIG 写权限检查：向 Primary Zone 写入随机临时 TXT 记录并立即删除。只有写入和清理均成功，才会开放 RPZ 发布。Token 不会出现在页面响应、日志或 Git 中；初始化完成后即使 token 文件仍由只读 Secret Mount 提供，向导也不会再次开放。
 
 默认只有 Web 容器发布宿主机 443，API 没有 `ports` 配置，只能通过内部网络被 Nginx 访问。若 443 已由企业入口占用，可设置 `DNSGUARD_WEB_PORT=8443`，再由企业 HTTPS 反向代理转发；浏览器到 Web 入口仍必须使用 HTTPS。
 

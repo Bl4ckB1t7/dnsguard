@@ -235,7 +235,7 @@ EOF
 start_stack() {
   export DNSGUARD_ENV_FILE="$ENV_FILE"
   export DNSGUARD_DATA_DIR="$DATA_DIR"
-  export DNSGUARD_SECRET_FILE="$KEY_FILE"
+  export DNSGUARD_SECRET_DIR="$SECRET_DIR"
   export DNSGUARD_TLS_DIR="$TLS_DIR"
   export DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR"
   export DNSGUARD_WEB_PORT=18443
@@ -374,7 +374,7 @@ case_security_failure_without_auth() {
   cp "$ENV_FILE" "$bad_env"
   sed -i 's/^AUTH_ENABLED=true$/AUTH_ENABLED=false/' "$bad_env"
   DNSGUARD_ENV_FILE="$bad_env" DNSGUARD_DATA_DIR="$RUNTIME/bad-data" \
-    DNSGUARD_SECRET_FILE="$KEY_FILE" DNSGUARD_TLS_DIR="$TLS_DIR" \
+    DNSGUARD_SECRET_DIR="$SECRET_DIR" DNSGUARD_TLS_DIR="$TLS_DIR" \
     DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR" DNSGUARD_WEB_PORT=18444 \
     docker compose -p "$bad_project" -f "$ROOT_DIR/compose.yaml" \
     --env-file "$bad_env" up -d >/dev/null 2>&1 || true

@@ -57,6 +57,9 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 }
 
 func main() {
+	if err := loadInitializationState(); err != nil {
+		log.Fatal(err)
+	}
 	if err := validateSecurityConfig(); err != nil {
 		log.Fatal(err)
 	}
@@ -82,6 +85,9 @@ func main() {
 	mux.HandleFunc("/api/health", health)
 	mux.HandleFunc("/api/monitoring/status", monitoringStatus)
 	mux.HandleFunc("/api/settings", settings)
+	mux.HandleFunc("/api/setup/status", setupStatus)
+	mux.HandleFunc("/api/setup/validate", setupValidate)
+	mux.HandleFunc("/api/setup/complete", setupComplete)
 	mux.HandleFunc("/api/settings/telegram", telegramSettings)
 	mux.HandleFunc("/api/settings/telegram/test", telegramTest)
 	mux.HandleFunc("/api/auth/login", authLogin)
@@ -135,30 +141,47 @@ func validateSecurityConfig() error {
 	if len(monitoringToken) < 32 || monitoringToken == "replace-with-a-random-monitoring-token" {
 		return fmt.Errorf("MONITORING_TOKEN must be at least 32 characters in production")
 	}
-	if !authFileHasPasswordHash() {
-		return fmt.Errorf("AUTH_FILE must contain a bcrypt password hash; run scripts/create-auth-file.sh")
+	initialized := isInitialized()
+	if initialized && !authFileHasPasswordHash() {
+		return fmt.Errorf("AUTH_FILE must contain a bcrypt password hash")
+	}
+	if !initialized {
+		if err := validateBootstrapTokenFile(); err != nil {
+			return err
+		}
 	}
 	if (os.Getenv("TLS_CERT_FILE") == "" || os.Getenv("TLS_KEY_FILE") == "") && os.Getenv("TRUST_PROXY_TLS") != "true" {
 		return fmt.Errorf("configure TLS_CERT_FILE/TLS_KEY_FILE or set TRUST_PROXY_TLS=true in production")
 	}
-	if err := validateProductionRuntimeFiles(); err != nil {
+	if err := validateProductionRuntimeFiles(initialized); err != nil {
 		return err
 	}
 	return nil
 }
 
-func validateProductionRuntimeFiles() error {
+func validateProductionRuntimeFiles(requireConfigured ...bool) error {
+	requireNodeAndAuth := true
+	if len(requireConfigured) > 0 {
+		requireNodeAndAuth = requireConfigured[0]
+	}
 	if _, err := exec.LookPath("named-checkzone"); err != nil {
 		return fmt.Errorf("named-checkzone is required in production: %w", err)
 	}
-	for _, item := range []struct {
+	files := []struct {
 		path  string
 		label string
 		mode  os.FileMode
 	}{
 		{authFilePath(), "AUTH_FILE", 0o077},
 		{os.Getenv("DNS_NODE_CONFIG_FILE"), "DNS_NODE_CONFIG_FILE", 0},
-	} {
+	}
+	for _, item := range files {
+		if !requireNodeAndAuth && item.label != "AUTH_FILE" && item.label != "DNS_NODE_CONFIG_FILE" {
+			continue
+		}
+		if !requireNodeAndAuth {
+			continue
+		}
 		if item.path == "" {
 			return fmt.Errorf("%s must be configured in production", item.label)
 		}

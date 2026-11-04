@@ -14,5 +14,6 @@ import "./login-robot.css";
 import "./login-telemetry.css";
 import "./login-title-sync.css";
 import "./dns-dashboard.css";
+import "./setup.css";
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
