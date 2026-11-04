@@ -146,10 +146,14 @@ cleanup_on_exit() {
 trap cleanup_on_exit EXIT
 
 prepare_runtime() {
-  # Remove stale temporary APIs from an interrupted previous run. These ports
-  # are reserved exclusively for this isolated acceptance harness.
+  # Never kill an unrelated process just because a test port is occupied. A
+  # previous interrupted run can be cleaned with --clean; an unknown listener
+  # makes this run NOT RUN instead of being forcefully terminated.
   for port in 18081 18082 18083 18084 18085 18086 18087 18088 18089 18090 18091; do
-    fuser -k "$port/tcp" >/dev/null 2>&1 || true
+    if fuser "$port/tcp" >/dev/null 2>&1; then
+      echo "test API port $port is already in use; refusing to stop the listener" >&2
+      return 2
+    fi
   done
   compose down --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$RUNTIME_DIR"
@@ -694,7 +698,9 @@ case_audit_corruption_fail_closed() {
   wait_api http://127.0.0.1:18088
   code="$(curl -sS -X POST -H 'Content-Type: application/json' --data '{"domain":"audit-blocked.app.test","type":"A","value":"192.0.2.92"}' -o "$dir/write.json" -w '%{http_code}' http://127.0.0.1:18088/api/dns/rpz)"
   [[ "$code" == 503 ]]
-  ! grep -q 'audit-blocked.app.test' "$dir/dns-state.json"
+  if grep -q 'audit-blocked.app.test' "$dir/dns-state.json"; then
+    return 1
+  fi
   stop_api_pid "$dir/api.pid"
   printf '[]\n' >"$dir/audit.json"
   pid="$(start_api 18088 "$dir")"
@@ -720,7 +726,8 @@ case_artifact_write_failure() {
   chmod 0500 "$artifact_dir"
   code="$(curl -sS -X POST -o "$dir/publish.json" -w '%{http_code}' http://127.0.0.1:18089/api/dns/rpz/publish)"
   [[ "$code" == 202 ]]
-  local job="$(json_value "$dir/publish.json" id)"
+  local job
+  job="$(json_value "$dir/publish.json" id)"
   for _ in $(seq 1 80); do
     curl -fsS "http://127.0.0.1:18089/api/dns/rpz/jobs/$job" >"$dir/job.json" || true
     [[ "$(json_value "$dir/job.json" status 2>/dev/null || true)" == failed ]] && break

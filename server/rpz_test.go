@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -31,6 +33,52 @@ func TestPublishJobExecutionSlot(t *testing.T) {
 	if active := activePublishJob(); active != "" {
 		t.Fatalf("publish slot remains occupied by %q", active)
 	}
+}
+
+func TestRollbackReservationHandoffIsAtomic(t *testing.T) {
+	original := activePublishID
+	defer func() { activePublishID = original }()
+	activePublishID = ""
+	if !reservePublishJob("rollback-1") {
+		t.Fatal("rollback should reserve the execution slot")
+	}
+	if reservePublishJob("publish-1") {
+		t.Fatal("publish must not enter while rollback owns the slot")
+	}
+	if !handoffPublishJob("rollback-1", "publish-1") {
+		t.Fatal("rollback reservation handoff failed")
+	}
+	releasePublishJob("rollback-1")
+	if activePublishJob() != "publish-1" {
+		t.Fatalf("old reservation release cleared the handed-off job: %q", activePublishJob())
+	}
+	releasePublishJob("publish-1")
+}
+
+func TestConcurrentReservationsAllowOnlyOneOwner(t *testing.T) {
+	original := activePublishID
+	defer func() { activePublishID = original }()
+	activePublishID = ""
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	winners := 0
+	for i := 0; i < 32; i++ {
+		id := fmt.Sprintf("job-%d", i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if reservePublishJob(id) {
+				mu.Lock()
+				winners++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if winners != 1 {
+		t.Fatalf("reservation winners=%d, want 1", winners)
+	}
+	releasePublishJob(activePublishJob())
 }
 
 func TestPublishRejectsWhenThereAreNoPendingChanges(t *testing.T) {
@@ -232,5 +280,33 @@ func TestFinishPublishStateWriteFailureRequiresReconciliation(t *testing.T) {
 	result, err := finishPublish("admin", "127.0.0.1:1", []RPZRule{rule}, nil, 1, "ok", "nsupdate", "published", 1, "published", nil)
 	if err == nil || result.Status != "reconcile_required" || result.SyncStatus != "reconcile_required" {
 		t.Fatalf("state write failure must require reconciliation, result=%+v err=%v", result, err)
+	}
+}
+
+func TestRollbackStateWriteFailureReleasesReservation(t *testing.T) {
+	t.Setenv("DNS_STATE_FILE", "/dev/null/dns-state.json")
+	originalState := state
+	originalActive := activePublishID
+	defer func() {
+		state = originalState
+		activePublishID = originalActive
+	}()
+	state = dnsState{
+		Rules:         []RPZRule{{ID: "current", Domain: "current.example.com", Action: "passthru", Type: "CNAME"}},
+		Versions:      []RPZVersion{{ID: "version-1", Rules: []RPZRule{{ID: "old", Domain: "old.example.com", Action: "passthru", Type: "CNAME"}}}},
+		RulesRevision: 3,
+	}
+	activePublishID = ""
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/dns/rpz/rollback", strings.NewReader(`{"versionId":"version-1"}`))
+	rollbackRPZ(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("rollback save failure status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if activePublishJob() != "" {
+		t.Fatal("rollback reservation remained after state write failure")
+	}
+	if state.Rules[0].Domain != "current.example.com" {
+		t.Fatalf("rollback state was not restored: %+v", state.Rules)
 	}
 }

@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -n "${DNSGUARD_ENV_FILE:-}" && -f "$DNSGUARD_ENV_FILE" ]]; then
+source "$ROOT/scripts/docker-paths.sh"
+DNSGUARD_ENV_FILE="$(dnsguard_resolve_path "${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}" "$ROOT")"
+if [[ -f "$DNSGUARD_ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
   source "$DNSGUARD_ENV_FILE"
@@ -13,10 +15,8 @@ BACKUP_MODE="${DNSGUARD_BACKUP_MODE:-docker}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/dnsguard}"
 BACKUP_INCLUDE_SENSITIVE="${BACKUP_INCLUDE_SENSITIVE:-false}"
 BACKUP_RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-14}"
-DNSGUARD_DATA_DIR="${DNSGUARD_DATA_DIR:-$ROOT/docker-data}"
-DNSGUARD_SECRET_DIR="${DNSGUARD_SECRET_DIR:-$ROOT/secrets}"
-DNSGUARD_TLS_DIR="${DNSGUARD_TLS_DIR:-$ROOT/tls}"
-DNSGUARD_ENV_FILE="${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}"
+dnsguard_prepare_paths "$ROOT"
+BACKUP_DIR="$(dnsguard_resolve_path "${BACKUP_DIR:-/var/backups/dnsguard}" "$ROOT")"
 
 [[ "$BACKUP_MODE" == docker ]] || {
   echo "DNSGUARD_BACKUP_MODE must be docker; DNSGuard V1.0 production backups are Docker Compose only" >&2

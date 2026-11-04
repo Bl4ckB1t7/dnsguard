@@ -26,7 +26,7 @@ DNSGuard 不会安装或管理生产 BIND。启动 Compose 前，请先准备 RP
 发布后固定使用 Git Tag，不要直接跟随 `main`：
 
 ```bash
-git clone https://github.com/Bl4ckB1t7/dnsguard-public.git
+git clone --branch v1.0.0 --single-branch https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
 git checkout v1.0.0
 ```
@@ -40,6 +40,20 @@ cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
 install -d -m 0750 docker-data secrets tls bind-logs
 chmod 0640 deploy/docker/dnsguard.env
 ```
+
+默认目录位于仓库根目录。也可以在 `deploy/docker/dnsguard.env` 中设置宿主机路径：
+
+```dotenv
+DNSGUARD_DATA_DIR=/srv/dnsguard/data
+DNSGUARD_SECRET_DIR=/srv/dnsguard/secrets
+DNSGUARD_TLS_DIR=/srv/dnsguard/tls
+DNSGUARD_BIND_LOG_DIR=/srv/dnsguard/bind-logs
+```
+
+相对路径统一以仓库根目录为基准，而不是以 `deploy/docker/` 或当前 shell 目录为基准。
+`docker-init.sh`、Compose、备份和恢复脚本会使用同一组解析结果；脚本会拒绝根目录、
+仓库 `.git` 目录、目录重叠和符号链接路径。绝对路径必须由部署人员预先创建并明确授权，
+脚本不会递归修改未配置的目录。
 
 编辑 `deploy/docker/dnsguard.env`，至少设置：
 
@@ -199,6 +213,12 @@ DNSGUARD_TLS_DIR="$PWD/tls" \
 DNSGUARD_ENV_FILE="$PWD/deploy/docker/dnsguard.env" \
 ./scripts/restore-dnsguard.sh /secure/backup/dnsguard-sensitive/dnsguard-YYYYMMDDTHHMMSSZ.tar.gz
 ```
+
+恢复脚本会先完整校验 manifest、成员路径、哈希、重复成员、符号链接、文件数量和解压
+大小，再写入目标。默认不会覆盖已有文件；确实要覆盖时必须停止 Compose、确认备份并
+显式设置 `RESTORE_ALLOW_OVERWRITE=true`。覆盖过程中会先保存临时回退副本，写入失败会
+尝试恢复原文件。`config/dnsguard.env` 始终按敏感文件处理，修改 manifest 的
+`sensitive` 标记不能绕过 `RESTORE_INCLUDE_SENSITIVE=true`。
 
 恢复后：
 

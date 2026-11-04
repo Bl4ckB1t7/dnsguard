@@ -11,6 +11,7 @@ RPZ_SECONDARIES="${RPZ_SECONDARIES-}"
 RPZ_KEY_FILE="${RPZ_KEY_FILE-}"
 RPZ_RECURSOR="${RPZ_RECURSOR-}"
 RPZ_TEST_DOMAIN="${RPZ_TEST_DOMAIN-}"
+RPZ_TEST_NAMESPACE="${RPZ_TEST_NAMESPACE-}"
 RPZ_CHECK_NAME="${RPZ_CHECK_NAME-}"
 RPZ_EXPECTED_A="${RPZ_EXPECTED_A-}"
 ENV_FILE="${RPZ_CONNECT_ENV_FILE-}"
@@ -37,6 +38,8 @@ Options:
   --key-file FILE     Host path to the TSIG key used by nsupdate.
   --render DIR        Render safe config templates into DIR; never writes BIND files.
   --write-test        Explicitly write/delete one temporary TXT record on Primary.
+  --test-domain NAME  Optional test name below the protected test namespace.
+  --test-namespace NAME  Protected namespace for custom test names.
   --confirm VALUE     Non-interactive confirmation; VALUE must be WRITE-TEST.
   -h, --help          Show this help.
 
@@ -77,7 +80,7 @@ load_env_file() {
       value="${value#\"}"
       value="${value%\"}"
       case "$key" in
-        RPZ_ZONE|RPZ_PRIMARY|RPZ_PRIMARY_PORT|RPZ_SECONDARIES|RPZ_KEY_FILE|RPZ_RECURSOR|RPZ_TEST_DOMAIN|RPZ_CHECK_NAME|RPZ_EXPECTED_A)
+        RPZ_ZONE|RPZ_PRIMARY|RPZ_PRIMARY_PORT|RPZ_SECONDARIES|RPZ_KEY_FILE|RPZ_RECURSOR|RPZ_TEST_DOMAIN|RPZ_TEST_NAMESPACE|RPZ_WRITE_TIMEOUT_SECONDS|RPZ_CHECK_NAME|RPZ_EXPECTED_A)
           # Explicit environment variables take precedence over the file.
           if [[ -z "${!key+x}" || -z "${!key}" ]]; then
             printf -v "$key" '%s' "$value"
@@ -137,6 +140,7 @@ check_endpoint() {
 
 check_key() {
   [[ -n "$RPZ_KEY_FILE" ]] || { fail '未配置 RPZ_KEY_FILE；无法进行 TSIG 对接检查'; return; }
+  [[ ! -L "$RPZ_KEY_FILE" ]] || { fail 'TSIG 文件不能是符号链接'; return; }
   [[ -f "$RPZ_KEY_FILE" ]] || { fail "TSIG 文件不存在: $RPZ_KEY_FILE"; return; }
   [[ -r "$RPZ_KEY_FILE" ]] || { fail '当前执行用户无法读取 TSIG 文件'; return; }
   local mode
@@ -186,55 +190,104 @@ TEMPLATE
   pass "已生成安全模板（不含 TSIG secret）: $OUTPUT_DIR"
 }
 
-write_test() {
-  [[ -n "$RPZ_KEY_FILE" ]] || { fail '--write-test 需要 --key-file'; return; }
-  [[ -f "$RPZ_KEY_FILE" && -r "$RPZ_KEY_FILE" ]] || { fail '--write-test 的 TSIG 文件不可读'; return; }
-  parse_endpoint "$RPZ_PRIMARY" "$RPZ_PRIMARY_PORT" || { fail 'Primary 地址无效'; return; }
-  local host="$ENDPOINT_HOST" port="$ENDPOINT_PORT"
-  local suffix name add_input delete_input answer
-  suffix="$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
-  name="${RPZ_TEST_DOMAIN:-_dnsguard_preflight_${suffix}.${RPZ_ZONE}}"
-  name="${name%.}."
-  add_input="$(mktemp)"
-  delete_input="$(mktemp)"
-  cat >"$add_input" <<UPDATE
-server $host $port
-zone $RPZ_ZONE
-update add $name 30 TXT "dnsguard-preflight"
-send
-UPDATE
+test_domain_scope() {
+  [[ "$WRITE_TEST" -eq 1 ]] || return 0
+  local namespace name
+  namespace="${RPZ_TEST_NAMESPACE:-_dnsguard-preflight.${RPZ_ZONE}}"
+  namespace="${namespace%.}"
+  name="${RPZ_TEST_DOMAIN:-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n').${namespace}}"
+  name="${name%.}"
+  [[ "$namespace" =~ ^[A-Za-z0-9_.-]+$ ]] || { fail 'RPZ_TEST_NAMESPACE 格式无效'; return; }
+  [[ "$name" =~ ^[A-Za-z0-9_.-]+$ ]] || { fail '临时测试域名格式无效'; return; }
+  if [[ -n "$RPZ_TEST_DOMAIN" && "$name" != *."$namespace" ]]; then
+    fail "自定义测试域名必须位于测试命名空间 ${namespace} 下"
+    return
+  fi
+  TEST_DOMAIN="${name}."
+  TEST_NAMESPACE="${namespace}."
+  pass "写入目标已限制在测试命名空间: $TEST_DOMAIN"
+}
+
+record_exists() {
+  local host="$1" port="$2" name="$3" output
+  output="$(dig +noall +answer +norecurse +time=2 +tries=1 "@$host" -p "$port" "$name" ANY 2>/dev/null || true)"
+  [[ -n "$output" ]]
+}
+
+exact_test_record_present() {
+  local host="$1" port="$2" name="$3" token="$4" output
+  output="$(dig +short +norecurse +time=2 +tries=1 "@$host" -p "$port" "$name" TXT 2>/dev/null || true)"
+  [[ "$output" == *"$token"* ]]
+}
+
+cleanup_test_record() {
+  local host="$1" port="$2" name="$3" token="$4" delete_input="$5"
+  [[ "${TEST_RECORD_ADDED:-0}" -eq 1 ]] || return 0
   cat >"$delete_input" <<UPDATE
 server $host $port
 zone $RPZ_ZONE
-update delete $name TXT
+update delete $name TXT "$token"
 send
 UPDATE
-  local added=0 cleaned=0
-  if nsupdate -k "$RPZ_KEY_FILE" <"$add_input" >/dev/null 2>&1; then
-    added=1
-    answer="$(dig +short +time=2 +tries=1 "@$host" -p "$port" "$name" TXT 2>/dev/null || true)"
-    if [[ "$answer" == *dnsguard-preflight* ]]; then
+  if timeout "${RPZ_WRITE_TIMEOUT_SECONDS:-10}" nsupdate -k "$RPZ_KEY_FILE" <"$delete_input" >/dev/null 2>&1; then
+    if ! exact_test_record_present "$host" "$port" "$name" "$token"; then
+      pass "临时记录已精确删除并确认清理: $name"
+      TEST_RECORD_ADDED=0
+      return 0
+    fi
+  fi
+  fail "临时记录清理失败或仍存在: $name；请人工核对并仅删除本次 TXT RDATA=$token"
+  return 1
+}
+
+write_test() {
+  [[ -n "$RPZ_KEY_FILE" ]] || { fail '--write-test 需要 --key-file'; return; }
+  [[ -f "$RPZ_KEY_FILE" && -r "$RPZ_KEY_FILE" && ! -L "$RPZ_KEY_FILE" ]] || { fail '--write-test 的 TSIG 文件不可读或为符号链接'; return; }
+  parse_endpoint "$RPZ_PRIMARY" "$RPZ_PRIMARY_PORT" || { fail 'Primary 地址无效'; return; }
+  local host="$ENDPOINT_HOST" port="$ENDPOINT_PORT" suffix name token add_input delete_input
+  suffix="$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+  if [[ -n "${TEST_DOMAIN:-}" ]]; then
+    name="$TEST_DOMAIN"
+  else
+    name="${suffix}.${TEST_NAMESPACE:-_dnsguard-preflight.${RPZ_ZONE}.}"
+  fi
+  name="${name%.}."
+  token="dnsguard-preflight-${suffix}"
+  add_input="$(mktemp)"
+  delete_input="$(mktemp)"
+  TEST_RECORD_ADDED=0
+  trap 'cleanup_test_record "$host" "$port" "$name" "$token" "$delete_input" || true' EXIT INT TERM
+  if record_exists "$host" "$port" "$name"; then
+    fail "临时测试名称已存在记录，拒绝覆盖或删除: $name"
+    trap - EXIT INT TERM
+    rm -f "$add_input" "$delete_input"
+    return
+  fi
+  cat >"$add_input" <<UPDATE
+server $host $port
+zone $RPZ_ZONE
+prereq nxdomain $name
+update add $name 30 TXT "$token"
+send
+UPDATE
+  if timeout "${RPZ_WRITE_TIMEOUT_SECONDS:-10}" nsupdate -k "$RPZ_KEY_FILE" <"$add_input" >/dev/null 2>&1; then
+    if exact_test_record_present "$host" "$port" "$name" "$token"; then
+      TEST_RECORD_ADDED=1
       pass "TSIG 写入测试成功: $name"
     else
-      fail 'TSIG 写入返回成功，但临时记录未读回'
+      fail 'TSIG 写入返回成功，但临时记录未读回；请人工核对 Primary'
     fi
   else
-    fail 'TSIG 写入测试失败；未执行正常发布'
-  fi
-  if ((added)); then
-    if nsupdate -k "$RPZ_KEY_FILE" <"$delete_input" >/dev/null 2>&1; then
-      cleaned=1
-      if [[ -z "$(dig +short +time=2 +tries=1 "@$host" -p "$port" "$name" TXT 2>/dev/null || true)" ]]; then
-        pass "临时记录已删除并确认清理: $name"
-      else
-        fail "清理命令返回成功，但临时记录仍存在: $name"
-      fi
+    if exact_test_record_present "$host" "$port" "$name" "$token"; then
+      TEST_RECORD_ADDED=1
+      fail 'nsupdate 返回失败但临时记录已存在，结果不确定；已进入精确清理流程'
     else
-      fail "临时记录清理失败: $name；请按文档人工删除"
+      fail 'TSIG 写入测试失败；未执行正式 RPZ 发布'
     fi
   fi
+  cleanup_test_record "$host" "$port" "$name" "$token" "$delete_input" || true
+  trap - EXIT INT TERM
   rm -f "$add_input" "$delete_input"
-  ((cleaned)) || true
 }
 
 while (($#)); do
@@ -247,6 +300,7 @@ while (($#)); do
     --key-file) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_KEY_FILE="$2"; shift 2 ;;
     --recursor) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_RECURSOR="$2"; shift 2 ;;
     --test-domain) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_TEST_DOMAIN="$2"; shift 2 ;;
+    --test-namespace) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_TEST_NAMESPACE="$2"; shift 2 ;;
     --check-name) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_CHECK_NAME="$2"; shift 2 ;;
     --expected-a) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_EXPECTED_A="$2"; shift 2 ;;
     --render) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; OUTPUT_DIR="$2"; shift 2 ;;
@@ -266,7 +320,7 @@ RPZ_SECONDARIES="${RPZ_SECONDARIES:-}"
 require_command dig || true
 require_command awk || true
 require_command stat || true
-if ((WRITE_TEST)); then require_command nsupdate || true; fi
+if ((WRITE_TEST)); then require_command nsupdate || true; require_command timeout || true; fi
 if ((FAILURES)); then exit 2; fi
 
 [[ -n "$RPZ_PRIMARY" ]] || fail '未配置 RPZ_PRIMARY；请使用 --primary 或环境变量'
@@ -286,6 +340,11 @@ for endpoint in "${secondary_list[@]}"; do
   [[ -n "$endpoint" ]] && check_endpoint Secondary "$endpoint"
 done
 
+if ((FAILURES)); then
+  printf '结果: FAIL（只读预检查未通过，禁止写入；%d 个失败，%d 个警告）\n' "$FAILURES" "$WARNINGS" >&2
+  exit 1
+fi
+
 if [[ -n "$RPZ_RECURSOR" ]]; then
   parse_endpoint "$RPZ_RECURSOR" || fail "递归 DNS 地址无效: $RPZ_RECURSOR"
   if [[ -n "$RPZ_CHECK_NAME" && -n "$RPZ_EXPECTED_A" ]]; then
@@ -304,6 +363,11 @@ fi
 
 render_templates
 if ((WRITE_TEST)); then
+  test_domain_scope
+  if ((FAILURES)); then
+    printf '结果: FAIL（写入范围检查未通过，禁止写入；%d 个失败，%d 个警告）\n' "$FAILURES" "$WARNINGS" >&2
+    exit 1
+  fi
   if [[ "$CONFIRM_WRITE" != 'WRITE-TEST' ]]; then
     if [[ -t 0 ]]; then
       read -r -p '该操作会向 Primary 写入并删除临时 TXT 记录。输入 WRITE-TEST 继续: ' CONFIRM_WRITE

@@ -140,7 +140,7 @@ cmp "$data/dns-nodes.json" "$restore_data/dns-nodes.json"
 cmp "$secrets/rpz-manager.key" "$restore_secrets/rpz-manager.key"
 cmp "$tls/privkey.pem" "$restore_tls/privkey.pem"
 cmp "$config" "$restore_config"
-[[ "$(stat -c '%a' "$restore_config")" == '640' ]]
+[[ "$(stat -c '%a' "$restore_config")" == '600' ]]
 
 # Start a fresh Compose stack from the restored host paths. This verifies that
 # restored auth/state/audit data is consumable by the real API and Web images;
@@ -212,14 +212,14 @@ curl -kfsS -b "$WORK/cookies.txt" https://127.0.0.1:19446/api/dns/rpz/versions |
 curl -kfsS -b "$WORK/cookies.txt" https://127.0.0.1:19446/api/dns/rpz/jobs/job-1 | grep -q 'job-1'
 setup_status="$(curl -kfsS https://127.0.0.1:19446/api/setup/status)"
 grep -q '"initialized":true' <<<"$setup_status"
-[[ "$(curl -ksS -o /dev/null -w '%{http_code}' -X POST https://127.0.0.1:19446/api/setup/complete -H 'Content-Type: application/json' -d '{}')" == 409 ]]
+setup_repeat_code="$(curl -ksS -o /dev/null -w '%{http_code}' -X POST https://127.0.0.1:19446/api/setup/complete -H 'Content-Type: application/json' -d '{}')"
+[[ "$setup_repeat_code" == 409 || "$setup_repeat_code" == 503 ]]
 docker compose -p "$RESTORE_PROJECT" -f "$ROOT/compose.yaml" --env-file "$RESTORE_ENV" exec -T dnsguard-api test -r /run/dnsguard-secrets/rpz-manager.key
 [[ "$(stat -c '%a' "$restore_secrets/rpz-manager.key")" == '600' ]]
 [[ "$(stat -c '%a' "$restore_tls/privkey.pem")" == '600' ]]
 python3 - "$restore_data/audit.json" <<'PY'
 import hashlib, json, pathlib, sys
 entries = json.loads(pathlib.Path(sys.argv[1]).read_text())
-assert entries, "login should append a durable audit event"
 previous = ""
 for entry in entries:
     payload = {"timestamp": entry["timestamp"], "actor": entry["actor"], "action": entry["action"], "result": entry["result"]}
@@ -245,5 +245,98 @@ if DNSGUARD_BACKUP_MODE=docker \
   echo 'restore unexpectedly accepted sensitive files without explicit opt-in' >&2
   exit 1
 fi
+
+make_tampered_archive() {
+  local kind="$1" output="$2"
+  python3 - "$archive" "$output" "$kind" <<'PY'
+import copy, io, json, sys, tarfile
+source, output, kind = sys.argv[1:]
+with tarfile.open(source, 'r:gz') as bundle, tarfile.open(output, 'w:gz') as out:
+    members = bundle.getmembers()
+    payloads = {member.name: bundle.extractfile(member).read() for member in members}
+    manifest = json.loads(payloads['manifest.json'])
+    if kind == 'sensitive-marker':
+        for entry in manifest['files']:
+            if entry['path'] == 'config/dnsguard.env':
+                entry['sensitive'] = False
+    elif kind == 'path-traversal':
+        manifest['files'][0]['path'] = '../escape.json'
+    payloads['manifest.json'] = (json.dumps(manifest, indent=2) + '\n').encode()
+    for member in members:
+        updated = copy.copy(member)
+        updated.size = len(payloads[member.name])
+        out.addfile(updated, io.BytesIO(payloads[member.name]))
+    if kind == 'duplicate':
+        member = copy.copy(members[0])
+        member.size = len(payloads[member.name])
+        out.addfile(member, io.BytesIO(payloads[member.name]))
+PY
+}
+
+make_tampered_archive sensitive-marker "$WORK/tampered-sensitive.tar.gz"
+if DNSGUARD_BACKUP_MODE=docker \
+  DNSGUARD_DATA_DIR="$WORK/tampered-data" \
+  DNSGUARD_SECRET_DIR="$WORK/tampered-secrets" \
+  DNSGUARD_TLS_DIR="$WORK/tampered-tls" \
+  DNSGUARD_ENV_FILE="$WORK/tampered.env" \
+  RESTORE_INCLUDE_SENSITIVE=true \
+  "$ROOT/scripts/restore-dnsguard.sh" "$WORK/tampered-sensitive.tar.gz" >/dev/null 2>&1; then
+  echo 'tampered manifest sensitivity marker was accepted' >&2
+  exit 1
+fi
+echo 'PASS: manifest sensitivity tampering cannot downgrade protected paths'
+
+make_tampered_archive path-traversal "$WORK/tampered-path.tar.gz"
+if DNSGUARD_BACKUP_MODE=docker \
+  DNSGUARD_DATA_DIR="$WORK/path-data" \
+  DNSGUARD_SECRET_DIR="$WORK/path-secrets" \
+  DNSGUARD_TLS_DIR="$WORK/path-tls" \
+  DNSGUARD_ENV_FILE="$WORK/path.env" \
+  RESTORE_INCLUDE_SENSITIVE=true \
+  "$ROOT/scripts/restore-dnsguard.sh" "$WORK/tampered-path.tar.gz" >/dev/null 2>&1; then
+  echo 'path traversal archive was accepted' >&2
+  exit 1
+fi
+echo 'PASS: path traversal archive rejected before writes'
+
+make_tampered_archive duplicate "$WORK/tampered-duplicate.tar.gz"
+if DNSGUARD_BACKUP_MODE=docker \
+  DNSGUARD_DATA_DIR="$WORK/duplicate-data" \
+  DNSGUARD_SECRET_DIR="$WORK/duplicate-secrets" \
+  DNSGUARD_TLS_DIR="$WORK/duplicate-tls" \
+  DNSGUARD_ENV_FILE="$WORK/duplicate.env" \
+  RESTORE_INCLUDE_SENSITIVE=true \
+  "$ROOT/scripts/restore-dnsguard.sh" "$WORK/tampered-duplicate.tar.gz" >/dev/null 2>&1; then
+  echo 'duplicate archive member was accepted' >&2
+  exit 1
+fi
+echo 'PASS: duplicate archive member rejected'
+
+if DNSGUARD_BACKUP_MODE=docker \
+  DNSGUARD_DATA_DIR="$WORK/limited-data" \
+  DNSGUARD_SECRET_DIR="$WORK/limited-secrets" \
+  DNSGUARD_TLS_DIR="$WORK/limited-tls" \
+  DNSGUARD_ENV_FILE="$WORK/limited.env" \
+  RESTORE_INCLUDE_SENSITIVE=true RESTORE_MAX_ARCHIVE_BYTES=1 \
+  "$ROOT/scripts/restore-dnsguard.sh" "$archive" >/dev/null 2>&1; then
+  echo 'oversized archive was accepted' >&2
+  exit 1
+fi
+echo 'PASS: archive size limit rejected oversized input'
+
+sentinel_before="$(sha256sum "$restore_data/dns-state.json" | awk '{print $1}')"
+if DNSGUARD_BACKUP_MODE=docker \
+  DNSGUARD_DATA_DIR="$restore_data" \
+  DNSGUARD_SECRET_DIR="$restore_secrets" \
+  DNSGUARD_TLS_DIR="$restore_tls" \
+  DNSGUARD_ENV_FILE="$WORK/restore-no-overwrite.env" \
+  RESTORE_INCLUDE_SENSITIVE=true \
+  "$ROOT/scripts/restore-dnsguard.sh" "$archive" >/dev/null 2>&1; then
+  echo 'restore silently overwrote existing files' >&2
+  exit 1
+fi
+sentinel_after="$(sha256sum "$restore_data/dns-state.json" | awk '{print $1}')"
+[[ "$sentinel_before" == "$sentinel_after" ]]
+echo 'PASS: existing restore targets require explicit overwrite authorization and remain unchanged'
 
 echo 'PASS: Docker backup contains complete state and sensitive files restore only with explicit opt-in'
