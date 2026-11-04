@@ -24,7 +24,8 @@ type DnsNodePanelProps = {
 };
 
 function nodeRoleLabel(role: string): string {
-  return role.includes("主") && !role.includes("辅") ? "主节点" : "辅节点";
+  const normalized = role.trim().toLowerCase();
+  return (normalized === "primary" || (role.includes("主") && !role.includes("辅"))) ? "主节点" : "辅节点";
 }
 
 function nodeIsPrimary(node: DnsNode): boolean {
