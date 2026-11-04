@@ -6,6 +6,17 @@ BIND_DIR="$ROOT_DIR/tests/docker-production-bind"
 BIND_RUNTIME="$BIND_DIR/runtime"
 BIND_PROJECT="dnsguard-production-bind"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+BIND_NETWORK_NAME="${BIND_NETWORK_NAME:-dnsguard-prod-bind-$RUN_ID}"
+DNSGUARD_INTERNAL_NETWORK_NAME="${DNSGUARD_INTERNAL_NETWORK_NAME:-dnsguard-prod-internal-$RUN_ID}"
+DNSGUARD_INTERNAL_SUBNET="${DNSGUARD_INTERNAL_SUBNET:-172.30.0.0/24}"
+BIND_PRIMARY_CONTAINER="${BIND_PRIMARY_CONTAINER:-dnsguard-prod-bind-primary-$RUN_ID}"
+BIND_SECONDARY_1_CONTAINER="${BIND_SECONDARY_1_CONTAINER:-dnsguard-prod-bind-secondary-1-$RUN_ID}"
+BIND_SECONDARY_2_CONTAINER="${BIND_SECONDARY_2_CONTAINER:-dnsguard-prod-bind-secondary-2-$RUN_ID}"
+BIND_PRIMARY_HOST_PORT="${BIND_PRIMARY_HOST_PORT:-17353}"
+BIND_SECONDARY_1_HOST_PORT="${BIND_SECONDARY_1_HOST_PORT:-17354}"
+BIND_SECONDARY_2_HOST_PORT="${BIND_SECONDARY_2_HOST_PORT:-17355}"
+export BIND_NETWORK_NAME DNSGUARD_INTERNAL_NETWORK_NAME DNSGUARD_INTERNAL_SUBNET BIND_PRIMARY_CONTAINER BIND_SECONDARY_1_CONTAINER BIND_SECONDARY_2_CONTAINER
+export BIND_PRIMARY_HOST_PORT BIND_SECONDARY_1_HOST_PORT BIND_SECONDARY_2_HOST_PORT
 PROJECT="dnsguard-production-acceptance"
 RUNTIME="$ROOT_DIR/tests/docker-production-runtime"
 DATA_DIR="$RUNTIME/data"
@@ -16,7 +27,8 @@ ENV_FILE="$RUNTIME/dnsguard.env"
 KEY_FILE="$SECRET_DIR/rpz-manager.key"
 COOKIE_JAR="$RUNTIME/cookies.txt"
 REPORT="$RUNTIME/acceptance-report.md"
-BASE_URL="https://127.0.0.1:18443"
+WEB_HOST_PORT="${DNSGUARD_WEB_PORT:-19443}"
+BASE_URL="https://127.0.0.1:$WEB_HOST_PORT"
 COMPOSE=(docker compose -p "$PROJECT" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/tests/docker-production-bind-net.yaml")
 declare -a BIND_COMPOSE=(docker compose -p "$BIND_PROJECT" -f "$BIND_DIR/compose.yaml")
 
@@ -136,13 +148,13 @@ EOF
   chown -R 53:53 "$BIND_RUNTIME"/*-data "$BIND_RUNTIME"/*-logs
   bind_compose up -d >/dev/null
   for _ in $(seq 1 60); do
-    if docker exec prod-bind-primary dig +tcp +time=1 +tries=1 @127.0.0.1 rpz.local SOA +short 2>/dev/null | grep -q '[0-9]'; then
+    if docker exec "$BIND_PRIMARY_CONTAINER" dig +tcp +time=1 +tries=1 @127.0.0.1 rpz.local SOA +short 2>/dev/null | grep -q '[0-9]'; then
       break
     fi
     sleep 0.5
   done
-  docker exec prod-bind-primary dig +tcp +time=2 +tries=1 @127.0.0.1 rpz.local SOA +short
-  for container in prod-bind-secondary-1 prod-bind-secondary-2; do
+  docker exec "$BIND_PRIMARY_CONTAINER" dig +tcp +time=2 +tries=1 @127.0.0.1 rpz.local SOA +short
+  for container in "$BIND_SECONDARY_1_CONTAINER" "$BIND_SECONDARY_2_CONTAINER"; do
     docker exec "$container" rndc retransfer rpz.local >/dev/null 2>&1 || true
     for _ in $(seq 1 60); do
       if docker exec "$container" dig +tcp +time=1 +tries=1 @127.0.0.1 rpz.local SOA +short 2>/dev/null | grep -q '[0-9]'; then
@@ -157,6 +169,17 @@ EOF
   cp "$BIND_RUNTIME/keys/rpz-manager.key" "$KEY_FILE"
   chmod 0640 "$KEY_FILE"
   chown 10001:10001 "$KEY_FILE"
+  cat >"$DATA_DIR/initialization.json" <<'EOF'
+{
+  "status": "completed",
+  "version": 1,
+  "completedAt": "2026-01-01T00:00:00Z",
+  "username": "admin",
+  "zone": "rpz.local",
+  "primary": "bind-primary",
+  "secondaryCount": 2
+}
+EOF
   openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
     -keyout "$TLS_DIR/privkey.pem" -out "$TLS_DIR/fullchain.pem" \
     -subj '/CN=localhost' >/dev/null 2>&1
@@ -174,9 +197,9 @@ auth = {
     'mustChangePassword': False,
 }
 nodes = [
-    {'id':'primary-1','name':'bind-primary','role':'primary','address':'172.31.0.10:53'},
-    {'id':'secondary-1','name':'bind-secondary-1','role':'secondary','address':'172.31.0.11:53'},
-    {'id':'secondary-2','name':'bind-secondary-2','role':'secondary','address':'172.31.0.12:53'},
+    {'id':'primary-1','name':'bind-primary','role':'primary','address':'172.32.0.10:53'},
+    {'id':'secondary-1','name':'bind-secondary-1','role':'secondary','address':'172.32.0.11:53'},
+    {'id':'secondary-2','name':'bind-secondary-2','role':'secondary','address':'172.32.0.12:53'},
 ]
 state = {'nodes':nodes, 'rules':[], 'published':[], 'versions':[], 'rulesRevision':0}
 files = {
@@ -204,11 +227,12 @@ AUTH_SECRET=$AUTH_SECRET
 MONITORING_TOKEN=$MONITORING_TOKEN
 AUTH_FILE=/var/lib/dnsguard/auth.json
 DNS_NODE_CONFIG_FILE=/var/lib/dnsguard/dns-nodes.json
-DNS_NODE_ALLOWED_CIDRS=172.31.0.0/24
-DNS_NODE_ADDRESSES=primary-1=172.31.0.10:53,secondary-1=172.31.0.11:53,secondary-2=172.31.0.12:53
+INITIALIZATION_FILE=/var/lib/dnsguard/initialization.json
+DNS_NODE_ALLOWED_CIDRS=172.32.0.0/24
+DNS_NODE_ADDRESSES=primary-1=172.32.0.10:53,secondary-1=172.32.0.11:53,secondary-2=172.32.0.12:53
 RPZ_ZONE=rpz.local
 RPZ_PUBLISH_MODE=nsupdate
-RPZ_PRIMARY=172.31.0.10
+RPZ_PRIMARY=172.32.0.10
 RPZ_PRIMARY_PORT=53
 RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key
 RPZ_ARTIFACT_FILE=/var/lib/dnsguard/rpz/rpz.local.db
@@ -238,11 +262,13 @@ start_stack() {
   export DNSGUARD_SECRET_DIR="$SECRET_DIR"
   export DNSGUARD_TLS_DIR="$TLS_DIR"
   export DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR"
-  export DNSGUARD_WEB_PORT=18443
+  export DNSGUARD_WEB_PORT="$WEB_HOST_PORT"
   export DNSGUARD_WEB_BIND_IP=127.0.0.1
   export DNSGUARD_API_IMAGE=dnsguard-api:1.0.0
   export DNSGUARD_WEB_IMAGE=dnsguard-web:1.0.0
-  compose build
+  if [[ "${SKIP_BUILD:-false}" != true ]]; then
+    compose build
+  fi
   compose up -d
   for _ in $(seq 1 60); do
     if curl -kfsS "$BASE_URL/api/health" >/dev/null 2>&1; then return 0; fi
@@ -331,9 +357,9 @@ case_real_publish_and_transfer() {
     sleep 1
   done
   [[ "$status" == succeeded || "$status" == published ]]
-  primary_serial="$(docker exec prod-bind-primary dig +short @127.0.0.1 rpz.local SOA | awk '{print $3}')"
-  secondary_one="$(docker exec prod-bind-secondary-1 dig +short @127.0.0.1 rpz.local SOA | awk '{print $3}')"
-  secondary_two="$(docker exec prod-bind-secondary-2 dig +short @127.0.0.1 rpz.local SOA | awk '{print $3}')"
+  primary_serial="$(docker exec "$BIND_PRIMARY_CONTAINER" dig +short @127.0.0.1 rpz.local SOA | awk '{print $3}')"
+  secondary_one="$(docker exec "$BIND_SECONDARY_1_CONTAINER" dig +short @127.0.0.1 rpz.local SOA | awk '{print $3}')"
+  secondary_two="$(docker exec "$BIND_SECONDARY_2_CONTAINER" dig +short @127.0.0.1 rpz.local SOA | awk '{print $3}')"
   echo "job_status=$status primary_serial=$primary_serial secondary_1_serial=$secondary_one secondary_2_serial=$secondary_two"
   [[ -n "$primary_serial" && "$primary_serial" == "$secondary_one" && "$primary_serial" == "$secondary_two" ]]
   echo 'nsupdate accepted by Primary and all three nodes reported the same SOA Serial'
@@ -341,17 +367,17 @@ case_real_publish_and_transfer() {
 
 case_actual_rpz_policy_effects() {
   local answer_one answer_two
-  answer_one="$(docker exec prod-bind-secondary-1 dig +short +recurse @127.0.0.1 redirect.app.test A)"
-  answer_two="$(docker exec prod-bind-secondary-2 dig +short +recurse @127.0.0.1 redirect.app.test A)"
+  answer_one="$(docker exec "$BIND_SECONDARY_1_CONTAINER" dig +short +recurse @127.0.0.1 redirect.app.test A)"
+  answer_two="$(docker exec "$BIND_SECONDARY_2_CONTAINER" dig +short +recurse @127.0.0.1 redirect.app.test A)"
   echo "legacy_authoritative_answer_secondary_1=$answer_one secondary_2=$answer_two"
   [[ "$answer_one" == '192.0.2.20' && "$answer_two" == '192.0.2.20' ]]
-  wait_bind_answer prod-bind-primary redirect.app.test 192.0.2.55
-  wait_bind_answer prod-bind-secondary-1 redirect.app.test 192.0.2.55
-  wait_bind_answer prod-bind-secondary-2 redirect.app.test 192.0.2.55
-  wait_bind_answer prod-bind-primary foo.wild.app.test 192.0.2.66
-  wait_bind_answer prod-bind-secondary-1 foo.wild.app.test 192.0.2.66
-  wait_bind_answer prod-bind-secondary-2 foo.wild.app.test 192.0.2.66
-  wait_bind_answer prod-bind-primary passthru.app.test 192.0.2.10
+  wait_bind_answer "$BIND_PRIMARY_CONTAINER" redirect.app.test 192.0.2.55
+  wait_bind_answer "$BIND_SECONDARY_1_CONTAINER" redirect.app.test 192.0.2.55
+  wait_bind_answer "$BIND_SECONDARY_2_CONTAINER" redirect.app.test 192.0.2.55
+  wait_bind_answer "$BIND_PRIMARY_CONTAINER" foo.wild.app.test 192.0.2.66
+  wait_bind_answer "$BIND_SECONDARY_1_CONTAINER" foo.wild.app.test 192.0.2.66
+  wait_bind_answer "$BIND_SECONDARY_2_CONTAINER" foo.wild.app.test 192.0.2.66
+  wait_bind_answer "$BIND_PRIMARY_CONTAINER" passthru.app.test 192.0.2.10
   echo 'exact A redirect, wildcard A redirect, and CNAME passthru verified after RPZ reload'
 }
 
@@ -375,7 +401,7 @@ case_security_failure_without_auth() {
   sed -i 's/^AUTH_ENABLED=true$/AUTH_ENABLED=false/' "$bad_env"
   DNSGUARD_ENV_FILE="$bad_env" DNSGUARD_DATA_DIR="$RUNTIME/bad-data" \
     DNSGUARD_SECRET_DIR="$SECRET_DIR" DNSGUARD_TLS_DIR="$TLS_DIR" \
-    DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR" DNSGUARD_WEB_PORT=18444 \
+    DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR" DNSGUARD_WEB_PORT="$((WEB_HOST_PORT + 1))" \
     docker compose -p "$bad_project" -f "$ROOT_DIR/compose.yaml" \
     --env-file "$bad_env" up -d >/dev/null 2>&1 || true
   sleep 3
@@ -401,7 +427,7 @@ write_report() {
     echo '# DNSGuard V1.0 Docker Compose 生产部署验收报告'
     echo
     echo "- 执行时间（UTC）：$RUN_ID"
-    echo '- 隔离 BIND：tests/docker-production-bind，172.31.0.0/24'
+    echo '- 隔离 BIND：tests/docker-production-bind，172.32.0.0/24'
     echo '- 生产连接：无；生产 BIND、生产 TSIG 未访问'
     echo
     echo '| 用例 | 结果 | 证据 |'

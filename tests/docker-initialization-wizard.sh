@@ -4,6 +4,18 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIND_DIR="$ROOT_DIR/tests/docker-production-bind"
 BIND_RUNTIME="$BIND_DIR/runtime"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+BIND_NETWORK_NAME="${BIND_NETWORK_NAME:-dnsguard-init-bind-$RUN_ID}"
+DNSGUARD_INTERNAL_NETWORK_NAME="${DNSGUARD_INTERNAL_NETWORK_NAME:-dnsguard-init-internal-$RUN_ID}"
+DNSGUARD_INTERNAL_SUBNET="${DNSGUARD_INTERNAL_SUBNET:-172.30.1.0/24}"
+BIND_PRIMARY_CONTAINER="${BIND_PRIMARY_CONTAINER:-dnsguard-init-bind-primary-$RUN_ID}"
+BIND_SECONDARY_1_CONTAINER="${BIND_SECONDARY_1_CONTAINER:-dnsguard-init-bind-secondary-1-$RUN_ID}"
+BIND_SECONDARY_2_CONTAINER="${BIND_SECONDARY_2_CONTAINER:-dnsguard-init-bind-secondary-2-$RUN_ID}"
+BIND_PRIMARY_HOST_PORT="${BIND_PRIMARY_HOST_PORT:-17453}"
+BIND_SECONDARY_1_HOST_PORT="${BIND_SECONDARY_1_HOST_PORT:-17454}"
+BIND_SECONDARY_2_HOST_PORT="${BIND_SECONDARY_2_HOST_PORT:-17455}"
+export BIND_NETWORK_NAME DNSGUARD_INTERNAL_NETWORK_NAME DNSGUARD_INTERNAL_SUBNET BIND_PRIMARY_CONTAINER BIND_SECONDARY_1_CONTAINER BIND_SECONDARY_2_CONTAINER
+export BIND_PRIMARY_HOST_PORT BIND_SECONDARY_1_HOST_PORT BIND_SECONDARY_2_HOST_PORT
 BIND_PROJECT="dnsguard-init-bind"
 PROJECT="dnsguard-init-wizard"
 RUNTIME="$ROOT_DIR/tests/docker-initialization-runtime"
@@ -12,7 +24,8 @@ SECRET_DIR="$RUNTIME/secrets"
 TLS_DIR="$RUNTIME/tls"
 ENV_FILE="$RUNTIME/dnsguard.env"
 REPORT="$RUNTIME/acceptance-report.md"
-BASE_URL="https://127.0.0.1:18444"
+WEB_HOST_PORT="${DNSGUARD_WEB_PORT:-19444}"
+BASE_URL="https://127.0.0.1:$WEB_HOST_PORT"
 COMPOSE=(docker compose -p "$PROJECT" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/tests/docker-production-bind-net.yaml")
 BIND_COMPOSE=(docker compose -p "$BIND_PROJECT" -f "$BIND_DIR/compose.yaml")
 declare -a NAMES=() STATUS=() EVIDENCE=()
@@ -48,8 +61,8 @@ EOF
   chmod -R 0775 "$BIND_RUNTIME"/*-data "$BIND_RUNTIME"/*-logs
   chown -R 53:53 "$BIND_RUNTIME"/*-data "$BIND_RUNTIME"/*-logs
   bind_compose up -d >/dev/null
-  for _ in $(seq 1 60); do docker exec prod-bind-primary dig +tcp +time=1 +tries=1 @127.0.0.1 rpz.local SOA +short 2>/dev/null | grep -q '[0-9]' && break; sleep .5; done
-  docker exec prod-bind-primary dig +tcp +time=2 +tries=1 @127.0.0.1 rpz.local SOA +short >/dev/null
+  for _ in $(seq 1 60); do docker exec "$BIND_PRIMARY_CONTAINER" dig +tcp +time=1 +tries=1 @127.0.0.1 rpz.local SOA +short 2>/dev/null | grep -q '[0-9]' && break; sleep .5; done
+  docker exec "$BIND_PRIMARY_CONTAINER" dig +tcp +time=2 +tries=1 @127.0.0.1 rpz.local SOA +short >/dev/null
   mkdir -p "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR"
   cp "$BIND_RUNTIME/keys/rpz-manager.key" "$SECRET_DIR/rpz-manager.key"; chown 10001:10001 "$SECRET_DIR/rpz-manager.key"; chmod 0640 "$SECRET_DIR/rpz-manager.key"
   printf '%s\n' 'setup-bootstrap-token-012345678901234567890' >"$SECRET_DIR/bootstrap.token"; chown 10001:10001 "$SECRET_DIR/bootstrap.token"; chmod 0600 "$SECRET_DIR/bootstrap.token"
@@ -66,10 +79,10 @@ DNS_NODE_CONFIG_FILE=/var/lib/dnsguard/dns-nodes.json
 INITIALIZATION_FILE=/var/lib/dnsguard/initialization.json
 BOOTSTRAP_TOKEN_FILE=/run/dnsguard-secrets/bootstrap.token
 BOOTSTRAP_KEY_DIR=/run/dnsguard-secrets
-DNS_NODE_ALLOWED_CIDRS=172.31.0.0/24
+DNS_NODE_ALLOWED_CIDRS=172.32.0.0/24
 RPZ_ZONE=rpz.local
 RPZ_PUBLISH_MODE=nsupdate
-RPZ_PRIMARY=172.31.0.10
+RPZ_PRIMARY=172.32.0.10
 RPZ_PRIMARY_PORT=53
 RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key
 RPZ_ARTIFACT_FILE=/var/lib/dnsguard/rpz/rpz.local.db
@@ -85,9 +98,11 @@ EOF
 }
 
 start() {
-  export DNSGUARD_ENV_FILE="$ENV_FILE" DNSGUARD_DATA_DIR="$DATA_DIR" DNSGUARD_SECRET_DIR="$SECRET_DIR" DNSGUARD_TLS_DIR="$TLS_DIR" DNSGUARD_WEB_PORT=18444 DNSGUARD_WEB_BIND_IP=127.0.0.1
+  export DNSGUARD_ENV_FILE="$ENV_FILE" DNSGUARD_DATA_DIR="$DATA_DIR" DNSGUARD_SECRET_DIR="$SECRET_DIR" DNSGUARD_TLS_DIR="$TLS_DIR" DNSGUARD_WEB_PORT="$WEB_HOST_PORT" DNSGUARD_WEB_BIND_IP=127.0.0.1
   export DNSGUARD_API_IMAGE=dnsguard-api:1.0.0 DNSGUARD_WEB_IMAGE=dnsguard-web:1.0.0
-  compose build >/dev/null
+  if [[ "${SKIP_BUILD:-false}" != true ]]; then
+    compose build >/dev/null
+  fi
   compose up -d >/dev/null
   for _ in $(seq 1 60); do curl -kfsS "$BASE_URL/api/health" >/dev/null 2>&1 && return; sleep 1; done
   compose logs --no-color; return 1
@@ -102,7 +117,7 @@ case_bad_token() {
 
 payload() {
   cat <<EOF
-{"username":"admin","password":"a-strong-setup-password","zone":"rpz.local","primary":{"name":"bind-primary","role":"primary","address":"172.31.0.10:53"},"secondaries":[{"name":"bind-secondary-1","role":"secondary","address":"172.31.0.11:53"},{"name":"bind-secondary-2","role":"secondary","address":"172.31.0.12:53"}],"tsigKeyPath":"/run/dnsguard-secrets/rpz-manager.key","writeTest":true}
+{"username":"admin","password":"a-strong-setup-password","zone":"rpz.local","primary":{"name":"bind-primary","role":"primary","address":"172.32.0.10:53"},"secondaries":[{"name":"bind-secondary-1","role":"secondary","address":"172.32.0.11:53"},{"name":"bind-secondary-2","role":"secondary","address":"172.32.0.12:53"}],"tsigKeyPath":"/run/dnsguard-secrets/rpz-manager.key","writeTest":true}
 EOF
 }
 
@@ -131,7 +146,7 @@ case_gate_and_recreate() {
 
 write_report() {
   mkdir -p "$RUNTIME"
-  { echo '# DNSGuard Web 首次初始化向导 Docker 验收报告'; echo; echo '- 隔离 BIND：tests/docker-production-bind，172.31.0.0/24'; echo '- 生产连接：无'; echo; echo '| 用例 | 结果 | 证据 |'; echo '|---|---|---|'; for i in "${!NAMES[@]}"; do echo "| ${NAMES[$i]} | ${STATUS[$i]} | \`${EVIDENCE[$i]}\` |"; done; } >"$REPORT"
+  { echo '# DNSGuard Web 首次初始化向导 Docker 验收报告'; echo; echo '- 隔离 BIND：tests/docker-production-bind，172.32.0.0/24'; echo '- 生产连接：无'; echo; echo '| 用例 | 结果 | 证据 |'; echo '|---|---|---|'; for i in "${!NAMES[@]}"; do echo "| ${NAMES[$i]} | ${STATUS[$i]} | \`${EVIDENCE[$i]}\` |"; done; } >"$REPORT"
 }
 
 cleanup() {

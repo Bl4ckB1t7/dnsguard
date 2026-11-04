@@ -1,130 +1,244 @@
-# DNSGuard Docker Compose 生产部署
+# DNSGuard v1.0.0 Docker Compose 交付手册
 
-Docker Compose 是 DNSGuard 的推荐生产部署方式。Compose 只运行 DNSGuard 控制面：`dnsguard-api` 和 `dnsguard-web`。生产 BIND Primary/Secondary 必须继续独立运行在现有主机或 DNS 集群中，不放入这个 Compose 项目。
+Docker Compose 是 DNSGuard 的推荐生产部署方式。Compose 只运行 DNSGuard
+控制面：`dnsguard-api` 和 `dnsguard-web`。生产 BIND Primary/Secondary 必须继续
+独立运行，不放入这个 Compose 项目，也不由 DNSGuard 代理客户端 DNS 查询。
 
-## 前置条件
+## 1. 服务器要求
 
-- Docker Engine 和 Docker Compose Plugin。
-- 到生产 BIND Primary 的 TCP/UDP 53 动态更新和 SOA 查询连通性。
-- 到所有 Secondary 的 SOA 查询连通性。
-- 生产 RPZ TSIG key 文件；本项目不会生成、修改或安装 BIND key。
-- HTTPS 证书和私钥。
-- `python3`（仅用于安全初始化检查，不需要 Go、Node.js 或 npm）。
+- Linux x86_64 主机，建议 Debian 12 或 Ubuntu 22.04/24.04。
+- Docker Engine 24+ 和 Docker Compose Plugin 2.20+。
+- `python3`、`openssl`、`curl` 和 `install`；不需要 Go、Node.js、npm、BIND 或 systemd。
+- 到 Primary 的 TCP/UDP 53 连通性以及到全部 Secondary 的 SOA 查询连通性。
+- 生产 RPZ TSIG key 文件和 HTTPS 证书/私钥。
+- 管理入口只允许从管理网段访问；不要把管理端口直接暴露到公网。
 
-目标服务器不需要安装 Go、Node.js、npm、bind9-utils 或 systemd 服务。
+## 2. 获取正式版本
 
-## 首次安装
+发布后固定使用 Git Tag，不要直接跟随 `main`：
 
 ```bash
 git clone https://github.com/Bl4ckB1t7/dnsguard.git
 cd dnsguard
-cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
+git checkout v1.0.0
 ```
 
-编辑 `deploy/docker/dnsguard.env`，至少替换 `AUTH_SECRET`、`MONITORING_TOKEN`、`DNS_NODE_ADDRESSES`、`DNS_NODE_ALLOWED_CIDRS`、`RPZ_PRIMARY` 和 `RPZ_PRIMARY_PORT`。
+如果使用内部镜像仓库，也应固定镜像 digest 或已批准的版本号，不使用 `latest`。
 
-准备生产文件：
+## 3. 准备配置和密钥
 
 ```bash
-install -d -m 0750 secrets tls bind-logs
+cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
+install -d -m 0750 docker-data secrets tls bind-logs
+chmod 0640 deploy/docker/dnsguard.env
+```
+
+编辑 `deploy/docker/dnsguard.env`，至少设置：
+
+- `AUTH_SECRET`、`MONITORING_TOKEN`：每个环境独立的随机值，至少 32 字符；
+- `DNS_NODE_ADDRESSES`、`DNS_NODE_ALLOWED_CIDRS`；
+- `RPZ_ZONE`、`RPZ_PRIMARY`、`RPZ_PRIMARY_PORT`；
+- `RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key`；
+- `TRUSTED_PROXY_CIDRS` 和 HTTPS 反向代理选项（如使用企业入口）。
+
+不要把真实值写入 Git：
+
+```bash
+openssl rand -hex 32
+openssl rand -hex 32
 install -m 0640 PATH_TO_PRODUCTION_RPZ_KEY secrets/rpz-manager.key
+install -m 0644 PATH_TO_FULLCHAIN_PEM tls/fullchain.pem
+install -o 101 -g 101 -m 0640 PATH_TO_PRIVATE_KEY tls/privkey.pem
 umask 077
 openssl rand -hex 32 > secrets/bootstrap.token
 chown 10001:10001 secrets/bootstrap.token
 chmod 0600 secrets/bootstrap.token
-install -m 0644 PATH_TO_FULLCHAIN_PEM tls/fullchain.pem
-install -o 101 -g 101 -m 0640 PATH_TO_PRIVATE_KEY tls/privkey.pem
 ```
 
-运行安全初始化：
+TSIG key、Bootstrap Token、证书和私钥只通过受保护的 bind mount 进入容器；项目不会
+生成或修改生产 BIND 的 `named.conf`、TSIG 配置或服务状态。
+
+## 4. 初始化、启动和健康检查
 
 ```bash
 ./scripts/docker-init.sh
+docker compose up -d
+docker compose ps
+docker compose logs --tail=200 dnsguard-api
+docker compose logs --tail=200 dnsguard-web
 ```
 
-初始化脚本会校验生产参数、构建固定版本镜像并设置 UID/GID `10001:10001` 权限。首次启动不再通过终端写入管理员密码；浏览器会显示 Web 初始化向导，Bootstrap Token 只作为一次性门禁使用。向导会创建 bcrypt 管理员认证、Primary/Secondary 配置和初始化状态。它不会覆盖已有认证、节点、规则、审计、版本、发布任务或 TSIG 文件，也不会生成或修改生产 BIND 的 TSIG 配置。已有 `auth.json` 和 `dns-nodes.json` 的 systemd/Docker 部署会被识别为已初始化，不会强制重新初始化。
-
-启动：
+默认只有 Web 发布宿主机 443，API 没有宿主机端口。可用 Compose 插值修改入口：
 
 ```bash
+DNSGUARD_WEB_BIND_IP=127.0.0.1 DNSGUARD_WEB_PORT=8443 docker compose up -d
+```
+
+访问 `https://管理地址/`。`/api/health` 只用于健康检查；管理 API 仍需要认证。
+如果 443 已由企业 HTTPS 入口占用，使用反向代理并将 `DNSGUARD_WEB_PORT` 绑定到
+管理网卡的内部端口，禁止使用明文 HTTP 管理页面。
+
+容器重建不会丢失 `docker-data/`，也不会重新开放初始化向导：
+
+```bash
+docker compose down
 docker compose up -d
 docker compose ps
 ```
 
-首次访问 HTTPS 页面时，输入部署终端生成的 Bootstrap Token。向导会先执行只读 SOA/Zone/Serial 检查，再执行一次明确告知影响的受控 TSIG 写权限检查：向 Primary Zone 写入随机临时 TXT 记录并立即删除。只有写入和清理均成功，才会开放 RPZ 发布。Token 不会出现在页面响应、日志或 Git 中；初始化完成后即使 token 文件仍由只读 Secret Mount 提供，向导也不会再次开放。
+## 5. Web 首次初始化向导
 
-默认只有 Web 容器发布宿主机 443，API 没有 `ports` 配置，只能通过内部网络被 Nginx 访问。若 443 已由企业入口占用，可设置 `DNSGUARD_WEB_PORT=8443`，再由企业 HTTPS 反向代理转发；浏览器到 Web 入口仍必须使用 HTTPS。
+1. 从部署终端读取 `secrets/bootstrap.token`，不要通过聊天、日志或 URL 传递。
+2. 在浏览器向导输入一次性 Bootstrap Token。
+3. 设置管理员用户名和至少 12 位的管理员密码。
+4. 添加一个 `primary` 和至少一个 `secondary` 节点；Primary 角色不能填成 Secondary。
+5. 选择受保护目录中的 TSIG key，系统不会回显完整密钥。
+6. 确认 RPZ Zone、Primary/Secondary 地址后执行检查。
 
-## 持久化和权限
+向导先做只读 SOA、Zone、Serial 和网络检查。勾选 TSIG 写权限检查后，系统会在
+Primary RPZ Zone 写入随机临时 TXT 记录，然后立即删除。该步骤会真实修改一次
+Primary，页面必须明确展示影响；如果写入成功但清理失败，不得继续初始化，应使用
+相同 TSIG 人工删除提示中的临时记录并重新核对 Zone。
 
-默认 Bind Mount：
+只有所有检查通过，RPZ 发布门禁才会打开。初始化完成后 Bootstrap Token 立即失效；
+重复初始化、并发抢占和容器重建都必须被拒绝。初始化失败时不要删除 JSON 状态，先
+查看 `docker compose logs dnsguard-api` 和 Primary 的审计/Zone 状态，再修正配置重试。
 
-```text
-docker-data/     JSON 状态、节点、认证、审计、版本、任务、Telegram、RPZ 产物
-secrets/         TSIG key，只读挂载到 API
-tls/             Web HTTPS 证书，只读挂载到 Nginx
-bind-logs/       BIND RPZ 日志，只读挂载到 API
-```
+初始化后可在已认证后台修改管理员密码、节点配置和 TSIG 路径。任何变更都需要经过
+认证、CSRF 校验并留下审计记录。
 
-API 以非 root `10001:10001` 运行，根文件系统只读，仅 `docker-data/` 可写。Web 根文件系统只读，Nginx 缓存、运行时 PID 和临时目录使用 tmpfs。Compose 启用 `no-new-privileges`、丢弃 Linux capabilities、进程/内存/CPU 限制和 Docker 日志轮转。
+## 6. 持久化数据和权限
 
-不要提交 `deploy/docker/dnsguard.env`、`docker-data/`、`secrets/`、`tls/` 或 `bind-logs/`。
+| 宿主机目录 | 容器路径 | 内容 |
+|---|---|---|
+| `docker-data/` | `/var/lib/dnsguard` | 规则、节点、认证、审计、版本、发布任务、初始化状态、Telegram、RPZ 产物及轮转备份 |
+| `secrets/` | `/run/dnsguard-secrets` | TSIG key、Bootstrap Token，只读挂载 |
+| `tls/` | `/run/dnsguard-tls` | Web HTTPS 证书和私钥，只读挂载 |
+| `bind-logs/` | `/mnt/bind-logs` | 可选的 BIND RPZ 日志，只读挂载 |
 
-## 日常运维
+API 以 `10001:10001` 运行，Web 以 `101:101` 运行；根文件系统只读，Compose 启用
+`no-new-privileges`、丢弃 capabilities、资源限制和日志轮转。不要删除 `docker-data`
+来处理发布异常。
+
+## 7. 备份
+
+Docker 备份必须在**宿主机**执行，不能直接把 `/var/lib/dnsguard` 当作宿主机路径。
+备份脚本的 Docker 模式会读取 bind mount 的真实目录，并递归覆盖规则、节点、认证、
+审计及轮转文件、初始化状态、发布任务、版本、Telegram 配置和 RPZ 产物；不会把
+`.lock`、`.tmp` 或 `.pid` 文件恢复回去。
+
+只备份可重建的 DNSGuard 状态：
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 dnsguard-api
-docker compose logs --tail=200 dnsguard-web
-curl -k https://DNSGUARD_DOMAIN/api/health
-docker compose restart
 docker compose stop
-docker compose start
+BACKUP_DIR=/secure/backup/dnsguard \
+DNSGUARD_BACKUP_MODE=docker \
+DNSGUARD_DATA_DIR="$PWD/docker-data" \
+DNSGUARD_SECRET_DIR="$PWD/secrets" \
+DNSGUARD_TLS_DIR="$PWD/tls" \
+./scripts/backup-dnsguard.sh
 ```
 
-DNSGuard 停止时，BIND 继续使用当前已加载 Zone 独立提供解析。
+需要同时备份 TSIG 和 HTTPS 私钥时，必须显式启用敏感备份，并将归档复制到受控的
+密钥备份系统：
 
-## 备份、升级和回滚
+```bash
+BACKUP_INCLUDE_SENSITIVE=true \
+BACKUP_DIR=/secure/backup/dnsguard-sensitive \
+DNSGUARD_BACKUP_MODE=docker \
+DNSGUARD_DATA_DIR="$PWD/docker-data" \
+DNSGUARD_SECRET_DIR="$PWD/secrets" \
+DNSGUARD_TLS_DIR="$PWD/tls" \
+./scripts/backup-dnsguard.sh
+chmod 0600 /secure/backup/dnsguard-sensitive/dnsguard-*.tar.gz
+sha256sum /secure/backup/dnsguard-sensitive/dnsguard-*.tar.gz > /secure/backup/dnsguard-sensitive/SHA256SUMS
+```
+
+归档自身带有每个文件的 SHA-256 manifest；外部 `SHA256SUMS` 用于传输完整性。备份
+目录应为 `0700`，归档应为 `0600`。默认不备份 TSIG/私钥，避免普通状态备份扩大
+密钥暴露范围。
+
+## 8. 恢复演练和正式恢复
+
+先停止控制面并确认备份校验通过：
+
+```bash
+docker compose down
+sha256sum -c /secure/backup/dnsguard-sensitive/SHA256SUMS
+```
+
+恢复普通状态：
+
+```bash
+DNSGUARD_BACKUP_MODE=docker \
+DNSGUARD_DATA_DIR="$PWD/docker-data" \
+DNSGUARD_SECRET_DIR="$PWD/secrets" \
+DNSGUARD_TLS_DIR="$PWD/tls" \
+./scripts/restore-dnsguard.sh /secure/backup/dnsguard/dnsguard-YYYYMMDDTHHMMSSZ.tar.gz
+```
+
+恢复包含 TSIG/证书的敏感归档必须明确 opt-in：
+
+```bash
+RESTORE_INCLUDE_SENSITIVE=true \
+DNSGUARD_BACKUP_MODE=docker \
+DNSGUARD_DATA_DIR="$PWD/docker-data" \
+DNSGUARD_SECRET_DIR="$PWD/secrets" \
+DNSGUARD_TLS_DIR="$PWD/tls" \
+./scripts/restore-dnsguard.sh /secure/backup/dnsguard-sensitive/dnsguard-YYYYMMDDTHHMMSSZ.tar.gz
+```
+
+恢复后：
+
+1. 检查文件权限和 JSON 完整性；
+2. `docker compose up -d`，确认容器健康；
+3. 登录后台，检查规则、节点、版本、任务和审计链；
+4. 查询 Primary/Secondary 的 SOA Serial 和关键 RPZ 解析结果；
+5. 若任务显示 `reconcile_required`，先人工核对 BIND 实际状态，不要自动重放或把旧 JSON 误当作 Zone 回滚；
+6. 恢复旧状态不会修改生产 BIND 当前 Zone，也不能宣称 RPZ 已回滚。需要回滚 Zone 时，必须在后台创建新的受控 RPZ 发布/回滚任务并完成集群验证。
+
+## 9. 升级和回滚
+
+升级前：
 
 ```bash
 docker compose stop
-BACKUP_DIR=/secure/backup/path \
-  DNSGUARD_ENV_FILE="$PWD/deploy/docker/dnsguard.env" \
-  ./scripts/backup-dnsguard.sh
-```
-
-升级前备份，然后从目标 tag 或 commit 构建：
-
-```bash
+# 完成普通状态备份，必要时完成敏感备份
 git fetch --tags origin
-git checkout TARGET_TAG_OR_COMMIT
+git checkout TARGET_TAG
 docker compose build --pull
 docker compose up -d
 docker compose ps
 ```
 
-回滚时回到上一版本，保留同一组 `docker-data/`、`secrets/` 和 `tls/`：
+先检查健康、登录、节点状态和发布任务，再进行任何 RPZ 操作。JSON 数据文件保持
+向后兼容；升级失败时保留同一组 `docker-data/`、`secrets/` 和 `tls/`：
 
 ```bash
 docker compose down
-git checkout PREVIOUS_TAG_OR_COMMIT
-docker compose build
+git checkout PREVIOUS_TAG
+docker compose build --pull
 docker compose up -d
 ```
 
-不要删除 `docker-data/` 来修复启动问题。状态、审计或发布任务异常时，应先人工核对 BIND 状态，不自动重放或盲目回滚。
+**应用版本回滚不等于 RPZ Zone 回滚。** 回到旧应用只改变控制面程序；BIND 仍保持
+当前已加载 Zone。RPZ 规则回滚必须由管理员选择已审计版本、创建新的发布任务，并
+验证 Primary/全部 Secondary Serial 和实际解析效果。禁止清空 `docker-data`、直接
+覆盖状态文件或未经验证自动回滚。
 
-卸载但保留数据：
+## 10. 常见错误
 
-```bash
-docker compose down
-```
+- `AUTH_SECRET` 或 `MONITORING_TOKEN` 是 `REPLACE_` 占位值：重新编辑 env。
+- `RPZ_KEY_FILE is not readable`：检查 key 位于 `secrets/`，权限允许 UID 10001 读取。
+- Bootstrap Token 权限不安全：使用 `chmod 0600`，并确认容器 API 用户可读。
+- HTTPS 启动失败：检查 `tls/fullchain.pem` 和 `tls/privkey.pem` 的权限及证书匹配。
+- 节点不可达：检查管理节点到 DNS 节点 53 端口、允许网段和容器出站策略。
+- 初始化 TSIG 清理失败：暂停初始化，人工查询并删除临时 TXT，再核对 Serial。
+- `reconcile_required`：不要重试发布；先取证并人工比对 Primary/Secondary 实际状态。
 
-确认备份后再执行 `docker compose down --rmi local` 和 `rm -rf docker-data secrets tls bind-logs`。
+## 11. systemd 兼容部署
 
-## 安全边界
-
-- 生产 `APP_ENV=production` 和 `AUTH_ENABLED=true` 不能关闭。
-- API 不暴露宿主机端口，不挂载 Docker Socket，不使用 privileged 或 host network。
-- 生产 TSIG 不进入镜像、环境变量、Git 或构建日志。
-- 本部署不会启动 BIND，也不会自动向生产 BIND 写入规则；只有管理员在页面发起发布时，DNSGuard 才通过已配置 TSIG 执行 `nsupdate`。
+现有 systemd 安装方式继续保留在 `scripts/install-dnsguard.sh`、
+`scripts/setup-dnsguard.sh` 和 `deploy/systemd/`。systemd 备份使用默认的
+`DNSGUARD_BACKUP_MODE=systemd`，按配置路径读取主机文件；不要把 Docker 容器路径
+传给 systemd 备份脚本。

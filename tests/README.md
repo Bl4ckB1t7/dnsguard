@@ -14,6 +14,8 @@ BIND cluster.
   token checks.
 - `docker-production-deployment.sh`: Docker image, permissions, persistence
   and safety checks.
+- `backup-restore.sh`: isolated Docker host-path backup, checksum and restore
+  rehearsal, including explicit sensitive-file opt-in.
 
 The scripts generate TSIG keys, state, logs and reports in ignored runtime
 directories. Nothing under those runtime directories should be committed.

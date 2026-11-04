@@ -75,6 +75,8 @@ flowchart TD
 
 ## 生产部署
 
+正式版本交付说明见 [`RELEASE_NOTES.md`](RELEASE_NOTES.md)；Docker 安装、初始化、备份恢复和升级回滚的完整步骤见 [`deploy/docker/README.md`](deploy/docker/README.md)。
+
 ### Docker Compose 生产部署（推荐）
 
 生产推荐使用仓库根目录的 `Dockerfile` 和 `compose.yaml`。目标服务器只需要
