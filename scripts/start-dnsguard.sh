@@ -16,9 +16,13 @@ for command_name in ip npm go dig curl ss; do
   fi
 done
 
-BIND_INTERFACE="${BIND_INTERFACE:-tailscale0}"
+BIND_INTERFACE="${BIND_INTERFACE:-}"
 WEB_BIND_ADDRESS="${WEB_BIND_ADDRESS:-}"
 if [[ -z "$WEB_BIND_ADDRESS" ]]; then
+  if [[ -z "$BIND_INTERFACE" ]]; then
+    echo "Set WEB_BIND_ADDRESS or BIND_INTERFACE to the management IPv4 address/interface" >&2
+    exit 1
+  fi
   WEB_BIND_ADDRESS="$(ip -4 -o addr show dev "$BIND_INTERFACE" 2>/dev/null | awk '{split($4, address, "/"); print address[1]; exit}')"
 fi
 RUN_DIR="$ROOT/.run"

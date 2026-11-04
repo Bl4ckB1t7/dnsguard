@@ -34,6 +34,7 @@ ENTRYPOINT ["/usr/local/bin/dnsguard-api"]
 FROM nginx:1.27.3-alpine AS web
 COPY --from=web-builder /src/dist /usr/share/nginx/html
 COPY deploy/docker/nginx.conf /etc/nginx/conf.d/default.conf
+USER 101:101
 EXPOSE 8443
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=6 \
     CMD wget --no-check-certificate --quiet --spider https://127.0.0.1:8443/ || exit 1
