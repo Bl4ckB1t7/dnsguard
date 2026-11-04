@@ -130,16 +130,8 @@ passthru IN A 192.0.2.10
 redirect IN A 192.0.2.20
 wild IN A 192.0.2.30
 EOF
-  cat >"$BIND_RUNTIME/secondary-2-data/rpz-test.zone" <<'EOF'
-$TTL 1
-$ORIGIN rpz-test.
-@ IN SOA ns.rpz-test. hostmaster.rpz-test. (1 1h 15m 30d 60)
-  IN NS ns.rpz-test.
-ns IN A 192.0.2.1
-redirect IN A 192.0.2.11
-wild IN A 192.0.2.12
-*.wild IN A 192.0.2.12
-EOF
+  cp "$BIND_RUNTIME/secondary-2-data/app.test.zone" "$BIND_RUNTIME/primary-data/app.test.zone"
+  cp "$BIND_RUNTIME/secondary-2-data/app.test.zone" "$BIND_RUNTIME/secondary-1-data/app.test.zone"
   chmod -R 0775 "$BIND_RUNTIME"/*-data "$BIND_RUNTIME"/*-logs
   chown -R 53:53 "$BIND_RUNTIME"/*-data "$BIND_RUNTIME"/*-logs
   bind_compose up -d >/dev/null
@@ -304,15 +296,26 @@ case_auth_and_https() {
   [[ -n "$csrf" ]]
 }
 
+wait_bind_answer() {
+  local container="$1" name="$2" expected="$3" answer=''
+  for _ in $(seq 1 240); do
+    answer="$(docker exec "$container" dig +short +recurse @127.0.0.1 "$name" A 2>/dev/null || true)"
+    if [[ "$answer" == "$expected" ]]; then return 0; fi
+    sleep 0.25
+  done
+  echo "container=$container name=$name answer=$answer expected=$expected"
+  return 1
+}
+
 case_real_publish_and_transfer() {
   local csrf rule job_id status primary_serial secondary_one secondary_two
   csrf="$(login)"
   rule="$(curl -kfsS -b "$COOKIE_JAR" -H "X-CSRF-Token: $csrf" -H 'Content-Type: application/json' \
-    --data '{"domain":"redirect.rpz-test","type":"A","value":"192.0.2.55","reason":"compose recursive redirect"}' \
+    --data '{"domain":"redirect.app.test","type":"A","value":"192.0.2.55","reason":"compose RPZ redirect"}' \
     "$BASE_URL/api/dns/rpz")"
-  printf '%s' "$rule" | grep -q 'redirect.rpz-test'
+  printf '%s' "$rule" | grep -q 'redirect.app.test'
   curl -kfsS -b "$COOKIE_JAR" -H "X-CSRF-Token: $csrf" -H 'Content-Type: application/json' \
-    --data '{"domain":"wild.rpz-test","type":"A","value":"192.0.2.66","reason":"compose wildcard redirect"}' \
+    --data '{"domain":"wild.app.test","type":"A","value":"192.0.2.66","reason":"compose wildcard redirect"}' \
     "$BASE_URL/api/dns/rpz" >/dev/null
   curl -kfsS -b "$COOKIE_JAR" -H "X-CSRF-Token: $csrf" -H 'Content-Type: application/json' \
     --data '{"domain":"passthru.app.test","type":"CNAME","value":"","reason":"compose passthru"}' \
@@ -337,24 +340,24 @@ case_real_publish_and_transfer() {
 }
 
 case_actual_rpz_policy_effects() {
-  local answer_one answer_two recursive_one recursive_two wildcard_one passthru_one
-  answer_one="$(docker exec prod-bind-secondary-1 dig +short @127.0.0.1 redirect.app.test A)"
-  answer_two="$(docker exec prod-bind-secondary-2 dig +short @127.0.0.1 redirect.app.test A)"
+  local answer_one answer_two
+  answer_one="$(docker exec prod-bind-secondary-1 dig +short +recurse @127.0.0.1 redirect.app.test A)"
+  answer_two="$(docker exec prod-bind-secondary-2 dig +short +recurse @127.0.0.1 redirect.app.test A)"
   echo "legacy_authoritative_answer_secondary_1=$answer_one secondary_2=$answer_two"
   [[ "$answer_one" == '192.0.2.20' && "$answer_two" == '192.0.2.20' ]]
-  recursive_one="$(docker exec prod-bind-primary dig +short @127.0.0.1 redirect.rpz-test A)"
-  recursive_two="$(docker exec prod-bind-secondary-1 dig +short @127.0.0.1 redirect.rpz-test A)"
-  wildcard_one="$(docker exec prod-bind-primary dig +short @127.0.0.1 foo.wild.rpz-test A)"
-  passthru_one="$(docker exec prod-bind-primary dig +short @127.0.0.1 passthru.app.test A)"
-  echo "primary_redirect=$recursive_one secondary_redirect=$recursive_two primary_wildcard=$wildcard_one primary_passthru=$passthru_one"
-  [[ "$recursive_one" == '192.0.2.55' && "$recursive_two" == '192.0.2.55' ]]
-  [[ "$wildcard_one" == '192.0.2.66' ]]
-  [[ "$passthru_one" == '192.0.2.10' ]]
+  wait_bind_answer prod-bind-primary redirect.app.test 192.0.2.55
+  wait_bind_answer prod-bind-secondary-1 redirect.app.test 192.0.2.55
+  wait_bind_answer prod-bind-secondary-2 redirect.app.test 192.0.2.55
+  wait_bind_answer prod-bind-primary foo.wild.app.test 192.0.2.66
+  wait_bind_answer prod-bind-secondary-1 foo.wild.app.test 192.0.2.66
+  wait_bind_answer prod-bind-secondary-2 foo.wild.app.test 192.0.2.66
+  wait_bind_answer prod-bind-primary passthru.app.test 192.0.2.10
+  echo 'exact A redirect, wildcard A redirect, and CNAME passthru verified after RPZ reload'
 }
 
 case_persistence_after_recreate() {
   local csrf
-  grep -q 'redirect.rpz-test' "$DATA_DIR/dns-state.json"
+  grep -q 'redirect.app.test' "$DATA_DIR/dns-state.json"
   compose down
   compose up -d
   for _ in $(seq 1 45); do
@@ -362,7 +365,7 @@ case_persistence_after_recreate() {
     sleep 1
   done
   csrf="$(login)"
-  curl -kfsS -b "$COOKIE_JAR" "$BASE_URL/api/dns/rpz" | grep -q 'redirect.rpz-test'
+  curl -kfsS -b "$COOKIE_JAR" "$BASE_URL/api/dns/rpz" | grep -q 'redirect.app.test'
   [[ -n "$csrf" ]]
 }
 
