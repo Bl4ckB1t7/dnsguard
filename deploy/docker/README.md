@@ -26,7 +26,7 @@ DNSGuard 不会安装或管理生产 BIND。启动 Compose 前，请先准备 RP
 发布后固定使用 Git Tag，不要直接跟随 `main`：
 
 ```bash
-git clone https://github.com/Bl4ckB1t7/dnsguard.git
+git clone https://github.com/Bl4ckB1t7/dnsguard-public.git
 cd dnsguard
 git checkout v1.0.0
 ```

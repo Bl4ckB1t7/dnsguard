@@ -68,7 +68,7 @@ DNSGuard V1.0 采用 **Docker Compose Only** 部署。
 环境要求：Docker Engine、Docker Compose Plugin、现有 BIND RPZ 集群、TSIG Key 和 HTTPS 证书。
 
 ```bash
-git clone --branch v1.0.0 --single-branch https://github.com/Bl4ckB1t7/dnsguard.git
+git clone --branch v1.0.0 --single-branch https://github.com/Bl4ckB1t7/dnsguard-public.git
 cd dnsguard
 
 cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
