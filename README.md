@@ -69,6 +69,14 @@ docker compose ps
 
 **完整安装说明：** [Docker 部署与运维手册](deploy/docker/README.md)
 
+## 界面预览
+
+登录页和控制台分别如下，便于快速了解 DNSGuard 的使用方式：
+
+| 安全登录 | DNS 控制台 |
+|---|---|
+| <img src="docs/images/dnsguard-login.jpg" alt="DNSGuard 安全登录页" width="430"> | <img src="docs/images/dnsguard-dashboard.jpg" alt="DNSGuard DNS 控制台" width="430"> |
+
 ## 安全与部署边界
 
 DNSGuard 仅管理经过授权的 BIND RPZ 集群，不会自动安装、修改或重启生产 BIND。生产环境必须使用 HTTPS，并妥善保护 TSIG 密钥和持久化数据。
