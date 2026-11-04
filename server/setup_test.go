@@ -211,6 +211,7 @@ func TestExistingDeploymentIsNotForcedThroughWizard(t *testing.T) {
 func TestInitializationMiddlewareLocksRPZPublish(t *testing.T) {
 	setupTestEnvironment(t)
 	t.Setenv("AUTH_ENABLED", "false")
+	t.Setenv("APP_ENV", "production")
 	request := httptest.NewRequest(http.MethodPost, "/api/dns/rpz/publish", strings.NewReader(`{}`))
 	recorder := httptest.NewRecorder()
 	authMiddleware(http.HandlerFunc(publishRPZ)).ServeHTTP(recorder, request)

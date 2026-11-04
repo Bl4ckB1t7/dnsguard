@@ -186,6 +186,13 @@ func loadInitializationState() error {
 }
 
 func isInitialized() bool {
+	// Development fixtures intentionally disable authentication and provide
+	// their own node/state files. Keep that legacy local mode usable; the
+	// production preflight always requires AUTH_ENABLED=true and therefore
+	// cannot bypass the first-run gate this way.
+	if !authEnabled() && !strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
+		return true
+	}
 	initializationMu.Lock()
 	status := initialization.Status
 	initializationMu.Unlock()
