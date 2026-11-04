@@ -187,3 +187,32 @@ set -e
 grep -q '^update add ' "$NSUPDATE_LOG"
 grep -q '^update delete .* TXT "dnsguard-preflight-' "$NSUPDATE_LOG"
 echo 'PASS: SIGTERM stopped the write flow and ran precise EXIT cleanup'
+
+# Optional policy checks are explicit and must use a known baseline resolver
+# plus an authoritative RPZ trigger witness. This is a mock test only; it does
+# not claim that a production deny zone exists.
+cat >"$WORK/bin/dig" <<'EOF_DIG'
+#!/usr/bin/env bash
+case " $* " in
+  *'+short'*' SOA '*) printf '%s\n' 'localhost. hostmaster.localhost. 123 3600 900 2592000 60' ;;
+  *' SOA '*) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1' ';; flags: qr aa; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0' 'rpz.local. 60 IN SOA hostmaster.local. 123 1h 15m 30d 60' ;;
+  *'known.example A '*) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1' ';; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0' 'known.example. 60 IN A 192.0.2.123' ;;
+  *'com.deny.rpz.local CNAME '*) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1' ';; flags: qr aa; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0' 'com.deny.rpz.local. 60 IN CNAME .' ;;
+  *'@127.0.0.2'*'denied.example A '*) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1' ';; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0' 'denied.example. 60 IN A 192.0.2.123' ;;
+  *'denied.example A '*) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 1' ';; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0' ;;
+  *) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 1' ';; flags: qr aa; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0' ;;
+esac
+EOF_DIG
+chmod +x "$WORK/bin/dig"
+output="$(env PATH="$WORK/bin:$PATH" \
+  RPZ_ZONE=rpz.local RPZ_PRIMARY=127.0.0.1:53 RPZ_SECONDARIES=127.0.0.2:53 \
+  RPZ_KEY_FILE="$KEY" RPZ_RECURSOR=127.0.0.1:53 \
+  RPZ_ALLOW_CHECK_NAME=known.example RPZ_ALLOW_EXPECTED_A=192.0.2.123 \
+  RPZ_DENY_ZONE=deny.rpz.local RPZ_DENY_CHECK_NAME=denied.example \
+  RPZ_DENY_TRIGGER=com.deny.rpz.local RPZ_DENY_BASELINE_RECURSOR=127.0.0.2:53 \
+  RPZ_DENY_BASELINE_EXPECTED_A=192.0.2.123 \
+  "$ROOT/scripts/rpz-connect.sh" 2>&1)"
+grep -q '白名单递归验证 实际解析符合预期' <<<"$output"
+grep -q '默认拒绝递归验证 RCODE 符合预期' <<<"$output"
+grep -q '默认拒绝 RPZ 证据 已观察到 RPZ CNAME' <<<"$output"
+echo 'PASS: optional allow-list and deny-policy checks require and verify explicit evidence'

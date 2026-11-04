@@ -124,6 +124,20 @@ options {
 
 如果 Secondary 只承担权威 Zone Transfer，不承担递归解析，不要仅为测试 RPZ 而开启递归。实际生效验证应查询企业递归 DNS，而不是只查询 RPZ 权威 Zone。
 
+### 3.1 TLD 数据状态与默认拒绝边界
+
+DNSGuard 控制台中的 TLD 数据状态用于展示和校验 IANA TLD 列表版本、数量与同步状态。它不会自动把 TLD 列表转换成默认拒绝 RPZ，不会修改 `named.conf`，也不会 reload/restart BIND。当前分支没有把“所有未授权域名”默认为 NXDOMAIN 的业务发布功能；因此不能仅凭 TLD 数量或一个 NXDOMAIN 响应宣称默认拒绝已经生效。
+
+如果企业要启用默认拒绝，应由 BIND 管理员在隔离环境独立准备并验证专用 deny RPZ Zone，再由递归 BIND 在 `response-policy` 中按实际版本支持的优先级加载。必须同时验证：
+
+- 白名单域名及其子域名仍然 PASSTHRU；
+- A 重定向返回预期 IPv4；
+- deny RPZ 的已知可解析测试域名返回预期 RCODE；
+- deny RPZ 权威触发项存在明确的动作证据（例如 `CNAME .`），不能把普通域名本身不存在误判为策略命中；
+- BIND 的上游查询、DNSSEC、AAAA/TXT/CNAME 和内部域名行为符合企业策略。
+
+TLD 拒绝不等于 100% 全局封锁：它只能覆盖已配置并被 BIND 实际加载的触发项，且 RPZ 匹配、递归缓存、DNSSEC 和例外规则都会影响结果。DNS C2 防护必须在递归前拦截路径上核对真实查询效果；DNSGuard 只负责受控管理现有 RPZ，不代替 BIND 的策略配置。`qname-wait-recurse` 等选项如需使用，必须由管理员依据当前 BIND 版本的官方文档和隔离测试结果独立决定，DNSGuard 不会自动设置。
+
 ## 4. DNSGuard 配置
 
 Docker Compose 部署中，关键配置类似：
@@ -183,7 +197,7 @@ cp deploy/docker/rpz-connect.env.example /tmp/rpz-connect.env
 
 该模式只向 Primary 写入一个随机临时 TXT 记录，验证后立即删除并再次查询确认。清理失败时脚本返回失败，并要求人工核对该临时记录；它不会继续执行正式 RPZ 发布。
 
-如果设置 `RPZ_RECURSOR`、`RPZ_CHECK_NAME` 和 `RPZ_EXPECTED_A`，脚本还会通过递归 DNS 查询指定测试域名并核对预期 A 记录；未同时设置这三个值时，实际策略验证会明确显示为 `NOT RUN`。
+如果设置 `RPZ_RECURSOR`、`RPZ_CHECK_NAME` 和 `RPZ_EXPECTED_A`，脚本还会通过递归 DNS 查询指定测试域名并核对预期 A 记录；未同时设置这三个值时，实际策略验证会明确显示为 `NOT RUN`。还可以按管理员提供的隔离测试数据配置 `RPZ_ALLOW_CHECK_NAME`/`RPZ_ALLOW_EXPECTED_A` 验证白名单，及 `RPZ_DENY_ZONE`、`RPZ_DENY_CHECK_NAME`、`RPZ_DENY_TRIGGER`、`RPZ_DENY_BASELINE_RECURSOR`、`RPZ_DENY_BASELINE_EXPECTED_A` 验证默认拒绝。默认拒绝验证会先用基线解析器确认测试域名确实可解析，再检查策略解析器的 RCODE，并查询 deny Zone 触发项的实际动作证据；参数不完整时输出 `NOT RUN`，不会假设 TLD 拒绝已经启用。
 
 脚本输出使用 `PASS`、`FAIL`、`WARN`，适合安装验收和故障排查。`--write-test` 不应在未经审批的生产变更窗口外执行。
 

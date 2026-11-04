@@ -71,6 +71,11 @@ record_case() {
   printf '%-38s %s\n' "$status" "$name"
 }
 
+record_not_run() {
+  local name="$1" evidence="$2"
+  record_case "$name" 'NOT RUN' "$evidence"
+}
+
 run_case() {
   local name="$1" fn="$2" evidence
   evidence="$EVIDENCE_DIR/${#CASE_NAMES[@]}-${name// /_}.log"
@@ -85,6 +90,8 @@ run_case() {
   set -e
   if ((result == 0)); then
     record_case "$name" PASS "$evidence"
+  elif ((result == 125)); then
+    record_not_run "$name" "$evidence"
   else
     record_case "$name" FAIL "$evidence"
   fi
@@ -450,6 +457,29 @@ case_actual_rpz_resolution() {
     done
   done
   echo 'passthru, exact redirect, wildcard redirect verified on primary and both secondaries'
+}
+
+case_tld_default_deny() {
+  local test_name="${TLD_DENY_TEST_NAME:-}"
+  local deny_zone="${TLD_DENY_ZONE:-}"
+  local deny_trigger="${TLD_DENY_TRIGGER:-}"
+  local baseline_port="${TLD_DENY_BASELINE_PORT:-}"
+  local policy_port="${TLD_DENY_POLICY_PORT:-}"
+  local expected_a="${TLD_DENY_EXPECTED_A:-}"
+  local expected_rcode="${TLD_DENY_EXPECTED_RCODE:-NXDOMAIN}"
+  if [[ -z "$test_name" || -z "$deny_zone" || -z "$deny_trigger" || -z "$baseline_port" || -z "$policy_port" || -z "$expected_a" ]]; then
+    echo 'TLD default-deny zone/test parameters are not configured; active TLD deny verification is NOT RUN'
+    return 125
+  fi
+  local baseline_answer policy_header policy_rcode evidence_answer
+  baseline_answer="$(answer "$baseline_port" "$test_name")"
+  [[ "$baseline_answer" == *"$expected_a"* ]] || { echo "baseline=$baseline_answer expected=$expected_a"; return 1; }
+  policy_header="$(dig +tcp +time=2 +tries=1 +comments @127.0.0.1 -p "$policy_port" "$test_name" A 2>&1 || true)"
+  policy_rcode="$(sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' <<<"$policy_header" | head -n1)"
+  [[ "$policy_rcode" == "$expected_rcode" ]] || { echo "policy_rcode=$policy_rcode expected=$expected_rcode"; return 1; }
+  evidence_answer="$(dig +tcp +time=2 +tries=1 +comments +norecurse @127.0.0.1 -p 15353 "$deny_trigger" CNAME 2>&1 || true)"
+  grep -Eq '(^|[[:space:]])CNAME[[:space:]]+\.[[:space:]]*$' <<<"$evidence_answer" || { echo "deny_trigger=$deny_trigger did not show CNAME ."; return 1; }
+  echo "baseline=$baseline_answer policy_rcode=$policy_rcode deny_trigger=$deny_trigger zone=$deny_zone"
 }
 
 case_duplicate_publish_guard() {
@@ -874,6 +904,7 @@ main() {
   wait_api "$API_URL"
   run_case 'normal-publish-and-zone-transfer' case_normal_publish
   run_case 'actual-rpz-recursion-effects' case_actual_rpz_resolution
+  run_case 'tld-default-deny-policy' case_tld_default_deny
   run_case 'duplicate-publish-guard' case_duplicate_publish_guard
   run_case 'secondary-sync-delay-and-recovery' case_secondary_sync_delay
   run_case 'secondary-offline-and-recovery' case_secondary_offline

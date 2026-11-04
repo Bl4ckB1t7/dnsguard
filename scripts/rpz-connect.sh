@@ -14,6 +14,14 @@ RPZ_TEST_DOMAIN="${RPZ_TEST_DOMAIN-}"
 RPZ_TEST_NAMESPACE="${RPZ_TEST_NAMESPACE-}"
 RPZ_CHECK_NAME="${RPZ_CHECK_NAME-}"
 RPZ_EXPECTED_A="${RPZ_EXPECTED_A-}"
+RPZ_ALLOW_CHECK_NAME="${RPZ_ALLOW_CHECK_NAME-}"
+RPZ_ALLOW_EXPECTED_A="${RPZ_ALLOW_EXPECTED_A-}"
+RPZ_DENY_ZONE="${RPZ_DENY_ZONE-}"
+RPZ_DENY_CHECK_NAME="${RPZ_DENY_CHECK_NAME-}"
+RPZ_DENY_TRIGGER="${RPZ_DENY_TRIGGER-}"
+RPZ_DENY_EXPECTED_RCODE="${RPZ_DENY_EXPECTED_RCODE-NXDOMAIN}"
+RPZ_DENY_BASELINE_RECURSOR="${RPZ_DENY_BASELINE_RECURSOR-}"
+RPZ_DENY_BASELINE_EXPECTED_A="${RPZ_DENY_BASELINE_EXPECTED_A-}"
 ENV_FILE="${RPZ_CONNECT_ENV_FILE-}"
 OUTPUT_DIR=""
 WRITE_TEST=0
@@ -45,6 +53,14 @@ Options:
   --write-test        Explicitly write/delete one temporary TXT record on Primary.
   --test-domain NAME  Optional test name below the protected test namespace.
   --test-namespace NAME  Protected namespace for custom test names.
+  --allow-name NAME  Optional known allow-list name for recursive A validation.
+  --allow-expected-a IPv4  Expected A value for --allow-name.
+  --deny-zone NAME  Optional separately configured default-deny RPZ zone.
+  --deny-name NAME  Known-resolvable name expected to be denied.
+  --deny-trigger NAME  RPZ trigger expected to contain CNAME . (evidence).
+  --deny-rcode RCODE  Expected recursive RCODE for --deny-name (default NXDOMAIN).
+  --deny-baseline HOST[:P]  Resolver proving --deny-name is normally resolvable.
+  --deny-baseline-a IPv4  Expected baseline A value for --deny-baseline.
   --confirm VALUE     Non-interactive confirmation; VALUE must be WRITE-TEST.
   -h, --help          Show this help.
 
@@ -85,7 +101,7 @@ load_env_file() {
       value="${value#\"}"
       value="${value%\"}"
       case "$key" in
-        RPZ_ZONE|RPZ_PRIMARY|RPZ_PRIMARY_PORT|RPZ_SECONDARIES|RPZ_KEY_FILE|RPZ_RECURSOR|RPZ_TEST_DOMAIN|RPZ_TEST_NAMESPACE|RPZ_WRITE_TIMEOUT_SECONDS|RPZ_CHECK_NAME|RPZ_EXPECTED_A)
+        RPZ_ZONE|RPZ_PRIMARY|RPZ_PRIMARY_PORT|RPZ_SECONDARIES|RPZ_KEY_FILE|RPZ_RECURSOR|RPZ_TEST_DOMAIN|RPZ_TEST_NAMESPACE|RPZ_WRITE_TIMEOUT_SECONDS|RPZ_CHECK_NAME|RPZ_EXPECTED_A|RPZ_ALLOW_CHECK_NAME|RPZ_ALLOW_EXPECTED_A|RPZ_DENY_ZONE|RPZ_DENY_CHECK_NAME|RPZ_DENY_TRIGGER|RPZ_DENY_EXPECTED_RCODE|RPZ_DENY_BASELINE_RECURSOR|RPZ_DENY_BASELINE_EXPECTED_A)
           # Explicit environment variables take precedence over the file.
           if [[ -z "${!key+x}" || -z "${!key}" ]]; then
             printf -v "$key" '%s' "$value"
@@ -110,6 +126,64 @@ parse_endpoint() {
   fi
   if [[ -z "$ENDPOINT_HOST" || ! "$ENDPOINT_PORT" =~ ^[0-9]+$ ]] || ((ENDPOINT_PORT < 1 || ENDPOINT_PORT > 65535)); then
     return 1
+  fi
+}
+
+not_run() {
+  printf 'NOT RUN: %s\n' "$*"
+  WARNINGS=$((WARNINGS + 1))
+}
+
+query_recursive() {
+  local host="$1" port="$2" name="$3" type="$4" output
+  DNS_QUERY_RCODE=""
+  DNS_QUERY_ANSWER=""
+  output="$(dig +comments +time=3 +tries=1 "@$host" -p "$port" "$name" "$type" 2>/dev/null || true)"
+  DNS_QUERY_RCODE="$(sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' <<<"$output" | head -n1)"
+  DNS_QUERY_ANSWER="$(awk -v query_type="$type" '$4 == query_type { print $5; exit }' <<<"$output")"
+  [[ -n "$DNS_QUERY_RCODE" ]]
+}
+
+check_recursive_a() {
+  local label="$1" endpoint="$2" name="$3" expected="$4"
+  parse_endpoint "$endpoint" || { fail "$label DNS 地址无效: $endpoint"; return; }
+  if ! query_recursive "$ENDPOINT_HOST" "$ENDPOINT_PORT" "$name" A; then
+    fail "$label DNS 查询失败，无法读取 RCODE: $name"
+    return
+  fi
+  if [[ "$DNS_QUERY_RCODE" == NOERROR && "$DNS_QUERY_ANSWER" == "$expected" ]]; then
+    pass "$label 实际解析符合预期: $name -> $expected"
+  else
+    fail "$label 实际解析不符合预期: $name RCODE=${DNS_QUERY_RCODE:-UNKNOWN} 返回=${DNS_QUERY_ANSWER:-<empty>}，预期 A=$expected"
+  fi
+}
+
+check_recursive_rcode() {
+  local label="$1" endpoint="$2" name="$3" expected_rcode="$4"
+  parse_endpoint "$endpoint" || { fail "$label DNS 地址无效: $endpoint"; return; }
+  if ! query_recursive "$ENDPOINT_HOST" "$ENDPOINT_PORT" "$name" A; then
+    fail "$label DNS 查询失败，无法读取 RCODE: $name"
+    return
+  fi
+  if [[ "$DNS_QUERY_RCODE" == "$expected_rcode" ]]; then
+    pass "$label RCODE 符合预期: $name -> $DNS_QUERY_RCODE"
+  else
+    fail "$label RCODE 不符合预期: $name 返回=${DNS_QUERY_RCODE:-UNKNOWN}，预期=$expected_rcode"
+  fi
+}
+
+check_rpz_deny_evidence() {
+  local label="$1" endpoint="$2" trigger="$3"
+  parse_endpoint "$endpoint" || { fail "$label Primary 地址无效: $endpoint"; return; }
+  local output rcode
+  output="$(dig +comments +norecurse +time=3 +tries=1 "@$ENDPOINT_HOST" -p "$ENDPOINT_PORT" "$trigger" CNAME 2>/dev/null || true)"
+  rcode="$(sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' <<<"$output" | head -n1)"
+  if [[ "$rcode" == NOERROR ]] && awk '$4 == "CNAME" && $5 == "." { found=1 } END { exit(found ? 0 : 1) }' <<<"$output"; then
+    pass "$label 已观察到 RPZ CNAME . 命中证据: $trigger"
+  elif [[ -z "$rcode" ]]; then
+    fail "$label 查询失败，无法读取 RCODE: $trigger"
+  else
+    fail "$label 未观察到预期 CNAME . 证据: $trigger RCODE=$rcode"
   fi
 }
 
@@ -408,6 +482,14 @@ while (($#)); do
     --test-namespace) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_TEST_NAMESPACE="$2"; shift 2 ;;
     --check-name) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_CHECK_NAME="$2"; shift 2 ;;
     --expected-a) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_EXPECTED_A="$2"; shift 2 ;;
+    --allow-name) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_ALLOW_CHECK_NAME="$2"; shift 2 ;;
+    --allow-expected-a) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_ALLOW_EXPECTED_A="$2"; shift 2 ;;
+    --deny-zone) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_DENY_ZONE="$2"; shift 2 ;;
+    --deny-name) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_DENY_CHECK_NAME="$2"; shift 2 ;;
+    --deny-trigger) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_DENY_TRIGGER="$2"; shift 2 ;;
+    --deny-rcode) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_DENY_EXPECTED_RCODE="$2"; shift 2 ;;
+    --deny-baseline) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_DENY_BASELINE_RECURSOR="$2"; shift 2 ;;
+    --deny-baseline-a) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_DENY_BASELINE_EXPECTED_A="$2"; shift 2 ;;
     --render) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; OUTPUT_DIR="$2"; shift 2 ;;
     --write-test) WRITE_TEST=1; shift ;;
     --confirm) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; CONFIRM_WRITE="$2"; shift 2 ;;
@@ -436,6 +518,8 @@ printf 'DNSGuard RPZ 对接检查（只读模式%s）\n' "$([[ $WRITE_TEST -eq 1
 printf 'Zone: %s\n' "$RPZ_ZONE"
 check_key
 parse_endpoint "$RPZ_PRIMARY" "$RPZ_PRIMARY_PORT" || fail "Primary 地址无效: $RPZ_PRIMARY"
+PRIMARY_HOST="${ENDPOINT_HOST-}"
+PRIMARY_PORT="${ENDPOINT_PORT-}"
 check_endpoint Primary "$RPZ_PRIMARY" "$RPZ_PRIMARY_PORT"
 
 IFS=',' read -r -a secondary_list <<<"$RPZ_SECONDARIES"
@@ -451,19 +535,45 @@ if ((FAILURES)); then
 fi
 
 if [[ -n "$RPZ_RECURSOR" ]]; then
-  parse_endpoint "$RPZ_RECURSOR" || fail "递归 DNS 地址无效: $RPZ_RECURSOR"
   if [[ -n "$RPZ_CHECK_NAME" && -n "$RPZ_EXPECTED_A" ]]; then
-    local_check="$(dig +short +time=2 +tries=1 "@$ENDPOINT_HOST" -p "$ENDPOINT_PORT" "$RPZ_CHECK_NAME" A 2>/dev/null || true)"
-    if [[ "$local_check" == "$RPZ_EXPECTED_A" ]]; then
-      pass "递归 RPZ 实际解析符合预期: $RPZ_CHECK_NAME -> $RPZ_EXPECTED_A"
-    else
-      fail "递归 RPZ 实际解析不符合预期: $RPZ_CHECK_NAME 返回=${local_check:-<empty>}，预期=$RPZ_EXPECTED_A"
-    fi
+    check_recursive_a '递归 RPZ（兼容参数）' "$RPZ_RECURSOR" "$RPZ_CHECK_NAME" "$RPZ_EXPECTED_A"
   else
-    warn '已配置 RPZ_RECURSOR，但未同时配置 RPZ_CHECK_NAME 和 RPZ_EXPECTED_A；实际策略验证 NOT RUN'
+    not_run '未同时配置 RPZ_CHECK_NAME 和 RPZ_EXPECTED_A；兼容的递归 A 验证未执行'
   fi
 else
-  warn '未配置 RPZ_RECURSOR；实际递归策略验证 NOT RUN'
+  not_run '未配置 RPZ_RECURSOR；递归策略验证未执行'
+fi
+
+if [[ -n "$RPZ_ALLOW_CHECK_NAME" || -n "$RPZ_ALLOW_EXPECTED_A" ]]; then
+  if [[ -n "$RPZ_RECURSOR" && -n "$RPZ_ALLOW_CHECK_NAME" && -n "$RPZ_ALLOW_EXPECTED_A" ]]; then
+    check_recursive_a '白名单递归验证' "$RPZ_RECURSOR" "$RPZ_ALLOW_CHECK_NAME" "$RPZ_ALLOW_EXPECTED_A"
+  else
+    not_run '白名单验证需要 RPZ_RECURSOR、RPZ_ALLOW_CHECK_NAME 和 RPZ_ALLOW_EXPECTED_A 全部配置'
+  fi
+else
+  not_run '未配置白名单测试参数；白名单递归验证未执行'
+fi
+
+if [[ -n "$RPZ_DENY_ZONE" || -n "$RPZ_DENY_CHECK_NAME" || -n "$RPZ_DENY_TRIGGER" || -n "$RPZ_DENY_BASELINE_RECURSOR" || -n "$RPZ_DENY_BASELINE_EXPECTED_A" ]]; then
+  if [[ -n "$RPZ_RECURSOR" && -n "$RPZ_DENY_ZONE" && -n "$RPZ_DENY_CHECK_NAME" && -n "$RPZ_DENY_TRIGGER" && -n "$RPZ_DENY_BASELINE_RECURSOR" && -n "$RPZ_DENY_BASELINE_EXPECTED_A" ]]; then
+    deny_zone_name="${RPZ_DENY_ZONE%.}"
+    deny_trigger_name="${RPZ_DENY_TRIGGER%.}"
+    if ! valid_dns_name "${deny_zone_name}" || ! valid_dns_name "${RPZ_DENY_CHECK_NAME%.}" || ! valid_dns_name "${deny_trigger_name}"; then
+      fail '默认拒绝验证的 Zone、测试域名或触发项格式无效'
+    elif [[ "$deny_trigger_name" != "$deny_zone_name" && "$deny_trigger_name" != *."$deny_zone_name" ]]; then
+      fail '默认拒绝验证的触发项不属于 RPZ_DENY_ZONE，拒绝把其他 Zone 的响应当作证据'
+    elif [[ ! "$RPZ_DENY_EXPECTED_RCODE" =~ ^(NXDOMAIN|NOERROR|SERVFAIL|REFUSED)$ ]]; then
+      fail "默认拒绝验证的 RCODE 无效: $RPZ_DENY_EXPECTED_RCODE"
+    else
+      check_recursive_a '默认拒绝基线解析' "$RPZ_DENY_BASELINE_RECURSOR" "$RPZ_DENY_CHECK_NAME" "$RPZ_DENY_BASELINE_EXPECTED_A"
+      check_recursive_rcode '默认拒绝递归验证' "$RPZ_RECURSOR" "$RPZ_DENY_CHECK_NAME" "$RPZ_DENY_EXPECTED_RCODE"
+      check_rpz_deny_evidence '默认拒绝 RPZ 证据' "$PRIMARY_HOST:$PRIMARY_PORT" "$RPZ_DENY_TRIGGER"
+    fi
+  else
+    not_run '默认拒绝验证需要 RPZ_RECURSOR、RPZ_DENY_ZONE、RPZ_DENY_CHECK_NAME、RPZ_DENY_TRIGGER、RPZ_DENY_BASELINE_RECURSOR 和 RPZ_DENY_BASELINE_EXPECTED_A 全部配置'
+  fi
+else
+  not_run '未配置 TLD/默认拒绝测试参数；默认拒绝验证未执行'
 fi
 
 render_templates

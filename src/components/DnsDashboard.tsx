@@ -490,7 +490,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       <section className="dns-cards">
         <article><span>DNS 节点</span><strong>{overview ? `${overview.healthyNodes}/${overview.nodes}` : "—"}</strong><small>健康节点</small></article>
         <article><span>RPZ 规则</span><strong>{overview?.rules ?? "—"}</strong><small>{overview?.publishedRules ?? 0} 条已发布</small></article>
-        <article className={tldStatus?.status === "ready" ? "" : "muted"}><span>TLD DENY 策略</span><strong>{tldStatus?.tldCount?.toLocaleString() ?? "—"}</strong><small>{tldStatus?.status === "ready" ? `数据已同步 · ${tldStatus.version ?? "无版本"}` : tldStatus?.status === "error" ? "同步异常，保留上一份状态" : "等待 TLD 数据同步"}</small></article>
+        <article className={tldStatus?.status === "ready" ? "" : "muted"}><span>TLD 数据状态</span><strong>{tldStatus?.tldCount?.toLocaleString() ?? "—"}</strong><small>{tldStatus?.status === "ready" ? `数据已同步 · ${tldStatus.version ?? "无版本"}` : tldStatus?.status === "error" ? "同步异常，保留上一份状态" : "等待 TLD 数据同步"}</small></article>
         <article><span>最后同步</span><strong className="sync-value">{overview?.lastSync ?? "—"}</strong><small>Primary → Secondary</small></article>
       </section>
 
