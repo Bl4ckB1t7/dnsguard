@@ -20,7 +20,7 @@ RPZ_ZONE=rpz.local \
 RPZ_KEY_FILE="$PWD/dev/bind-rpz/keys/rpz-manager.key" \
 DNS_NODE_ADDRESSES=primary-1=127.0.0.2:5353,secondary-1=127.0.0.3:5353,secondary-2=127.0.0.4:5353 \
 RPZ_LOG_FILES=/var/log/named/dnsguard-dev-rpz/primary.log,/var/log/named/dnsguard-dev-rpz/secondary.log,/var/log/named/dnsguard-dev-rpz/secondary-2.log \
-./scripts/start-tailscale.sh
+./scripts/start-dnsguard.sh
 ```
 
 启动本地 BIND RPZ 开发环境需要 root 权限。脚本会优先使用 `BIND_USER`/`BIND_GROUP`，未设置时

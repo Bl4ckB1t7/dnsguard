@@ -8,7 +8,7 @@ Docker Compose 是 DNSGuard 的推荐生产部署方式。Compose 只运行 DNSG
 
 - Linux x86_64 主机，建议 Debian 12 或 Ubuntu 22.04/24.04。
 - Docker Engine 24+ 和 Docker Compose Plugin 2.20+。
-- `python3`、`openssl`、`curl` 和 `install`；不需要 Go、Node.js、npm、BIND 或 systemd。
+- `python3`、`openssl`、`curl` 和 `install`；不需要 Go、Node.js、npm、BIND 或其他主机级运行时。
 - 到 Primary 的 TCP/UDP 53 连通性以及到全部 Secondary 的 SOA 查询连通性。
 - 生产 RPZ TSIG key 文件和 HTTPS 证书/私钥。
 - 管理入口只允许从管理网段访问；不要把管理端口直接暴露到公网。
@@ -236,9 +236,29 @@ docker compose up -d
 - 初始化 TSIG 清理失败：暂停初始化，人工查询并删除临时 TXT，再核对 Serial。
 - `reconcile_required`：不要重试发布；先取证并人工比对 Primary/Secondary 实际状态。
 
-## 11. systemd 兼容部署
+## 11. 旧部署一次性迁移
 
-现有 systemd 安装方式继续保留在 `scripts/install-dnsguard.sh`、
-`scripts/setup-dnsguard.sh` 和 `deploy/systemd/`。systemd 备份使用默认的
-`DNSGUARD_BACKUP_MODE=systemd`，按配置路径读取主机文件；不要把 Docker 容器路径
-传给 systemd 备份脚本。
+V1.0 生产只支持 Docker Compose。旧版本的主机进程部署不会被自动删除、停止或覆盖，
+也不会被 `docker-init.sh` 自动迁移。迁移前由维护人员完成完整备份，并保留旧目录副本。
+
+旧部署迁移步骤：
+
+1. 停止旧 DNSGuard 控制面，确认没有旧进程占用 Web/API 端口；生产 BIND 不需要停止。
+2. 创建新目录：`docker-data/`、`secrets/`、`tls/` 和 `bind-logs/`。
+3. 将旧的状态、节点、认证、审计、版本、发布任务、初始化状态、Telegram 配置和 RPZ
+   产物复制到 `docker-data/`。
+4. 将旧 TSIG 复制到 `secrets/rpz-manager.key`，将证书和私钥复制到 `tls/`；不要把密钥
+   放进环境文件或镜像。
+5. 将 `docker-data/` 与 TSIG 的所有者修正为 `10001:10001`，TLS 私钥允许 `101:101`
+   读取，认证文件为 `0600`，Bootstrap Token 为 `0600`，目录至少为 `0750`。
+6. 检查 `deploy/docker/dnsguard.env` 的容器内路径。宿主机备份命令必须使用
+   `DNSGUARD_DATA_DIR`、`DNSGUARD_SECRET_DIR` 和 `DNSGUARD_TLS_DIR`，不能把
+   `/var/lib/dnsguard` 当作宿主机路径。
+7. 执行 `./scripts/docker-init.sh` 和 `docker compose config`，确认已有认证文件和节点
+   配置没有被覆盖，再执行 `docker compose up -d`。
+8. 登录后台，核对节点、RPZ 规则、版本、发布任务、审计哈希链和 Telegram 配置；逐台
+   查询 BIND Primary/Secondary 的 SOA Serial，并抽查关键 RPZ 解析效果。
+9. 验证完成后再人工下线旧控制面。迁移不会修改生产 BIND 的配置、进程或当前 Zone。
+
+恢复旧 JSON 只恢复 DNSGuard 控制面状态，不代表 BIND Zone 已回滚。任何 RPZ 回滚都必须
+通过新的受控发布任务完成 Primary/Secondary 和实际解析验证。
