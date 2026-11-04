@@ -206,8 +206,8 @@ func isInitialized() bool {
 	if status == initializationFailed {
 		return false
 	}
-	// Existing systemd installations predate the marker. Their valid auth and
-	// node files are treated as initialized and are never overwritten.
+	// Existing installations that predate the marker have valid auth and node
+	// files; treat them as initialized and never overwrite them.
 	return authFileHasPasswordHash() && regularFileExists(dnsNodeConfigPath())
 }
 

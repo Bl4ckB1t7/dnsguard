@@ -9,25 +9,19 @@ if [[ -n "${DNSGUARD_ENV_FILE:-}" && -f "$DNSGUARD_ENV_FILE" ]]; then
   set +a
 fi
 
-BACKUP_MODE="${DNSGUARD_BACKUP_MODE:-${BACKUP_MODE:-systemd}}"
+BACKUP_MODE="${DNSGUARD_BACKUP_MODE:-docker}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/dnsguard}"
-DNS_STATE_FILE="${DNS_STATE_FILE:-$ROOT/data/dns-state.json}"
-DNS_NODE_CONFIG_FILE="${DNS_NODE_CONFIG_FILE:-$ROOT/config/dns-nodes.json}"
-AUDIT_FILE="${AUDIT_FILE:-$ROOT/data/audit.json}"
-RPZ_ARTIFACT_FILE="${RPZ_ARTIFACT_FILE:-$ROOT/data/rpz/rpz.local.db}"
-AUTH_FILE="${AUTH_FILE:-$ROOT/.run/auth.json}"
-RPZ_KEY_FILE="${RPZ_KEY_FILE:-}"
 BACKUP_INCLUDE_SENSITIVE="${BACKUP_INCLUDE_SENSITIVE:-false}"
 BACKUP_RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-14}"
 DNSGUARD_DATA_DIR="${DNSGUARD_DATA_DIR:-$ROOT/docker-data}"
 DNSGUARD_SECRET_DIR="${DNSGUARD_SECRET_DIR:-$ROOT/secrets}"
 DNSGUARD_TLS_DIR="${DNSGUARD_TLS_DIR:-$ROOT/tls}"
 
-[[ "$BACKUP_MODE" == systemd || "$BACKUP_MODE" == docker ]] || {
-  echo "DNSGUARD_BACKUP_MODE must be systemd or docker" >&2
+[[ "$BACKUP_MODE" == docker ]] || {
+  echo "DNSGUARD_BACKUP_MODE must be docker; DNSGuard V1.0 production backups are Docker Compose only" >&2
   exit 2
 }
-export BACKUP_DIR BACKUP_MODE DNS_STATE_FILE DNS_NODE_CONFIG_FILE AUDIT_FILE RPZ_ARTIFACT_FILE AUTH_FILE RPZ_KEY_FILE
+export BACKUP_DIR BACKUP_MODE
 export BACKUP_INCLUDE_SENSITIVE BACKUP_RETENTION_COUNT DNSGUARD_DATA_DIR DNSGUARD_SECRET_DIR DNSGUARD_TLS_DIR
 
 command -v python3 >/dev/null 2>&1 || { echo "Missing required command: python3" >&2; exit 2; }
@@ -86,16 +80,6 @@ with tempfile.TemporaryDirectory(prefix="dnsguard-backup-") as temp:
         if os.environ.get("BACKUP_INCLUDE_SENSITIVE", "false").lower() == "true":
             add_tree(stage, Path(os.environ["DNSGUARD_SECRET_DIR"]), "secrets", True)
             add_tree(stage, Path(os.environ["DNSGUARD_TLS_DIR"]), "tls", True)
-    else:
-        state_root = Path(os.environ["DNS_STATE_FILE"]).expanduser().resolve().parent
-        add_tree(stage, state_root, str(state_root).lstrip("/"), False)
-        add_file(stage, Path(os.environ["DNS_NODE_CONFIG_FILE"]), sensitive=False)
-        add_file(stage, Path(os.environ["AUTH_FILE"]), sensitive=False)
-        if os.environ.get("BACKUP_INCLUDE_SENSITIVE", "false").lower() == "true":
-            key = os.environ.get("RPZ_KEY_FILE", "")
-            if key:
-                add_file(stage, Path(key), sensitive=True)
-
     if not manifest["files"]:
         raise SystemExit("no configured DNSGuard files were found")
     (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

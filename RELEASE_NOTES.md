@@ -19,7 +19,7 @@ DNS 数据面，DNSGuard 不参与客户端 DNS 查询；即使控制面停止�
 
 ## 部署方式
 
-推荐使用 Docker Compose：
+V1.0 生产唯一支持 Docker Compose：
 
 ```bash
 git checkout v1.0.0
@@ -28,8 +28,8 @@ cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
 docker compose up -d
 ```
 
-完整安装、初始化、备份恢复和升级回滚流程见
-[`deploy/docker/README.md`](deploy/docker/README.md)。systemd 兼容脚本继续保留。
+完整安装、初始化、备份恢复、旧部署迁移和升级回滚流程见
+[`deploy/docker/README.md`](deploy/docker/README.md)。V1.0 生产只支持 Docker Compose。
 
 ## 安全边界
 
@@ -45,6 +45,7 @@ docker compose up -d
 - Docker 备份必须在宿主机以 `DNSGUARD_BACKUP_MODE=docker` 执行，不能把容器内路径当作宿主机路径；
 - RPZ 命中统计依赖挂载的 BIND 日志，未接入日志时不影响发布；
 - 升级和回滚需要人工核对 BIND 集群状态，不提供未经验证的自动回滚。
+- 旧版本主机进程部署需要按手册人工迁移到 `docker-data/`、`secrets/` 和 `tls/`；不会自动删除旧数据或覆盖现有环境。
 
 ## 升级和回滚
 

@@ -7,7 +7,7 @@ Contact the repository maintainer privately through the GitHub account that
 owns this repository and include:
 
 - affected commit or version;
-- deployment mode (Docker Compose or systemd);
+- Docker Compose version and image digest;
 - a minimal reproduction using only an isolated test environment; and
 - the impact and any available mitigation.
 
