@@ -2,6 +2,8 @@
 
 **轻量级 BIND RPZ 安全策略管理平台**
 
+> **让每一次解析，都有安全边界。**
+
 <p align="center">
   <img src="docs/images/dnsguard-overview.png" alt="DNSGuard 产品概览" width="100%">
 </p>
@@ -66,6 +68,14 @@ docker compose ps
 首次打开 HTTPS 管理页面后，使用 Web 初始化向导完成管理员创建、DNS 节点配置和 TSIG 验证。
 
 **完整安装说明：** [Docker 部署与运维手册](deploy/docker/README.md)
+
+## 界面预览
+
+登录页和控制台分别如下，便于快速了解 DNSGuard 的使用方式：
+
+| 安全登录 | DNS 控制台 |
+|---|---|
+| <img src="docs/images/dnsguard-login.jpg" alt="DNSGuard 安全登录页" width="430"> | <img src="docs/images/dnsguard-dashboard.jpg" alt="DNSGuard DNS 控制台" width="430"> |
 
 ## 安全与部署边界
 
