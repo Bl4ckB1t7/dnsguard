@@ -1,0 +1,10 @@
+services:
+  dnsguard-api:
+    networks:
+      - dnsguard-internal
+      - bind-test
+
+networks:
+  bind-test:
+    external: true
+    name: dnsguard-prod-bind-acceptance

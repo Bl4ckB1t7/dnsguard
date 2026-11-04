@@ -13,6 +13,7 @@ API_URL="http://127.0.0.1:${API_PORT}"
 API_PID=""
 KEEP=0
 CLEAN_ONLY=0
+BIND_ONLY=0
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT="$RUNTIME_DIR/acceptance-report.md"
 
@@ -24,10 +25,11 @@ log() { printf '[bind-cluster] %s\n' "$*"; }
 
 usage() {
   cat <<'EOF'
-Usage: run-acceptance.sh [--keep|--clean]
+Usage: run-acceptance.sh [--keep|--clean|--bind-only]
 
   --keep   Keep containers, runtime data, and logs after the run.
   --clean  Stop/remove this Compose project and delete only its runtime data.
+  --bind-only  Prepare and start only the isolated three-node BIND cluster.
 EOF
 }
 
@@ -35,6 +37,7 @@ while (($#)); do
   case "$1" in
     --keep) KEEP=1 ;;
     --clean) CLEAN_ONLY=1 ;;
+    --bind-only) BIND_ONLY=1; KEEP=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -837,6 +840,10 @@ write_report() {
 
 main() {
   prepare_runtime
+  if ((BIND_ONLY)); then
+    start_bind
+    return 0
+  fi
   (cd "$ROOT_DIR/server" && go build -o "$API_BIN" .)
   start_bind
   API_PID="$(start_api "$API_PORT" "$RUNTIME_DIR")"

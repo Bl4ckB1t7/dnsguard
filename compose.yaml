@@ -1,0 +1,92 @@
+name: dnsguard
+
+services:
+  dnsguard-api:
+    image: ${DNSGUARD_API_IMAGE:-dnsguard-api:1.0.0}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    env_file:
+      - ${DNSGUARD_ENV_FILE:-./deploy/docker/dnsguard.env}
+    user: "10001:10001"
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: "1.00"
+    volumes:
+      - type: bind
+        source: ${DNSGUARD_DATA_DIR:-./docker-data}
+        target: /var/lib/dnsguard
+      - type: bind
+        source: ${DNSGUARD_SECRET_FILE:-./secrets/rpz-manager.key}
+        target: /run/dnsguard-secrets/rpz-manager.key
+        read_only: true
+      - type: bind
+        source: ${DNSGUARD_BIND_LOG_DIR:-./bind-logs}
+        target: /mnt/bind-logs
+        read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    networks:
+      - dnsguard-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  dnsguard-web:
+    image: ${DNSGUARD_WEB_IMAGE:-dnsguard-web:1.0.0}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    depends_on:
+      dnsguard-api:
+        condition: service_healthy
+    user: "101:101"
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: "0.50"
+    ports:
+      - "${DNSGUARD_WEB_BIND_IP:-0.0.0.0}:${DNSGUARD_WEB_PORT:-443}:8443"
+    volumes:
+      - type: bind
+        source: ./deploy/docker/nginx-main.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+      - type: bind
+        source: ${DNSGUARD_TLS_DIR:-./tls}
+        target: /run/dnsguard-tls
+        read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,nosuid,nodev,size=16m,uid=101,gid=101,mode=0750
+      - /var/run:rw,nosuid,nodev,size=1m
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    networks:
+      - dnsguard-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+networks:
+  dnsguard-internal:
+    name: dnsguard-internal
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
