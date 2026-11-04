@@ -126,9 +126,28 @@ options {
 
 ### 3.1 TLD 数据状态与默认拒绝边界
 
-DNSGuard 控制台中的 TLD 数据状态用于展示和校验 IANA TLD 列表版本、数量与同步状态。它不会自动把 TLD 列表转换成默认拒绝 RPZ，不会修改 `named.conf`，也不会 reload/restart BIND。当前分支没有把“所有未授权域名”默认为 NXDOMAIN 的业务发布功能；因此不能仅凭 TLD 数量或一个 NXDOMAIN 响应宣称默认拒绝已经生效。
+DNSGuard 控制台中的 TLD 数据状态用于展示和校验 IANA TLD 列表版本、数量与同步状态。默认情况下只同步列表，不发布 deny RPZ。完成隔离验收并明确设置 `TLD_DENY_PUBLISH_ENABLED=true` 后，DNSGuard 才会通过现有 `nsupdate + TSIG` 向管理员预先配置的第二个 deny Zone 发布 TLD 触发项；它仍然不会自动修改 `named.conf`、reload/restart BIND。
 
-如果企业要启用默认拒绝，应由 BIND 管理员在隔离环境独立准备并验证专用 deny RPZ Zone，再由递归 BIND 在 `response-policy` 中按实际版本支持的优先级加载。必须同时验证：
+生产 BIND 需要由管理员独立配置第二个动态 Zone，并在递归实例按顺序加载两个 RPZ：白名单/重定向 Zone 在前，TLD deny Zone 在后。示例（先在隔离环境验证）：
+
+```conf
+response-policy {
+    zone "RPZ_ZONE";
+    zone "TLD_DENY_ZONE";
+};
+
+zone "TLD_DENY_ZONE" {
+    type primary;
+    file "/var/lib/bind/db.TLD_DENY_ZONE";
+    update-policy { grant dnsguard-rpz zonesub CNAME; };
+    notify yes;
+    allow-transfer { SECONDARY_1_IP; SECONDARY_2_IP; };
+};
+```
+
+每台 Secondary 以同样的 `TLD_DENY_ZONE` 配置为 secondary，并允许 Primary NOTIFY/IXFR/AXFR。不要让 DNSGuard 自动写入这些 BIND 配置。DNSGuard 发布每个 TLD 的精确触发项和 `*.TLD` 通配触发项，动作是 `CNAME .`；白名单 Zone 的 `passthru` 命中优先级和多 Zone 行为必须用当前 BIND 版本的隔离测试确认。
+
+必须同时验证：
 
 - 白名单域名及其子域名仍然 PASSTHRU；
 - A 重定向返回预期 IPv4；
@@ -148,6 +167,10 @@ RPZ_ZONE=RPZ_ZONE
 RPZ_PRIMARY=PRIMARY_IP
 RPZ_PRIMARY_PORT=53
 RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key
+TLD_DENY_PUBLISH_ENABLED=false
+TLD_DENY_ZONE=TLD_DENY_ZONE
+TLD_DENY_TTL_SECONDS=300
+TLD_DENY_ARTIFACT_FILE=/var/lib/dnsguard/rpz/TLD_DENY_ZONE.db
 ```
 
 首次初始化向导中：

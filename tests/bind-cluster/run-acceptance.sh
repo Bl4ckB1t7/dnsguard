@@ -11,6 +11,7 @@ API_BIN="$RUNTIME_DIR/dnsguard-api"
 API_PORT=18081
 API_URL="http://127.0.0.1:${API_PORT}"
 API_PID=""
+TLD_SOURCE_PID=""
 KEEP=0
 CLEAN_ONLY=0
 BIND_ONLY=0
@@ -141,6 +142,10 @@ cleanup_on_exit() {
     kill "$API_PID" 2>/dev/null || true
     wait "$API_PID" 2>/dev/null || true
   fi
+  if [[ -n "$TLD_SOURCE_PID" ]] && kill -0 "$TLD_SOURCE_PID" 2>/dev/null; then
+    kill "$TLD_SOURCE_PID" 2>/dev/null || true
+    wait "$TLD_SOURCE_PID" 2>/dev/null || true
+  fi
   compose logs --no-color >"$RUNTIME_DIR/docker-compose.log" 2>&1 || true
   if ((KEEP == 0)); then
     compose down --remove-orphans >/dev/null 2>&1 || true
@@ -156,7 +161,7 @@ prepare_runtime() {
   # Never kill an unrelated process just because a test port is occupied. A
   # previous interrupted run can be cleaned with --clean; an unknown listener
   # makes this run NOT RUN instead of being forcefully terminated.
-  for port in 18081 18082 18083 18084 18085 18086 18087 18088 18089 18090 18091; do
+  for port in 15353 15354 15355 15356 18081 18082 18083 18084 18085 18086 18087 18088 18089 18090 18091 18092; do
     if fuser "$port/tcp" >/dev/null 2>&1; then
       echo "test API port $port is already in use; refusing to stop the listener" >&2
       return 2
@@ -193,8 +198,34 @@ passthru IN A 192.0.2.10
 redirect IN A 192.0.2.20
 wild IN A 192.0.2.30
 EOF
+  cat >"$RUNTIME_DIR/primary-data/tld-deny.rpz.local.zone" <<'EOF'
+$TTL 60
+$ORIGIN tld-deny.rpz.local.
+@ IN SOA localhost. hostmaster.localhost. (1 1h 15m 30d 60)
+  IN NS localhost.
+EOF
+  cat >"$RUNTIME_DIR/primary-data/example.com.zone" <<'EOF'
+$TTL 60
+$ORIGIN example.com.
+@ IN SOA ns.example.com. hostmaster.example.com. (1 1h 15m 30d 60)
+  IN NS ns.example.com.
+ns IN A 192.0.2.1
+blocked IN A 192.0.2.101
+deep.blocked IN A 192.0.2.103
+allowed IN A 192.0.2.101
+sub.allowed IN A 192.0.2.101
+deep.allowed IN A 192.0.2.101
+redirect IN A 192.0.2.102
+sub.redirect IN A 192.0.2.102
+deep.redirect IN A 192.0.2.102
+EOF
   cp "$RUNTIME_DIR/primary-data/app.test.zone" "$RUNTIME_DIR/secondary-1-data/app.test.zone"
   cp "$RUNTIME_DIR/primary-data/app.test.zone" "$RUNTIME_DIR/secondary-2-data/app.test.zone"
+  cat >"$RUNTIME_DIR/tlds.txt" <<'EOF'
+# Version 1, Last Updated DNSGuard isolated acceptance fixture
+COM
+NET
+EOF
   for dir in "$RUNTIME_DIR"/*-data "$RUNTIME_DIR"/*-logs; do
     chmod 0775 "$dir"
     chown -R 53:53 "$dir" 2>/dev/null || true
@@ -241,8 +272,36 @@ start_bind() {
   wait_dns 15353
   wait_dns 15354
   wait_dns 15355
+  for _ in $(seq 1 60); do
+    if dig +tcp +time=1 +tries=1 @127.0.0.1 -p 15356 example.com SOA +short 2>/dev/null | grep -q '[0-9]'; then
+      break
+    fi
+    sleep 0.5
+  done
+  dig +tcp +time=1 +tries=1 @127.0.0.1 -p 15356 example.com SOA +short >/dev/null
+  for port in 15353 15354 15355; do
+    for _ in $(seq 1 60); do
+      if dig +tcp +time=1 +tries=1 @127.0.0.1 -p "$port" tld-deny.rpz.local SOA +short 2>/dev/null | grep -q '[0-9]'; then
+        break
+      fi
+      sleep 0.5
+    done
+    dig +tcp +time=1 +tries=1 @127.0.0.1 -p "$port" tld-deny.rpz.local SOA +short >/dev/null
+  done
   dig +tcp +time=2 +tries=1 @127.0.0.1 -p 15353 rpz.local SOA +short
   compose ps
+}
+
+start_tld_source() {
+  (cd "$RUNTIME_DIR" && python3 -m http.server 18092 --bind 127.0.0.1 >"$RUNTIME_DIR/tld-source.log" 2>&1) &
+  TLD_SOURCE_PID=$!
+  for _ in $(seq 1 30); do
+    if curl -fsS http://127.0.0.1:18092/tlds.txt >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
 }
 
 start_api() {
@@ -271,6 +330,13 @@ start_api() {
     "RPZ_PUBLISH_RETRY_BACKOFF_SECONDS=0"
     "DNS_NODE_ALLOWED_CIDRS=127.0.0.0/8"
     "RPZ_LOG_FILES=$dir/rpz.log"
+    "TLD_DENY_ENABLED=true"
+    "TLD_DENY_PUBLISH_ENABLED=true"
+    "TLD_DENY_ZONE=tld-deny.rpz.local"
+    "TLD_DENY_TTL_SECONDS=60"
+    "TLD_SOURCE_URL=http://127.0.0.1:18092/tlds.txt"
+    "TLD_STATE_FILE=$dir/tld-state.json"
+    "TLD_DENY_ARTIFACT_FILE=$dir/tld-deny.rpz.local.db"
     "PATH=$configured_path"
   )
   mkdir -p "$dir"
@@ -460,26 +526,49 @@ case_actual_rpz_resolution() {
 }
 
 case_tld_default_deny() {
-  local test_name="${TLD_DENY_TEST_NAME:-}"
-  local deny_zone="${TLD_DENY_ZONE:-}"
-  local deny_trigger="${TLD_DENY_TRIGGER:-}"
-  local baseline_port="${TLD_DENY_BASELINE_PORT:-}"
-  local policy_port="${TLD_DENY_POLICY_PORT:-}"
-  local expected_a="${TLD_DENY_EXPECTED_A:-}"
+  local test_name="${TLD_DENY_TEST_NAME:-blocked.example.com}"
+  local deny_zone="${TLD_DENY_ZONE:-tld-deny.rpz.local}"
+  local deny_trigger="${TLD_DENY_TRIGGER:-com.tld-deny.rpz.local}"
+  local baseline_port="${TLD_DENY_BASELINE_PORT:-15356}"
+  local expected_a="${TLD_DENY_EXPECTED_A:-192.0.2.101}"
   local expected_rcode="${TLD_DENY_EXPECTED_RCODE:-NXDOMAIN}"
-  if [[ -z "$test_name" || -z "$deny_zone" || -z "$deny_trigger" || -z "$baseline_port" || -z "$policy_port" || -z "$expected_a" ]]; then
-    echo 'TLD default-deny zone/test parameters are not configured; active TLD deny verification is NOT RUN'
-    return 125
-  fi
-  local baseline_answer policy_header policy_rcode evidence_answer
-  baseline_answer="$(answer "$baseline_port" "$test_name")"
+  local baseline_answer policy_header policy_rcode evidence_answer port
+  create_rule allowed.example.com CNAME '' 'TLD deny whitelist'
+  create_rule redirect.example.com A 192.0.2.250 'TLD deny redirect'
+  publish_and_wait
+  [[ "$JOB_STATUS" == succeeded ]] || { cat "$JOB_FILE"; return 1; }
+  baseline_answer="$(dig +tcp +norecurse +time=2 +tries=1 @127.0.0.1 -p "$baseline_port" "$test_name" A +short | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   [[ "$baseline_answer" == *"$expected_a"* ]] || { echo "baseline=$baseline_answer expected=$expected_a"; return 1; }
-  policy_header="$(dig +tcp +time=2 +tries=1 +comments @127.0.0.1 -p "$policy_port" "$test_name" A 2>&1 || true)"
-  policy_rcode="$(sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' <<<"$policy_header" | head -n1)"
-  [[ "$policy_rcode" == "$expected_rcode" ]] || { echo "policy_rcode=$policy_rcode expected=$expected_rcode"; return 1; }
+  local deep_baseline_answer
+  deep_baseline_answer="$(dig +tcp +norecurse +time=2 +tries=1 @127.0.0.1 -p "$baseline_port" deep.blocked.example.com A +short | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  [[ "$deep_baseline_answer" == *192.0.2.103* ]] || { echo "deep-baseline=$deep_baseline_answer expected=192.0.2.103"; return 1; }
+  for port in 15353 15354 15355; do
+    for _ in $(seq 1 120); do
+      policy_header="$(dig +tcp +time=2 +tries=1 +comments @127.0.0.1 -p "$port" "$test_name" A 2>&1 || true)"
+      policy_rcode="$(sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' <<<"$policy_header" | head -n1)"
+      [[ "$policy_rcode" == "$expected_rcode" ]] && break
+      sleep 0.25
+    done
+    [[ "$policy_rcode" == "$expected_rcode" ]] || { echo "port=$port policy_rcode=$policy_rcode expected=$expected_rcode"; return 1; }
+    wait_answer "$port" allowed.example.com 192.0.2.101
+    wait_answer "$port" sub.allowed.example.com 192.0.2.101
+    wait_answer "$port" deep.allowed.example.com 192.0.2.101
+    wait_answer "$port" redirect.example.com 192.0.2.250
+    wait_answer "$port" sub.redirect.example.com 192.0.2.250
+    wait_answer "$port" deep.redirect.example.com 192.0.2.250
+  done
+  for port in 15353 15354 15355; do
+    for _ in $(seq 1 120); do
+      policy_header="$(dig +tcp +time=2 +tries=1 +comments @127.0.0.1 -p "$port" deep.blocked.example.com A 2>&1 || true)"
+      policy_rcode="$(sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' <<<"$policy_header" | head -n1)"
+      [[ "$policy_rcode" == "$expected_rcode" ]] && break
+      sleep 0.25
+    done
+    [[ "$policy_rcode" == "$expected_rcode" ]] || { echo "port=$port deep policy_rcode=$policy_rcode expected=$expected_rcode"; return 1; }
+  done
   evidence_answer="$(dig +tcp +time=2 +tries=1 +comments +norecurse @127.0.0.1 -p 15353 "$deny_trigger" CNAME 2>&1 || true)"
   grep -Eq '(^|[[:space:]])CNAME[[:space:]]+\.[[:space:]]*$' <<<"$evidence_answer" || { echo "deny_trigger=$deny_trigger did not show CNAME ."; return 1; }
-  echo "baseline=$baseline_answer policy_rcode=$policy_rcode deny_trigger=$deny_trigger zone=$deny_zone"
+  echo "baseline=$baseline_answer deep-baseline=$deep_baseline_answer policy_rcode=$policy_rcode whitelist+subdomain+redirect+deny verified on all nodes; deny_trigger=$deny_trigger zone=$deny_zone"
 }
 
 case_duplicate_publish_guard() {
@@ -872,7 +961,7 @@ write_report() {
     echo "- 执行时间（UTC）：$RUN_ID"
     echo "- Compose 项目：$PROJECT"
     echo "- 隔离网络：dnsguard-bind-acceptance (172.30.0.0/24)"
-    echo "- 宿主机端口：15353/15354/15355（未占用 53）"
+    echo "- 宿主机端口：15353/15354/15355（RPZ 集群）和 15356（隔离基线源，均未占用 53）"
     echo "- 生产连接：无"
     echo
     echo "## 用例结果"
@@ -900,6 +989,7 @@ main() {
   fi
   (cd "$ROOT_DIR/server" && go build -o "$API_BIN" .)
   start_bind
+  start_tld_source
   API_PID="$(start_api "$API_PORT" "$RUNTIME_DIR")"
   wait_api "$API_URL"
   run_case 'normal-publish-and-zone-transfer' case_normal_publish

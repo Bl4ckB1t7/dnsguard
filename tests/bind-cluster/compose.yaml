@@ -1,6 +1,23 @@
 name: dnsguard-bind-acceptance
 
 services:
+  # Isolated authoritative source used only to provide a known-positive
+  # baseline for default-deny assertions. It is not a DNSGuard cluster node.
+  bind-upstream:
+    image: internetsystemsconsortium/bind9:9.20
+    container_name: bind-upstream
+    command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
+    ports:
+      - "127.0.0.1:15356:53/tcp"
+      - "127.0.0.1:15356:53/udp"
+    networks:
+      dnsguard-bind:
+        ipv4_address: 172.30.0.20
+    volumes:
+      - ./config/upstream/named.conf:/etc/bind/named.conf:ro
+      - ./runtime/primary-data:/var/lib/bind/upstream:ro
+      - ./runtime/primary-logs:/var/log/bind
+
   bind-primary:
     image: internetsystemsconsortium/bind9:9.20
     container_name: bind-primary

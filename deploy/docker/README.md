@@ -62,6 +62,7 @@ DNSGUARD_BIND_LOG_DIR=/srv/dnsguard/bind-logs
 - `RPZ_ZONE`、`RPZ_PRIMARY`、`RPZ_PRIMARY_PORT`；
 - `RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key`；
 - `TLD_DENY_ENABLED=true`、`TLD_SOURCE_URL`、`TLD_SYNC_INTERVAL_SECONDS=86400`；
+- 隔离验收后才可启用 `TLD_DENY_PUBLISH_ENABLED=true`，并设置 `TLD_DENY_ZONE`、`TLD_DENY_TTL_SECONDS` 和 `TLD_DENY_ARTIFACT_FILE`；
 - `TRUSTED_PROXY_CIDRS` 和 HTTPS 反向代理选项（如使用企业入口）。
 
 不要把真实值写入 Git：
@@ -136,8 +137,10 @@ Primary，页面必须明确展示影响；如果写入成功但清理失败，�
 
 DNSGuard 默认每天检查一次 IANA TLD 列表，并将版本、数量、校验摘要和最后成功时间保存到
 `docker-data/tld-state.json`。下载、格式或持久化校验失败时不会清空上一份状态，也不会触碰
-BIND。当前该模块只提供 TLD 数据状态展示，不会把列表自动发布成默认拒绝 RPZ；严格默认拒绝
-仍需在隔离 BIND 环境完成匹配范围验证后，由管理员作为独立 BIND 变更启用。
+BIND。默认 `TLD_DENY_PUBLISH_ENABLED=false`，此时只展示 TLD 数据。管理员在隔离 BIND 环境
+完成第二个 deny Zone、response-policy 顺序和解析效果验证后，才可设置为 `true`。启用后
+DNSGuard 通过现有 `nsupdate + TSIG` 更新该 Zone，但不会自动修改 `named.conf`、重启 BIND
+或替管理员启用递归策略。
 
 | 宿主机目录 | 容器路径 | 内容 |
 |---|---|---|

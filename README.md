@@ -96,7 +96,7 @@ docker compose ps
 
 DNSGuard 仅管理经过授权的 BIND RPZ 集群，不会自动安装、修改或重启生产 BIND。生产环境必须使用 HTTPS，并妥善保护 TSIG 密钥和持久化数据。
 
-控制台的 **TLD 数据状态**卡片显示 IANA TLD 数据的数量、版本和同步状态。默认每 24 小时检查一次；下载失败时保留上一份有效状态。该状态同步不会自动修改 `named.conf`、重启 BIND 或发布未经隔离验证的默认拒绝 RPZ。TLD 列表本身不是全局拒绝策略；如需默认拒绝，管理员必须在隔离环境配置并验证独立的 RPZ Zone，再由 BIND 自己加载。
+控制台的 **TLD 数据状态**卡片显示 IANA TLD 数据的数量、版本和同步状态。默认每 24 小时检查一次；下载失败时保留上一份有效状态。默认不发布 deny RPZ；管理员在隔离环境配置并验证第二个 RPZ Zone 后，可显式启用 `TLD_DENY_PUBLISH_ENABLED=true`，由 DNSGuard 通过现有 `nsupdate + TSIG` 更新该 Zone。DNSGuard 不会自动修改 `named.conf`、重启 BIND 或改变递归配置。
 
 正式部署前，应在隔离环境完成 RPZ 发布、同步、备份和恢复测试。
 

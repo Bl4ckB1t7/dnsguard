@@ -206,7 +206,7 @@ func validateProductionRuntimeFiles(requireConfigured ...bool) error {
 			}
 		}
 	}
-	for _, path := range []string{os.Getenv("DNS_STATE_FILE"), os.Getenv("AUDIT_FILE"), os.Getenv("RPZ_ARTIFACT_FILE"), os.Getenv("TLD_STATE_FILE")} {
+	for _, path := range []string{os.Getenv("DNS_STATE_FILE"), os.Getenv("AUDIT_FILE"), os.Getenv("RPZ_ARTIFACT_FILE"), os.Getenv("TLD_STATE_FILE"), os.Getenv("TLD_DENY_ARTIFACT_FILE")} {
 		if path == "" {
 			continue
 		}
@@ -227,6 +227,22 @@ func validateProductionRuntimeFiles(requireConfigured ...bool) error {
 		}
 		if info.Mode().Perm()&0o007 != 0 {
 			return fmt.Errorf("RPZ_KEY_FILE must not be world accessible")
+		}
+	}
+	if tldPolicyPublishEnabled() {
+		if tldPolicyZone() == "" {
+			return fmt.Errorf("TLD_DENY_ZONE must be configured when TLD_DENY_PUBLISH_ENABLED=true")
+		}
+		if !domainPattern.MatchString(tldPolicyZone()) {
+			return fmt.Errorf("TLD_DENY_ZONE is invalid")
+		}
+		if os.Getenv("RPZ_PRIMARY") == "" {
+			return fmt.Errorf("RPZ_PRIMARY must be configured when TLD DENY publishing is enabled")
+		}
+		keyFile := os.Getenv("RPZ_KEY_FILE")
+		info, err := os.Stat(keyFile)
+		if keyFile == "" || err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o007 != 0 {
+			return fmt.Errorf("RPZ_KEY_FILE must be a protected regular file for TLD DENY publishing")
 		}
 	}
 	return nil
