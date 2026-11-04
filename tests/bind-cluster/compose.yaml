@@ -1,0 +1,56 @@
+name: dnsguard-bind-acceptance
+
+services:
+  bind-primary:
+    image: internetsystemsconsortium/bind9:9.20
+    container_name: bind-primary
+    command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
+    ports:
+      - "127.0.0.1:15353:53/tcp"
+      - "127.0.0.1:15353:53/udp"
+    networks:
+      dnsguard-bind:
+        ipv4_address: 172.30.0.10
+    volumes:
+      - ./config/primary/named.conf:/etc/bind/named.conf:ro
+      - ./runtime/keys:/etc/bind/keys:ro
+      - ./runtime/primary-data:/var/lib/bind/primary
+      - ./runtime/primary-logs:/var/log/bind
+
+  bind-secondary-1:
+    image: internetsystemsconsortium/bind9:9.20
+    container_name: bind-secondary-1
+    command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
+    ports:
+      - "127.0.0.1:15354:53/tcp"
+      - "127.0.0.1:15354:53/udp"
+    networks:
+      dnsguard-bind:
+        ipv4_address: 172.30.0.11
+    volumes:
+      - ./config/secondary/named.conf:/etc/bind/named.conf:ro
+      - ./runtime/secondary-1-data:/var/lib/bind/secondary
+      - ./runtime/secondary-1-logs:/var/log/bind
+
+  bind-secondary-2:
+    image: internetsystemsconsortium/bind9:9.20
+    container_name: bind-secondary-2
+    command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
+    ports:
+      - "127.0.0.1:15355:53/tcp"
+      - "127.0.0.1:15355:53/udp"
+    networks:
+      dnsguard-bind:
+        ipv4_address: 172.30.0.12
+    volumes:
+      - ./config/secondary-2/named.conf:/etc/bind/named.conf:ro
+      - ./runtime/secondary-2-data:/var/lib/bind/secondary
+      - ./runtime/secondary-2-logs:/var/log/bind
+
+networks:
+  dnsguard-bind:
+    name: dnsguard-bind-acceptance
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

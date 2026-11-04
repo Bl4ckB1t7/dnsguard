@@ -17,3 +17,6 @@ dev/bind-rpz/logs/
 dev/bind-rpz/run/
 dev/bind-rpz/keys/*.key
 dev/bind-rpz/keys/*.private
+
+# Docker BIND acceptance runtime (generated TSIG, journals, logs, reports)
+tests/bind-cluster/runtime/
