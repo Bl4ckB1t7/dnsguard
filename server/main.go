@@ -195,7 +195,7 @@ func validateProductionRuntimeFiles(requireConfigured ...bool) error {
 	}
 	if os.Getenv("TLS_CERT_FILE") != "" {
 		for _, path := range []string{os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE")} {
-			info, err := os.Stat(path)
+			info, err := os.Stat(path) // #nosec G703 -- TLS paths are administrator-controlled deployment configuration.
 			if err != nil || !info.Mode().IsRegular() {
 				return fmt.Errorf("TLS file must be an existing regular file: %s", path)
 			}
@@ -206,7 +206,7 @@ func validateProductionRuntimeFiles(requireConfigured ...bool) error {
 			continue
 		}
 		parent := filepath.Dir(path)
-		info, err := os.Stat(parent)
+		info, err := os.Stat(parent) // #nosec G703 -- runtime paths are administrator-controlled deployment configuration.
 		if err != nil || !info.IsDir() {
 			return fmt.Errorf("runtime data directory does not exist: %s", parent)
 		}
@@ -216,7 +216,7 @@ func validateProductionRuntimeFiles(requireConfigured ...bool) error {
 	}
 	if rpzConfig("RPZ_PUBLISH_MODE", "artifact") == "nsupdate" {
 		keyFile := os.Getenv("RPZ_KEY_FILE")
-		info, err := os.Stat(keyFile)
+		info, err := os.Stat(keyFile) // #nosec G703 -- RPZ_KEY_FILE is a protected administrator-controlled path.
 		if keyFile == "" || err != nil || !info.Mode().IsRegular() {
 			return fmt.Errorf("RPZ_KEY_FILE must be an existing regular file in nsupdate mode")
 		}

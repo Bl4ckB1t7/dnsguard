@@ -1,3 +1,4 @@
+//lint:file-ignore ST1005 Setup validation errors are user-facing localized messages.
 package main
 
 import (
@@ -308,7 +309,7 @@ func validateSetupKey(path string) error {
 	if path == "." || !pathWithin(bootstrapKeyDir(), path) {
 		return fmt.Errorf("TSIG Key 只能从受保护部署目录选择")
 	}
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- path is constrained to the protected bootstrap key directory.
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("TSIG Key 必须是受保护的普通文件")
 	}
@@ -497,7 +498,9 @@ func issueSetupSession(w http.ResponseWriter, r *http.Request, username string) 
 	activeSessions[username] = sessionID
 	authMu.Unlock()
 	secure := r.TLS != nil || (trustedProxy(r) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure is derived from TLS or an explicitly trusted proxy.
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: signSession(username, expiry, sessionID), Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure,go.lang.security.audit.net.cookie-missing-httponly.cookie-missing-httponly -- CSRF is intentionally readable by the browser and secure follows TLS/proxy state.
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrfToken, Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
 }
 
@@ -511,7 +514,7 @@ func commitSetup(request setupRequest, nodes []DNSNode, r *http.Request) error {
 	for index, path := range paths {
 		if existed[index] {
 			content, readErr := os.ReadFile(path)
-			if readErr != nil || os.WriteFile(filepath.Join(backupDir, strconv.Itoa(index)), content, 0o600) != nil {
+			if readErr != nil || os.WriteFile(filepath.Join(backupDir, strconv.Itoa(index)), content, 0o600) != nil { // #nosec G703 -- backupDir is freshly created and the filename is a local numeric index.
 				_ = os.RemoveAll(backupDir)
 				return fmt.Errorf("备份现有配置失败")
 			}

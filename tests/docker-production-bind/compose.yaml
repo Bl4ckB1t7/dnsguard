@@ -3,14 +3,14 @@ name: dnsguard-production-bind
 services:
   bind-primary:
     image: internetsystemsconsortium/bind9:9.20
-    container_name: prod-bind-primary
+    container_name: ${BIND_PRIMARY_CONTAINER:-prod-bind-primary}
     command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
     ports:
-      - "127.0.0.1:16353:53/tcp"
-      - "127.0.0.1:16353:53/udp"
+      - "127.0.0.1:${BIND_PRIMARY_HOST_PORT:-16353}:53/tcp"
+      - "127.0.0.1:${BIND_PRIMARY_HOST_PORT:-16353}:53/udp"
     networks:
       prod-bind:
-        ipv4_address: 172.31.0.10
+        ipv4_address: 172.32.0.10
     volumes:
       - ./config/primary/named.conf:/etc/bind/named.conf:ro
       - ./runtime/keys:/etc/bind/keys:ro
@@ -19,14 +19,14 @@ services:
 
   bind-secondary-1:
     image: internetsystemsconsortium/bind9:9.20
-    container_name: prod-bind-secondary-1
+    container_name: ${BIND_SECONDARY_1_CONTAINER:-prod-bind-secondary-1}
     command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
     ports:
-      - "127.0.0.1:16354:53/tcp"
-      - "127.0.0.1:16354:53/udp"
+      - "127.0.0.1:${BIND_SECONDARY_1_HOST_PORT:-16354}:53/tcp"
+      - "127.0.0.1:${BIND_SECONDARY_1_HOST_PORT:-16354}:53/udp"
     networks:
       prod-bind:
-        ipv4_address: 172.31.0.11
+        ipv4_address: 172.32.0.11
     volumes:
       - ./config/secondary/named.conf:/etc/bind/named.conf:ro
       - ./runtime/secondary-1-data:/var/lib/bind/secondary
@@ -34,14 +34,14 @@ services:
 
   bind-secondary-2:
     image: internetsystemsconsortium/bind9:9.20
-    container_name: prod-bind-secondary-2
+    container_name: ${BIND_SECONDARY_2_CONTAINER:-prod-bind-secondary-2}
     command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
     ports:
-      - "127.0.0.1:16355:53/tcp"
-      - "127.0.0.1:16355:53/udp"
+      - "127.0.0.1:${BIND_SECONDARY_2_HOST_PORT:-16355}:53/tcp"
+      - "127.0.0.1:${BIND_SECONDARY_2_HOST_PORT:-16355}:53/udp"
     networks:
       prod-bind:
-        ipv4_address: 172.31.0.12
+        ipv4_address: 172.32.0.12
     volumes:
       - ./config/secondary-2/named.conf:/etc/bind/named.conf:ro
       - ./runtime/secondary-2-data:/var/lib/bind/secondary
@@ -49,8 +49,8 @@ services:
 
 networks:
   prod-bind:
-    name: dnsguard-prod-bind-acceptance
+    name: ${BIND_NETWORK_NAME:-dnsguard-prod-bind-acceptance}
     driver: bridge
     ipam:
       config:
-        - subnet: 172.31.0.0/24
+        - subnet: 172.32.0.0/24

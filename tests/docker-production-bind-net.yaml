@@ -7,4 +7,4 @@ services:
 networks:
   bind-test:
     external: true
-    name: dnsguard-prod-bind-acceptance
+    name: ${BIND_NETWORK_NAME:-dnsguard-prod-bind-acceptance}

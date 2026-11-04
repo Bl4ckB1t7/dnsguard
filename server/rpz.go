@@ -301,12 +301,6 @@ func compileRPZ(rules []RPZRule) (string, error) {
 	return builder.String(), nil
 }
 
-func activeRPZRules() []RPZRule {
-	dnsMu.RLock()
-	defer dnsMu.RUnlock()
-	return append([]RPZRule{}, state.Rules...)
-}
-
 func writeRPZArtifact(content string) (string, error) {
 	path := rpzConfig("RPZ_ARTIFACT_FILE", filepath.Join("data", "rpz", rpzZoneName()+".db"))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -336,19 +330,6 @@ func validateRPZ(ctx context.Context, path string) string {
 		return fmt.Sprintf("named-checkzone 失败: %s", strings.TrimSpace(string(output)))
 	}
 	return strings.TrimSpace(string(output))
-}
-
-func verifyRPZPrimarySerial(ctx context.Context, previous int64) error {
-	address := net.JoinHostPort(rpzConfig("RPZ_PRIMARY", "RPZ_PRIMARY"), rpzConfig("RPZ_PRIMARY_PORT", "53"))
-	actual, err := probeDNSNode(ctx, address)
-	if err != nil {
-		return fmt.Errorf("RPZ Primary SOA 探测失败: %w", err)
-	}
-	serial, err := strconv.ParseInt(actual, 10, 64)
-	if err != nil || serial < previous {
-		return fmt.Errorf("RPZ Primary SOA Serial 发生回退: previous=%d actual=%s", previous, actual)
-	}
-	return nil
 }
 
 func queryDNSNode(ctx context.Context, address, name, recordType string) ([]string, error) {
@@ -531,7 +512,7 @@ func runNSUpdate(ctx context.Context, current, previous []RPZRule) error {
 	if keyFile == "" {
 		return fmt.Errorf("RPZ_KEY_FILE 未配置")
 	}
-	if _, err := os.Stat(keyFile); err != nil {
+	if _, err := os.Stat(keyFile); err != nil { // #nosec G703 -- RPZ_KEY_FILE is a protected deployment configuration path validated at startup.
 		return fmt.Errorf("RPZ_KEY_FILE 不可读: %w", err)
 	}
 	currentDomains := map[string]bool{}
@@ -561,7 +542,7 @@ func runNSUpdate(ctx context.Context, current, previous []RPZRule) error {
 		}
 	}
 	input.WriteString("send\n")
-	command := exec.CommandContext(ctx, "nsupdate", "-k", keyFile)
+	command := exec.CommandContext(ctx, "nsupdate", "-k", keyFile) // #nosec G702 -- executable is fixed and keyFile is validated deployment configuration.
 	command.Stdin = strings.NewReader(input.String())
 	output, err := command.CombinedOutput()
 	if err != nil {
