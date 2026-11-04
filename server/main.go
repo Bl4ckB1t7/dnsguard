@@ -66,6 +66,9 @@ func main() {
 	if err := loadDNSState(); err != nil {
 		log.Fatal(err)
 	}
+	if err := loadTLDState(); err != nil {
+		log.Printf("TLD 状态不可用，将在后台尝试重新同步: %v", err)
+	}
 	if err := loadPublishJobs(); err != nil {
 		log.Fatal(err)
 	}
@@ -80,6 +83,7 @@ func main() {
 		log.Fatal(err)
 	}
 	startDNSHealthMonitor()
+	startTLDSyncMonitor()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", health)
@@ -96,6 +100,7 @@ func main() {
 	mux.HandleFunc("/api/auth/logout", authLogout)
 	mux.HandleFunc("/api/auth/password", authPasswordChange)
 	mux.HandleFunc("/api/dns/overview", dnsOverview)
+	mux.HandleFunc("/api/dns/tld/status", tldStatus)
 	mux.HandleFunc("/api/dns/nodes", dnsNodes)
 	mux.HandleFunc("/api/dns/nodes/", dnsNodeByID)
 	mux.HandleFunc("/api/dns/records", dnsRecords)
@@ -201,7 +206,7 @@ func validateProductionRuntimeFiles(requireConfigured ...bool) error {
 			}
 		}
 	}
-	for _, path := range []string{os.Getenv("DNS_STATE_FILE"), os.Getenv("AUDIT_FILE"), os.Getenv("RPZ_ARTIFACT_FILE")} {
+	for _, path := range []string{os.Getenv("DNS_STATE_FILE"), os.Getenv("AUDIT_FILE"), os.Getenv("RPZ_ARTIFACT_FILE"), os.Getenv("TLD_STATE_FILE")} {
 		if path == "" {
 			continue
 		}

@@ -61,6 +61,7 @@ DNSGUARD_BIND_LOG_DIR=/srv/dnsguard/bind-logs
 - `DNS_NODE_ADDRESSES`、`DNS_NODE_ALLOWED_CIDRS`；
 - `RPZ_ZONE`、`RPZ_PRIMARY`、`RPZ_PRIMARY_PORT`；
 - `RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key`；
+- `TLD_DENY_ENABLED=true`、`TLD_SOURCE_URL`、`TLD_SYNC_INTERVAL_SECONDS=86400`；
 - `TRUSTED_PROXY_CIDRS` 和 HTTPS 反向代理选项（如使用企业入口）。
 
 不要把真实值写入 Git：
@@ -130,6 +131,13 @@ Primary，页面必须明确展示影响；如果写入成功但清理失败，�
 认证、CSRF 校验并留下审计记录。
 
 ## 7. 持久化数据和权限
+
+### TLD DENY 状态
+
+DNSGuard 默认每天检查一次 IANA TLD 列表，并将版本、数量、校验摘要和最后成功时间保存到
+`docker-data/tld-state.json`。下载、格式或持久化校验失败时不会清空上一份状态，也不会触碰
+BIND。当前该模块只提供 TLD 数据状态展示；严格默认拒绝 RPZ 仍需在隔离 BIND 环境完成匹配
+范围验证后，才能作为独立变更启用。
 
 | 宿主机目录 | 容器路径 | 内容 |
 |---|---|---|

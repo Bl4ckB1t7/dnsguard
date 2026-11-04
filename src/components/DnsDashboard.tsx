@@ -3,6 +3,7 @@ import { AuditPanel, type AuditEntry } from "./AuditPanel";
 import { DnsNodePanel, type DnsNode } from "./DnsNodePanel";
 
 type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; lastPublish: string; publishMessage: string; publishJobId: string; publishJobStatus: string };
+type TLDStatus = { status: string; source: string; version?: string; lastUpdated?: string; tldCount: number; sha256?: string; lastChecked?: string; lastSuccessfulSync?: string; message?: string };
 type Rule = { id: string; domain: string; action: string; type?: string; value?: string; reason: string; status: string; updatedAt: string };
 type RPZChange = { type: string; domain: string; before: string; after: string };
 type RPZPreview = { pending: boolean; currentCount: number; publishedCount: number; changes: RPZChange[] };
@@ -72,6 +73,7 @@ function ruleActionLabel(rule: Rule): string {
 export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword = false }: { onLogout: () => void; authEnabled?: boolean; mustChangePassword?: boolean }) {
   const [activeView, setActiveView] = useState<DashboardView>(dashboardViewFromURL);
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [tldStatus, setTldStatus] = useState<TLDStatus | null>(null);
   const [nodes, setNodes] = useState<DnsNode[]>([]);
   const [nodeDrafts, setNodeDrafts] = useState<Record<string, string>>({});
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
@@ -127,12 +129,13 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
     setLoading(true);
     setLoadError("");
     try {
-      const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions] = await Promise.all([
+      const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions, nextTLDStatus] = await Promise.all([
         readJSON<Overview>("/api/dns/overview"),
         readJSON<DnsNode[]>("/api/dns/nodes"),
         readJSON<Rule[]>("/api/dns/rpz"),
         readJSON<RPZPreview>("/api/dns/rpz/preview"),
         readJSON<RPZVersion[]>("/api/dns/rpz/versions"),
+        readJSON<TLDStatus>("/api/dns/tld/status"),
       ]);
       setOverview(nextOverview);
       setNodes(nextNodes ?? []);
@@ -141,6 +144,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setSelectedRuleIds((selected) => selected.filter((id) => (nextRules ?? []).some((rule) => rule.id === id)));
       setPreview(nextPreview);
       setVersions(nextVersions ?? []);
+      setTldStatus(nextTLDStatus);
     } catch (error) {
       setLoadError(`状态加载失败：${(error as Error).message}。`);
       throw error;
@@ -486,7 +490,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       <section className="dns-cards">
         <article><span>DNS 节点</span><strong>{overview ? `${overview.healthyNodes}/${overview.nodes}` : "—"}</strong><small>健康节点</small></article>
         <article><span>RPZ 规则</span><strong>{overview?.rules ?? "—"}</strong><small>{overview?.publishedRules ?? 0} 条已发布</small></article>
-        <article className={overview?.rpzHitStatus === "ready" ? "" : "muted"}><span>RPZ 命中</span><strong>{overview?.rpzHitStatus === "ready" ? overview.rpzHits?.toLocaleString() ?? "—" : "—"}</strong><small>{overview?.rpzHitStatus === "ready" ? "BIND 日志去重累计" : "日志未接入，不影响 RPZ 发布"}</small></article>
+        <article className={tldStatus?.status === "ready" ? "" : "muted"}><span>TLD DENY 策略</span><strong>{tldStatus?.tldCount?.toLocaleString() ?? "—"}</strong><small>{tldStatus?.status === "ready" ? `数据已同步 · ${tldStatus.version ?? "无版本"}` : tldStatus?.status === "error" ? "同步异常，保留上一份状态" : "等待 TLD 数据同步"}</small></article>
         <article><span>最后同步</span><strong className="sync-value">{overview?.lastSync ?? "—"}</strong><small>Primary → Secondary</small></article>
       </section>
 
