@@ -19,7 +19,7 @@
 - `tests/` 中保留的是可复现的隔离测试源码和配置；测试运行目录、TSIG、日志、状态文件和报告不会进入仓库，也不会进入最终运行镜像。
 - 不要提交 `deploy/docker/dnsguard.env`、`docker-data/`、`secrets/`、`tls/`、`bind-logs/`、`.run/` 或任何真实 BIND 配置/密钥。
 - 发布前应检查暂存区而不是只检查工作区：`git diff --cached --check`、`git ls-files` 和仓库平台的 Secret scanning 都必须通过。
-- 当前仓库不替用户选择开源许可证；公开发布前请根据项目授权意图补充合适的 `LICENSE`。没有许可证时，公开可见不等于他人获得再分发或修改许可。
+- 本项目使用根目录 `LICENSE` 中的 MIT License；第三方依赖仍以各自许可证为准。
 
 ## 解决什么问题
 
