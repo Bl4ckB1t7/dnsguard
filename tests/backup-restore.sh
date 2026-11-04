@@ -15,40 +15,86 @@ cleanup() {
 trap cleanup EXIT
 
 make_fixture() {
-  local data="$1" secrets="$2" tls="$3"
+  local data="$1" secrets="$2" tls="$3" config="$4"
   mkdir -p "$data/rpz" "$secrets" "$tls"
-  printf '%s\n' '{"rules":[{"domain":"restore.example.com"}]}' >"$data/dns-state.json"
+  cat >"$data/dns-state.json" <<'EOF'
+{
+  "nodes": [{"id":"primary-1","name":"restore-primary","role":"primary","address":"127.0.0.1:53"}],
+  "rules": [{"id":"rule-1","domain":"restore.example.com","action":"redirect","type":"A","value":"192.0.2.40","reason":"restore test","status":"draft","updatedAt":"2026-01-01T00:00:00Z"}],
+  "published": [{"id":"rule-0","domain":"published.example.com","action":"passthru","type":"CNAME","reason":"published history","status":"published","updatedAt":"2025-12-31T00:00:00Z"}],
+  "versions": [{"id":"version-1","createdAt":"2025-12-31T00:00:00Z","mode":"artifact","rules":[]}],
+  "rulesRevision": 1
+}
+EOF
   printf '%s\n' '{"rules":[{"domain":"old.example.com"}]}' >"$data/dns-state.json.bak"
   printf '%s\n' '[{"id":"job-1","status":"succeeded"}]' >"$data/publish-jobs.json"
   printf '%s\n' '[]' >"$data/audit.json"
   printf '%s\n' '[]' >"$data/audit.json.1"
   printf '%s\n' '{"status":"completed"}' >"$data/initialization.json"
-  printf '%s\n' '{"username":"admin","passwordHash":"$2b$12$0PGbIizhyrBXRqrz2a9phexSlrozHutf7KxHAaP.Tnpr9iTd8Emvy"}' >"$data/auth.json"
+  printf '%s\n' '{"username":"admin","passwordHash":"placeholder"}' >"$data/auth.json"
   printf '%s\n' '[{"id":"primary-1","name":"restore-primary","role":"primary","address":"127.0.0.1:53"}]' >"$data/dns-nodes.json"
   printf '%s\n' '{"enabled":false}' >"$data/telegram.json"
   printf '%s\n' 'zone artifact' >"$data/rpz/rpz.local.db"
   printf '%s\n' 'key fixture' >"$secrets/rpz-manager.key"
-  printf '%s\n' 'certificate fixture' >"$tls/fullchain.pem"
-  printf '%s\n' 'private key fixture' >"$tls/privkey.pem"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+    -keyout "$tls/privkey.pem" -out "$tls/fullchain.pem" \
+    -subj '/CN=localhost' >/dev/null 2>&1
+  cat >"$config" <<'EOF'
+APP_ENV=production
+AUTH_ENABLED=true
+AUTH_USERNAME=admin
+AUTH_SECRET=restore-test-auth-secret-012345678901234567890123456789
+MONITORING_TOKEN=restore-test-monitoring-token-012345678901234567890123456789
+AUTH_FILE=/var/lib/dnsguard/auth.json
+DNS_NODE_CONFIG_FILE=/var/lib/dnsguard/dns-nodes.json
+INITIALIZATION_FILE=/var/lib/dnsguard/initialization.json
+DNS_NODE_ALLOWED_CIDRS=127.0.0.0/8
+RPZ_ZONE=rpz.local
+RPZ_PUBLISH_MODE=artifact
+RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key
+RPZ_ARTIFACT_FILE=/var/lib/dnsguard/rpz/rpz.local.db
+RPZ_PUBLISH_JOBS_FILE=/var/lib/dnsguard/publish-jobs.json
+DNS_STATE_FILE=/var/lib/dnsguard/dns-state.json
+AUDIT_FILE=/var/lib/dnsguard/audit.json
+TELEGRAM_CONFIG_FILE=/var/lib/dnsguard/telegram.json
+TRUST_PROXY_TLS=true
+TRUST_PROXY_HEADERS=true
+TRUSTED_PROXY_CIDRS=172.30.2.0/24
+LISTEN_ADDR=0.0.0.0:8080
+EOF
+  chmod 0640 "$config"
   chmod 0640 "$data"/*.json
   chmod 0600 "$data/auth.json"
   chmod 0600 "$secrets/rpz-manager.key" "$tls/privkey.pem"
   chmod 0644 "$tls/fullchain.pem"
+  python3 - "$data/auth.json" <<'PY'
+import json, pathlib, sys
+import bcrypt
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps({
+    "username": "admin",
+    "passwordHash": bcrypt.hashpw(b"restore-password", bcrypt.gensalt()).decode(),
+    "mustChangePassword": False,
+}) + "\n")
+PY
 }
 
 data="$WORK/docker-data"
 secrets="$WORK/secrets"
 tls="$WORK/tls"
+config="$WORK/dnsguard.env"
 backup_dir="$WORK/backups"
 restore_data="$WORK/restored-docker-data"
 restore_secrets="$WORK/restored-secrets"
 restore_tls="$WORK/restored-tls"
-make_fixture "$data" "$secrets" "$tls"
+restore_config="$WORK/restored-dnsguard.env"
+make_fixture "$data" "$secrets" "$tls" "$config"
 
 archive="$(DNSGUARD_BACKUP_MODE=docker \
   DNSGUARD_DATA_DIR="$data" \
   DNSGUARD_SECRET_DIR="$secrets" \
   DNSGUARD_TLS_DIR="$tls" \
+  DNSGUARD_ENV_FILE="$config" \
   BACKUP_INCLUDE_SENSITIVE=true \
   BACKUP_DIR="$backup_dir" \
   "$ROOT/scripts/backup-dnsguard.sh")"
@@ -72,6 +118,7 @@ with tarfile.open(sys.argv[1], "r:gz") as bundle:
         "docker-data/rpz/rpz.local.db",
         "secrets/rpz-manager.key",
         "tls/privkey.pem",
+        "config/dnsguard.env",
     }
     assert required <= names, sorted(required - names)
 PY
@@ -81,6 +128,7 @@ DNSGUARD_BACKUP_MODE=docker \
 DNSGUARD_DATA_DIR="$restore_data" \
 DNSGUARD_SECRET_DIR="$restore_secrets" \
 DNSGUARD_TLS_DIR="$restore_tls" \
+DNSGUARD_ENV_FILE="$restore_config" \
 RESTORE_INCLUDE_SENSITIVE=true \
 "$ROOT/scripts/restore-dnsguard.sh" "$archive" >/dev/null
 cmp "$data/dns-state.json" "$restore_data/dns-state.json"
@@ -91,40 +139,13 @@ cmp "$data/auth.json" "$restore_data/auth.json"
 cmp "$data/dns-nodes.json" "$restore_data/dns-nodes.json"
 cmp "$secrets/rpz-manager.key" "$restore_secrets/rpz-manager.key"
 cmp "$tls/privkey.pem" "$restore_tls/privkey.pem"
+cmp "$config" "$restore_config"
+[[ "$(stat -c '%a' "$restore_config")" == '640' ]]
 
 # Start a fresh Compose stack from the restored host paths. This verifies that
 # restored auth/state/audit data is consumable by the real API and Web images;
 # no BIND service is included and no production endpoint is contacted.
-RESTORE_ENV="$WORK/restore.env"
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
-  -keyout "$restore_tls/privkey.pem" -out "$restore_tls/fullchain.pem" \
-  -subj '/CN=localhost' >/dev/null 2>&1
-chmod 0644 "$restore_tls/fullchain.pem"; chmod 0640 "$restore_tls/privkey.pem"
-chown 101:101 "$restore_tls/privkey.pem" 2>/dev/null || true
-cat >"$RESTORE_ENV" <<EOF
-APP_ENV=production
-AUTH_ENABLED=true
-AUTH_USERNAME=admin
-AUTH_SECRET=$(openssl rand -hex 32)
-MONITORING_TOKEN=$(openssl rand -hex 32)
-AUTH_FILE=/var/lib/dnsguard/auth.json
-DNS_NODE_CONFIG_FILE=/var/lib/dnsguard/dns-nodes.json
-INITIALIZATION_FILE=/var/lib/dnsguard/initialization.json
-DNS_NODE_ALLOWED_CIDRS=127.0.0.0/8
-RPZ_ZONE=rpz.local
-RPZ_PUBLISH_MODE=artifact
-RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key
-RPZ_ARTIFACT_FILE=/var/lib/dnsguard/rpz/rpz.local.db
-RPZ_PUBLISH_JOBS_FILE=/var/lib/dnsguard/publish-jobs.json
-DNS_STATE_FILE=/var/lib/dnsguard/dns-state.json
-AUDIT_FILE=/var/lib/dnsguard/audit.json
-TELEGRAM_CONFIG_FILE=/var/lib/dnsguard/telegram.json
-TRUST_PROXY_TLS=true
-TRUST_PROXY_HEADERS=true
-TRUSTED_PROXY_CIDRS=172.30.2.0/24
-LISTEN_ADDR=0.0.0.0:8080
-EOF
-chmod 0640 "$RESTORE_ENV"
+RESTORE_ENV="$restore_config"
 export DNSGUARD_ENV_FILE="$RESTORE_ENV"
 export DNSGUARD_DATA_DIR="$restore_data" DNSGUARD_SECRET_DIR="$restore_secrets" DNSGUARD_TLS_DIR="$restore_tls"
 export DNSGUARD_INTERNAL_NETWORK_NAME="$RESTORE_PROJECT-internal" DNSGUARD_INTERNAL_SUBNET=172.30.2.0/24
@@ -144,7 +165,76 @@ if ! curl -kfsS "https://127.0.0.1:19446/api/health" >/dev/null; then
 fi
 [[ "$(curl -ksS -o /dev/null -w '%{http_code}' "https://127.0.0.1:19446/api/dns/rpz")" == 401 ]]
 docker compose -p "$RESTORE_PROJECT" -f "$ROOT/compose.yaml" --env-file "$RESTORE_ENV" exec -T dnsguard-api test -r /var/lib/dnsguard/auth.json
-echo 'PASS: restored JSON starts a fresh Compose stack and protected API requires authentication'
+
+decode_captcha() {
+  python3 - "$ROOT/server/captcha.go" "$1" <<'PY'
+import re, sys
+from pathlib import Path
+source = Path(sys.argv[1]).read_text()
+svg = sys.argv[2]
+glyphs = {}
+for char, body in re.findall(r"'([^'])': \{([^}]*)\}", source):
+    rows = re.findall(r'"([01]{5})"', body)
+    if len(rows) == 7:
+        glyphs[char] = rows
+rects = {(int(x), int(y)) for x, y in re.findall(r'<rect x="(\d+)" y="(\d+)" width="3" height="3"', svg)}
+answer = []
+for index in range(4):
+    observed = {(row, column) for row in range(7) for column in range(5)
+                if (39 + index * 18 + column * 3, 8 + row * 4) in rects}
+    matches = []
+    for char, rows in glyphs.items():
+        expected = {(row, column) for row, pattern in enumerate(rows)
+                    for column, bit in enumerate(pattern) if bit == '1'}
+        if expected == observed:
+            matches.append(char)
+    if len(matches) != 1:
+        raise SystemExit(f"ambiguous captcha glyph: {matches!r}")
+    answer.append(matches[0])
+print(''.join(answer))
+PY
+}
+
+captcha_json="$(curl -kfsS https://127.0.0.1:19446/api/auth/captcha)"
+captcha_id="$(printf '%s' "$captcha_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+captcha_svg="$(printf '%s' "$captcha_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["svg"])')"
+captcha_code="$(decode_captcha "$captcha_svg")"
+curl -kfsS -c "$WORK/cookies.txt" -b "$WORK/cookies.txt" \
+  -H 'Content-Type: application/json' \
+  --data "{\"username\":\"admin\",\"password\":\"restore-password\",\"captchaId\":\"$captcha_id\",\"captcha\":\"$captcha_code\"}" \
+  https://127.0.0.1:19446/api/auth/login >/dev/null
+csrf="$(awk '$6 == "dnsguard_csrf" {print $7}' "$WORK/cookies.txt")"
+[[ -n "$csrf" ]]
+curl -kfsS -b "$WORK/cookies.txt" https://127.0.0.1:19446/api/auth/me | grep -q '"authenticated":true'
+curl -kfsS -b "$WORK/cookies.txt" https://127.0.0.1:19446/api/dns/rpz | grep -q 'restore.example.com'
+curl -kfsS -b "$WORK/cookies.txt" https://127.0.0.1:19446/api/dns/nodes | grep -q 'restore-primary'
+curl -kfsS -b "$WORK/cookies.txt" https://127.0.0.1:19446/api/dns/rpz/versions | grep -q 'version-1'
+curl -kfsS -b "$WORK/cookies.txt" https://127.0.0.1:19446/api/dns/rpz/jobs/job-1 | grep -q 'job-1'
+setup_status="$(curl -kfsS https://127.0.0.1:19446/api/setup/status)"
+grep -q '"initialized":true' <<<"$setup_status"
+[[ "$(curl -ksS -o /dev/null -w '%{http_code}' -X POST https://127.0.0.1:19446/api/setup/complete -H 'Content-Type: application/json' -d '{}')" == 409 ]]
+docker compose -p "$RESTORE_PROJECT" -f "$ROOT/compose.yaml" --env-file "$RESTORE_ENV" exec -T dnsguard-api test -r /run/dnsguard-secrets/rpz-manager.key
+[[ "$(stat -c '%a' "$restore_secrets/rpz-manager.key")" == '600' ]]
+[[ "$(stat -c '%a' "$restore_tls/privkey.pem")" == '600' ]]
+python3 - "$restore_data/audit.json" <<'PY'
+import hashlib, json, pathlib, sys
+entries = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert entries, "login should append a durable audit event"
+previous = ""
+for entry in entries:
+    payload = {"timestamp": entry["timestamp"], "actor": entry["actor"], "action": entry["action"], "result": entry["result"]}
+    if entry.get("ip"):
+        payload["ip"] = entry["ip"]
+    if entry.get("prevHash"):
+        payload["prevHash"] = entry["prevHash"]
+    digest = hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
+    assert entry["hash"] == digest
+    assert entry.get("prevHash", "") == previous
+    previous = entry["hash"]
+PY
+docker compose -p "$RESTORE_PROJECT" -f "$ROOT/compose.yaml" --env-file "$RESTORE_ENV" config --services | grep -qx 'dnsguard-api'
+docker compose -p "$RESTORE_PROJECT" -f "$ROOT/compose.yaml" --env-file "$RESTORE_ENV" config --services | grep -qx 'dnsguard-web'
+echo 'PASS: restored config, auth, RPZ rules, nodes, history, audit chain, initialization gate, TSIG and HTTPS state verified'
 
 if DNSGUARD_BACKUP_MODE=docker \
   DNSGUARD_DATA_DIR="$WORK/unsafe-data" \

@@ -141,7 +141,7 @@ BACKUP_DIR=/secure/backup/dnsguard \
 ./scripts/backup-dnsguard.sh
 ```
 
-恢复前必须 `docker compose down`。普通状态恢复不会自动恢复 TSIG/私钥；敏感文件必须显式使用 `RESTORE_INCLUDE_SENSITIVE=true`。归档包含 SHA-256 manifest，恢复脚本会检查路径、校验和、权限、UID/GID，并拒绝运行中的 Compose 恢复。恢复后重新启动并人工核对 BIND，不能把旧 JSON 当成 Zone 回滚。
+恢复前必须 `docker compose down`。普通状态恢复不会自动恢复 TSIG/私钥；敏感文件必须显式使用 `RESTORE_INCLUDE_SENSITIVE=true`。`deploy/docker/dnsguard.env` 含有 `AUTH_SECRET` 等敏感配置，只有在备份和恢复时分别设置 `BACKUP_INCLUDE_SENSITIVE=true`、`RESTORE_INCLUDE_SENSITIVE=true`，并指定 `DNSGUARD_ENV_FILE`，才会纳入或恢复为归档中的 `config/dnsguard.env`。归档包含 SHA-256 manifest，恢复脚本会检查路径、校验和、权限、UID/GID，并拒绝运行中的 Compose 恢复。恢复后重新启动并人工核对 BIND，不能把旧 JSON 当成 Zone 回滚。
 
 ## 目录结构
 
