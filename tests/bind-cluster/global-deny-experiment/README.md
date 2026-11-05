@@ -31,6 +31,16 @@ Docker Bridge 网络中的 1 台 Primary、2 台 Secondary 和模拟上游，并
 ./tests/bind-cluster/global-deny-experiment/run.sh --clean
 ```
 
+对照 `qname-wait-recurse` 时，可分别执行：
+
+```bash
+QNAME_WAIT_RECURSE=default ./tests/bind-cluster/global-deny-experiment/run.sh --keep
+QNAME_WAIT_RECURSE=no      ./tests/bind-cluster/global-deny-experiment/run.sh --keep
+```
+
+脚本会从隔离上游容器的 stdout 核对完整 QNAME，而不是读取 `-g` 模式下不会使用的
+文件日志。`qname-wait-recurse no` 只改变本实验 BIND 配置，不会修改生产 BIND。
+
 实际结果写入同目录的 `REPORT.md`；运行时配置、TSIG、Zone 和日志位于被 Git
 忽略的 `runtime/` 下，不应提交。
 

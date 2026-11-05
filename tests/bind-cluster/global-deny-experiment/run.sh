@@ -9,6 +9,13 @@ COMPOSE_FILE="$TEST_DIR/compose.yaml"
 PROJECT="dnsguard-global-deny-experiment"
 KEEP=0
 FAILURES=0
+QNAME_WAIT_RECURSE="${QNAME_WAIT_RECURSE:-default}"
+
+case "$QNAME_WAIT_RECURSE" in
+  default) qname_wait_recurse_suffix='' ;;
+  yes|no) qname_wait_recurse_suffix=" qname-wait-recurse $QNAME_WAIT_RECURSE" ;;
+  *) echo 'QNAME_WAIT_RECURSE must be default, yes, or no' >&2; exit 2 ;;
+esac
 
 compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
 pass() { printf 'PASS  %s\n' "$*"; }
@@ -98,7 +105,7 @@ blocked IN A 192.0.2.101
 EOF_ZONE
 done
 
-cat >"$RUNTIME_DIR/primary/named.conf" <<'CONF'
+cat >"$RUNTIME_DIR/primary/named.conf" <<CONF
 options {
     directory "/var/cache/bind";
     listen-on port 53 { any; };
@@ -109,7 +116,10 @@ options {
     allow-query { any; };
     allow-recursion { any; };
     dnssec-validation no;
-    response-policy { zone "rpz.local"; zone "global-deny.rpz.local"; };
+    response-policy {
+        zone "rpz.local";
+        zone "global-deny.rpz.local";
+    }${qname_wait_recurse_suffix};
     notify yes;
     also-notify { 172.31.0.11; 172.31.0.12; };
 };
@@ -173,7 +183,7 @@ $ORIGIN global-deny.rpz.local.
 ZONE
 
 for role in secondary-1 secondary-2; do
-  cat >"$RUNTIME_DIR/$role/named.conf" <<'CONF'
+  cat >"$RUNTIME_DIR/$role/named.conf" <<CONF
 options {
     directory "/var/cache/bind";
     listen-on port 53 { any; };
@@ -184,7 +194,10 @@ options {
     allow-query { any; };
     allow-recursion { any; };
     dnssec-validation no;
-    response-policy { zone "rpz.local"; zone "global-deny.rpz.local"; };
+    response-policy {
+        zone "rpz.local";
+        zone "global-deny.rpz.local";
+    }${qname_wait_recurse_suffix};
 };
 logging {
     channel experiment_log {
@@ -274,6 +287,9 @@ fi
 query_rcode() {
   node_dig "$1" +tcp +time=2 +tries=1 +comments "$2" A 2>&1 | sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' | head -1
 }
+query_rcode_dnssec() {
+  node_dig "$1" +tcp +time=2 +tries=1 +dnssec +comments "$2" A 2>&1 | sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' | head -1
+}
 query_a() { node_dig "$1" +tcp +time=2 +tries=1 "$2" A +short | tr '\n' ' '; }
 
 for port in 15453 15454 15455; do
@@ -324,6 +340,21 @@ for port in 15453 15454 15455; do
   [[ "$rcode" == NXDOMAIN ]] && pass "port $port root wildcard denies a .com query" || fail "port $port root wildcard .com result=$rcode"
 done
 
+dnssec_name="global-deny-$(openssl rand -hex 8).dnssec.example.com"
+dnssec_rcode="$(query_rcode_dnssec 15453 "$dnssec_name")"
+if [[ "$dnssec_rcode" == NXDOMAIN ]]; then
+  pass "DNSSEC DO=1 query returns NXDOMAIN: $dnssec_name"
+else
+  fail "DNSSEC DO=1 query returned $dnssec_rcode instead of NXDOMAIN: $dnssec_name"
+fi
+if upstream_query_seen "$dnssec_name"; then
+  dnssec_observation='QUERY_OBSERVED'
+  fail "DNSSEC DO=1 query reached simulated upstream: $dnssec_name"
+else
+  dnssec_observation='NO_MATCHING_QUERY_OBSERVED'
+  pass "DNSSEC DO=1 query did not reach simulated upstream: $dnssec_name"
+fi
+
 if [[ "$upstream_seen" -eq 0 ]]; then
   upstream_observation='NO_MATCHING_QUERY_OBSERVED'
 else
@@ -338,6 +369,7 @@ cat >"$REPORT" <<EOF_REPORT
 - 分支：\`experiment/rpz-global-default-deny\`
 - 基线 main：\`e935a7f6c1a6aeff2dd3f73d799621e5c5389d31\`
 - BIND 版本：\`$bind_version\`
+- qname-wait-recurse：\`$QNAME_WAIT_RECURSE\`
 - 网络：独立 Docker Bridge（172.31.0.0/24）
 - 生产 DNS / 生产 TSIG：未使用
 
@@ -357,6 +389,7 @@ cat >"$REPORT" <<EOF_REPORT
 - 多级未知名称测试：$tested_name_list
 - 根级通配 \`.com\`：三台节点均返回 NXDOMAIN。
 - 模拟上游观测：\`$upstream_observation\`（通过容器 stdout 核对完整 QNAME）。
+- DNSSEC DO=1：\`$dnssec_rcode\`，上游观测：\`$dnssec_observation\`。
 - 总体：\`$([[ "$FAILURES" -eq 0 ]] && echo PASS || echo FAIL)\`（FAILURES=$FAILURES）
 
 ## 解释边界

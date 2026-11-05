@@ -3,6 +3,7 @@
 - 分支：`experiment/rpz-global-default-deny`
 - 基线 main：`e935a7f6c1a6aeff2dd3f73d799621e5c5389d31`
 - BIND 版本：`BIND 9.20.30 (Stable Release) <id:769c3fb>`
+- qname-wait-recurse：`no`
 - 网络：独立 Docker Bridge（172.31.0.0/24）
 - 生产 DNS / 生产 TSIG：未使用
 
@@ -20,12 +21,13 @@
 - 白名单 passthru：`allow.example.com`、`deep.sub.allow.example.com` 在三台节点均返回上游地址。
 - A 重定向：`redirect.example.com`、`sub.redirect.example.com` 在三台节点均返回 `192.0.2.250`。
 - 多级未知名称测试：
-- global-deny-2ce373a3bb5aba76.deep.branch.example.com → NXDOMAIN, 上游观察到完整 QNAME
-- global-deny-420351e681990786.deep.branch.example.net → NXDOMAIN, 上游观察到完整 QNAME
-- global-deny-7fa8fc9c656b344a.deep.branch.example.xyz → NXDOMAIN, 上游观察到完整 QNAME
+- global-deny-86e51e221b0affbe.deep.branch.example.com → NXDOMAIN, 上游未观察到同名查询
+- global-deny-41067b04a82efb54.deep.branch.example.net → NXDOMAIN, 上游未观察到同名查询
+- global-deny-6da61655876978ec.deep.branch.example.xyz → NXDOMAIN, 上游未观察到同名查询
 - 根级通配 `.com`：三台节点均返回 NXDOMAIN。
-- 模拟上游观测：`QUERY_OBSERVED`（通过容器 stdout 核对完整 QNAME）。
-- 总体：`FAIL`（FAILURES=3）
+- 模拟上游观测：`NO_MATCHING_QUERY_OBSERVED`（通过容器 stdout 核对完整 QNAME）。
+- DNSSEC DO=1：`NXDOMAIN`，上游观测：`QUERY_OBSERVED`。
+- 总体：`FAIL`（FAILURES=1）
 
 ## 解释边界
 
