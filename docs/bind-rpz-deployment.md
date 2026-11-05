@@ -287,8 +287,8 @@ cp deploy/docker/rpz-connect.env.example /tmp/rpz-connect.env
 ```bash
 ./scripts/rpz-connect.sh \
   --env-file /tmp/rpz-connect.env \
-  --whitelist-file /path/to/approved-domains.txt \
-  --export-whitelist-json /path/to/whitelist-seed.json
+  --whitelist-file "$PWD/.local/approved-domains.txt" \
+  --export-whitelist-json "$PWD/.local/whitelist-seed.json"
 ```
 
 每行一个域名，空行和 `#` 注释会忽略；脚本会小写化、去除末尾点并去重，拒绝通配符、下划线、重复输出覆盖和无效域名。将结果放入 Docker 的 `docker-data/bootstrap/whitelist-seed.json`，并设置 `RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json` 后，首次初始化会将规则以 `draft` 导入。它们不会自动发布，已有部署也不会重新导入。
@@ -313,7 +313,7 @@ dig @SECONDARY_2_IP RPZ_ZONE SOA +short
 如果有离线 Zone 文件，再执行：
 
 ```bash
-named-checkzone RPZ_ZONE /path/to/db.RPZ_ZONE
+named-checkzone RPZ_ZONE "$PWD/.local/db.RPZ_ZONE"
 ```
 
 发布后应记录：

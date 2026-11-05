@@ -80,7 +80,7 @@ if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == global ]]; then
 fi
 
 KEY_FILE="$SECRET_DIR/rpz-manager.key"
-[[ -f "$KEY_FILE" ]] || die "copy the production RPZ TSIG key to $KEY_FILE; it will not be generated"
+dnsguard_validate_tsig_key_file "$KEY_FILE" "RPZ TSIG Key" || die "copy an existing authorized BIND TSIG key to $KEY_FILE and fix the reported issue; DNSGuard will not generate or replace it"
 [[ -f "$TLS_DIR/fullchain.pem" && -f "$TLS_DIR/privkey.pem" ]] || die "place HTTPS certificate and key in $TLS_DIR"
 BOOTSTRAP_FILE="$SECRET_DIR/bootstrap.token"
 if [[ ! -f "$DATA_DIR/auth.json" ]]; then

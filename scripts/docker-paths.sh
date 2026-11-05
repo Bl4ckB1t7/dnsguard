@@ -15,6 +15,33 @@ dnsguard_resolve_path() {
   realpath -m -- "$candidate"
 }
 
+dnsguard_validate_tsig_key_file() {
+  local path="${1:-}" label="${2:-TSIG Key}" mode numeric
+  [[ -n "$path" ]] || { echo "$label 路径为空" >&2; return 1; }
+  [[ ! -L "$path" ]] || { echo "$label 不能是符号链接：$path" >&2; return 1; }
+  [[ -f "$path" ]] || { echo "$label 必须是普通文件：$path" >&2; return 1; }
+  [[ -r "$path" ]] || { echo "$label 当前用户不可读：$path" >&2; return 1; }
+  mode="$(stat -c '%a' "$path" 2>/dev/null || true)"
+  [[ "$mode" =~ ^[0-7][0-7][0-7][0-7]?$ ]] || { echo "$label 权限无法读取：$path" >&2; return 1; }
+  numeric=$((8#$mode))
+  if ((numeric & 7)); then
+    echo "$label 对 other 开放了权限（当前 $mode），请先执行 chmod 0640 '$path'" >&2
+    return 1
+  fi
+  if ! grep -Eq 'key[[:space:]]+"[^"]+"[[:space:]]*\{' "$path"; then
+    echo "$label 格式无效：应包含 BIND key 配置块（不会输出密钥内容）" >&2
+    return 1
+  fi
+  if ! grep -Eiq 'algorithm[[:space:]]+[A-Za-z0-9._-]+[[:space:]]*;' "$path"; then
+    echo "$label 缺少 algorithm 配置" >&2
+    return 1
+  fi
+  if ! grep -Eq 'secret[[:space:]]+"[^"]+"[[:space:]]*;' "$path"; then
+    echo "$label 缺少非空 secret 配置" >&2
+    return 1
+  fi
+}
+
 dnsguard_validate_host_path() {
   local path="$1" label="$2" current
   case "$path" in
