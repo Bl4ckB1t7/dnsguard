@@ -26,6 +26,13 @@ set -a
 source "$ENV_FILE"
 set +a
 
+COMPOSE_FILES=(-f compose.yaml)
+if [[ -n "${DNSGUARD_BIND_NETWORK:-}" ]]; then
+  [[ -f "$ROOT/compose.bind-network.yaml" ]] || die "missing optional Compose file: $ROOT/compose.bind-network.yaml"
+  docker network inspect "$DNSGUARD_BIND_NETWORK" >/dev/null 2>&1 || die "configured BIND Docker network does not exist: $DNSGUARD_BIND_NETWORK; DNSGuard will not create it"
+  COMPOSE_FILES+=(-f compose.bind-network.yaml)
+fi
+
 # Compose interpolation and every host-side script use the same absolute
 # paths. Relative values are anchored at the repository root.
 DNSGUARD_ENV_FILE="$ENV_FILE"
@@ -109,7 +116,7 @@ PY
 fi
 
 echo "Building pinned DNSGuard images (no host Go/Node.js installation required)"
-docker compose --env-file "$ENV_FILE" -f compose.yaml build
+docker compose --env-file "$ENV_FILE" "${COMPOSE_FILES[@]}" build
 
 # The API image uses UID/GID 10001. These operations change only local
 # bind-mounted files and never alter BIND's production TSIG configuration.
@@ -140,5 +147,5 @@ docker run --rm --user 101:101 \
   -v "$TLS_DIR:/run/tls:ro" \
   --entrypoint sh "$WEB_IMAGE" -c 'test -r /run/tls/fullchain.pem && test -r /run/tls/privkey.pem'
 
-docker compose --env-file "$ENV_FILE" -f compose.yaml config >/dev/null
-echo "Docker initialization complete. Start DNSGuard with: docker compose --env-file \"$ENV_FILE\" -f compose.yaml up -d"
+docker compose --env-file "$ENV_FILE" "${COMPOSE_FILES[@]}" config >/dev/null
+echo "Docker initialization complete. Start DNSGuard with: docker compose --env-file \"$ENV_FILE\" ${COMPOSE_FILES[*]} up -d"

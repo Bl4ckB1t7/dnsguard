@@ -68,6 +68,16 @@ docker compose --env-file deploy/docker/dnsguard.env \
 若 `DNSGUARD_BIND_NETWORK` 未设置，或指定的外部网络不存在，Compose 会在启动前报错并退出；
 它不会自动创建网络。未使用 override 时，正式 `compose.yaml` 的默认网络架构保持不变。
 
+首次安装时不需要再手动执行 `docker network connect`，直接使用一键入口即可：
+
+```bash
+export DNSGUARD_BIND_NETWORK=your-existing-bind-network
+./install.sh
+```
+
+安装脚本会先检查外部网络，再让 `docker-init.sh`、Compose 启动和状态查看使用同一组文件。
+普通独立 BIND 部署不设置该变量，直接执行 `./install.sh` 即可。
+
 ## 第 2 步：获取代码并一键准备
 
 正式部署使用已批准的版本 Tag。v1.1.0 发布后使用：
