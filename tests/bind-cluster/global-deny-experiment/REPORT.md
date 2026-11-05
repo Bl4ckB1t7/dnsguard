@@ -21,9 +21,9 @@
 - 白名单 passthru：`allow.example.com`、`deep.sub.allow.example.com` 在三台节点均返回上游地址。
 - A 重定向：`redirect.example.com`、`sub.redirect.example.com` 在三台节点均返回 `192.0.2.250`。
 - 多级未知名称测试：
-- global-deny-86e51e221b0affbe.deep.branch.example.com → NXDOMAIN, 上游未观察到同名查询
-- global-deny-41067b04a82efb54.deep.branch.example.net → NXDOMAIN, 上游未观察到同名查询
-- global-deny-6da61655876978ec.deep.branch.example.xyz → NXDOMAIN, 上游未观察到同名查询
+- global-deny-60011e79eb4e800c.deep.branch.example.com → NXDOMAIN, 上游未观察到同名查询
+- global-deny-ed23a79aeab3f82a.deep.branch.example.net → NXDOMAIN, 上游未观察到同名查询
+- global-deny-3e41c3161917356b.deep.branch.example.xyz → NXDOMAIN, 上游未观察到同名查询
 - 根级通配 `.com`：三台节点均返回 NXDOMAIN。
 - 模拟上游观测：`NO_MATCHING_QUERY_OBSERVED`（通过容器 stdout 核对完整 QNAME）。
 - DNSSEC DO=1：`NXDOMAIN`，上游观测：`QUERY_OBSERVED`。

@@ -47,6 +47,9 @@ QNAME_WAIT_RECURSE=no      ./tests/bind-cluster/global-deny-experiment/run.sh --
 1,436 个 IANA TLD、2,872 个三级/四级查询的补充结果见
 [`FULL-SCALE-RESULTS.md`](FULL-SCALE-RESULTS.md)。
 
+按 DNS 隧道流量形态模拟的 A、TXT、AAAA、NULL、编码分片和 DNSSEC 测试见
+[`DNS-TUNNEL-WORKLOAD-RESULTS.md`](DNS-TUNNEL-WORKLOAD-RESULTS.md)。
+
 ## 解释边界
 
 客户端收到 NXDOMAIN 不能单独证明不存在 DNS 数据外传。上游观测只对本次隔离

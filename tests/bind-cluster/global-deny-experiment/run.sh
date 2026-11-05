@@ -337,7 +337,11 @@ done
 
 for port in 15453 15454 15455; do
   rcode="$(query_rcode "$port" random-global-deny.example.com)"
-  [[ "$rcode" == NXDOMAIN ]] && pass "port $port root wildcard denies a .com query" || fail "port $port root wildcard .com result=$rcode"
+  if [[ "$rcode" == NXDOMAIN ]]; then
+    pass "port $port root wildcard denies a .com query"
+  else
+    fail "port $port root wildcard .com result=$rcode"
+  fi
 done
 
 dnssec_name="global-deny-$(openssl rand -hex 8).dnssec.example.com"
