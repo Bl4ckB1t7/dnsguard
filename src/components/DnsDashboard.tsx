@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { AuditPanel, type AuditEntry } from "./AuditPanel";
 import { DnsNodePanel, type DnsNode } from "./DnsNodePanel";
 import { DeploymentGuide } from "./DeploymentGuide";
@@ -41,7 +41,7 @@ async function readJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 10000);
   try {
-    const response = await fetch(url, { credentials: "include", ...init, signal: controller.signal });
+    const response = await fetch(url, { credentials: "include", ...init, cache: "no-store", signal: controller.signal });
     if (!response.ok) throw new Error((await response.json().catch(() => null))?.error ?? `请求失败（HTTP ${response.status}）`);
     return response.json() as Promise<T>;
   } catch (error) {
@@ -56,7 +56,7 @@ async function waitForPublishJob(id: string): Promise<PublishJob> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const job = await readJSON<PublishJob>(`/api/dns/rpz/jobs/${encodeURIComponent(id)}`);
     if (job.status === "succeeded") return job;
-    if (job.status === "failed") throw new Error(job.error ?? "RPZ 发布失败");
+    if (job.status === "failed" || job.status === "reconcile_required") throw new Error(job.error ?? "RPZ 发布失败，请核对任务状态");
     await new Promise((resolve) => window.setTimeout(resolve, 250));
   }
   throw new Error("RPZ 发布任务超时，请查看任务状态");
@@ -186,6 +186,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [denyNotice, setDenyNotice] = useState("");
   const [denyReady, setDenyReady] = useState(false);
   const [denyChecks, setDenyChecks] = useState<GlobalDenyCheck[]>([]);
+  const loadSequence = useRef(0);
   const selectView = (view: DashboardView) => {
     setActiveView(view);
     const url = new URL(window.location.href);
@@ -195,6 +196,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   };
 
   const load = async () => {
+    const sequence = ++loadSequence.current;
     setLoading(true);
     setLoadError("");
     try {
@@ -206,6 +208,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
         readJSON<RPZVersion[]>("/api/dns/rpz/versions"),
         readJSON<SetupStatus>("/api/setup/status"),
       ]);
+      if (sequence !== loadSequence.current) return;
       setOverview(nextOverview);
       setNodes(nextNodes ?? []);
       setNodeDrafts(Object.fromEntries((nextNodes ?? []).map((node) => [node.id, node.address])));
@@ -216,10 +219,11 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setSetupStatus(nextSetupStatus);
       setDenyReady(nextSetupStatus.globalDenyVerification?.status === "verified" && nextSetupStatus.globalDenySetupDeferred !== true);
     } catch (error) {
+      if (sequence !== loadSequence.current) return;
       setLoadError(`状态加载失败：${(error as Error).message}。`);
       throw error;
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
   };
 
@@ -533,7 +537,11 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       const queued = await readJSON<PublishJob>("/api/dns/rpz/publish", { method: "POST", headers: csrfHeaders() });
       const result = await waitForPublishJob(queued.id);
       setNotice(result.message ?? "RPZ 发布成功");
-      await load();
+      try {
+        await load();
+      } catch (error) {
+        setNotice(`RPZ 已发布成功，但页面状态刷新失败，版本记录可能尚未更新：${(error as Error).message}`);
+      }
     } catch (error) { setNotice((error as Error).message); }
     finally { setBusy(false); }
   };
@@ -550,7 +558,11 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       });
       const result = await waitForPublishJob(queued.id);
       setNotice(`回滚成功：${result.message ?? "RPZ 已重新发布"}`);
-      await load();
+      try {
+        await load();
+      } catch (error) {
+        setNotice(`回滚已发布成功，但页面状态刷新失败，版本记录可能尚未更新：${(error as Error).message}`);
+      }
     } catch (error) { setNotice((error as Error).message); }
     finally { setBusy(false); }
   };
