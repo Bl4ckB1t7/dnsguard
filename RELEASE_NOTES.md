@@ -1,3 +1,43 @@
+# DNSGuard v1.1.0
+
+## 正式发布说明
+
+DNSGuard v1.1.0 正式采用“白名单与 A 重定向优先，其余默认 DENY”的部署模式。
+DNSGuard 仍然只是控制面，BIND Primary/Secondary 由管理员独立部署和维护。
+
+## 主要更新
+
+- **全局默认 DENY**：使用独立 `global-deny` RPZ Zone；白名单和 A 重定向优先。
+- **一键安装**：准备好授权的 TSIG Key 和 HTTPS 证书后执行 `./install.sh`。
+- **白名单文件导入**：Web RPZ 页面支持 TXT（每行一个域名）和白名单 JSON，支持预览、去重和格式校验；导入只创建 `draft`，不会自动发布。
+- **部署与发布引导**：按“连接 BIND → 审核并发布白名单 → 启用并验证 DENY”分阶段操作；发布会核验 Primary/Secondary 同步，失败或未验证不会提示完成。
+- **可靠性与安全**：保留 `nsupdate + TSIG`、SOA/规则核对、审计、版本回滚和 `reconcile_required` 保护。
+
+## 最短部署入口
+
+```bash
+git clone --branch v1.1.0 --single-branch \
+  https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
+cd dnsguard
+./install.sh
+```
+
+首次上线必须先审核并发布白名单，确认 Primary/Secondary 已同步，再由 BIND 管理员启用全局 DENY。DNSGuard 不自动安装、修改、reload 或 restart 生产 BIND，也不修改 `named.conf`、`response-policy` 或生产 Zone 文件。
+
+## 升级注意事项
+
+- 从 v1.0.1 升级的已初始化部署不会自动切换到 `global` 模式；历史策略和数据保持不变，迁移前请先备份。
+- 生产 BIND 集群、TSIG、Zone Transfer 和 RPZ 优先级由管理员独立确认。
+- 客户端收到 `NXDOMAIN` 不等于完整 QNAME 没有到达上游。隔离验收已保留部分 DNSSEC `DO=1` 查询可能上游外传的风险；本版本不宣称百分之百阻断 DNS 隧道。
+
+## 验收资料
+
+- [v1.1.0 全局 DENY 验收](docs/acceptance/v1.1.0-global-deny-acceptance.md)
+- [v1.1.0 一键安装最终验收](docs/acceptance/v1.1.0-install-final-check.md)
+- [DNS 隧道重新验收](docs/acceptance/v1.1.0-dns-tunnel-retest.md)
+
+---
+
 # DNSGuard v1.0.0
 
 ## 产品定位
