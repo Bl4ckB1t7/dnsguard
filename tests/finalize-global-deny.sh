@@ -22,6 +22,7 @@ DNSGUARD_BIND_LOG_DIR=$dir/logs
 DNS_STATE_FILE=/var/lib/dnsguard/dns-state.json
 RPZ_PUBLISH_JOBS_FILE=/var/lib/dnsguard/publish-jobs.json
 RPZ_GLOBAL_DENY_BASELINE_FILE=/var/lib/dnsguard/global-deny-baseline.json
+RPZ_ZONE=rpz.local
 RPZ_GLOBAL_DENY_ZONE=global-deny.rpz.local
 RPZ_GLOBAL_DENY_RECURSOR=192.0.2.10:53
 RPZ_GLOBAL_DENY_CHECK_NAME=baseline.example.test
@@ -100,7 +101,14 @@ if [[ "${1:-}" == exec ]]; then
     [[ "$arg" == SOA ]] && has_soa=1
     [[ "$arg" == CNAME ]] && has_cname=1
   done
-  if ((has_soa)); then printf 'ns.example. host.example. 7 3600 900 2592000 60\n'; exit 0; fi
+  if ((has_soa)); then
+    serial=7
+    if [[ "${FAKE_BUSINESS_MISMATCH:-}" == 1 ]] && printf '%s\n' "$*" | grep -q '@192.0.2.11'; then
+      serial=8
+    fi
+    printf 'ns.example. host.example. %s 3600 900 2592000 60\n' "$serial"
+    exit 0
+  fi
   if ((has_cname)); then
     printf ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\n'
     printf ';; flags: qr aa; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0\n'
@@ -113,6 +121,37 @@ fi
 exit 0
 FAKE
 chmod 0755 "$FAKE_BIN/docker"
+
+# The business RPZ serial must be checked live, independently of historical
+# nodeChecks. Make one Secondary disagree and verify finalization stops.
+if FAKE_BUSINESS_MISMATCH=1 PATH="$FAKE_BIN:$PATH" DNSGUARD_ENV_FILE="$FAIL_ENV" "$FINALIZE" >"$TMP/business-mismatch.log" 2>&1; then
+  fail 'business RPZ Secondary serial mismatch unexpectedly passed'
+fi
+grep -Eq '业务 RPZ|等待同步后重试' "$TMP/business-mismatch.log" || {
+  cat "$TMP/business-mismatch.log" >&2
+  fail 'business RPZ mismatch did not include a synchronization failure reason'
+}
+pass 'live business RPZ serial mismatch blocks finalization'
+
+# A baseline from another check name/recursor must not be reused after the
+# deployment configuration changes.
+cat >"$FAIL_DIR/data/global-deny-baseline.json" <<'JSON'
+{"checkName":"old.example.test","recursor":"192.0.2.10:53","rcode":"NOERROR","observedAt":"2026-11-05T00:00:00Z"}
+JSON
+if PATH="$FAKE_BIN:$PATH" DNSGUARD_ENV_FILE="$FAIL_ENV" "$FINALIZE" >"$TMP/baseline-mismatch.log" 2>&1; then
+  fail 'stale global-deny baseline unexpectedly passed'
+fi
+grep -q '当前环境配置不一致' "$TMP/baseline-mismatch.log" || {
+  cat "$TMP/baseline-mismatch.log" >&2
+  fail 'stale baseline did not explain the checkName/recursor mismatch'
+}
+pass 'stale baseline checkName/recursor blocks finalization'
+
+# Restore the valid fixture before testing the API recreation failure path.
+cat >"$FAIL_DIR/data/global-deny-baseline.json" <<'JSON'
+{"checkName":"baseline.example.test","recursor":"192.0.2.10:53","rcode":"NOERROR","observedAt":"2026-11-05T00:00:00Z"}
+JSON
+
 if PATH="$FAKE_BIN:$PATH" DNSGUARD_ENV_FILE="$FAIL_ENV" "$FINALIZE" >"$TMP/recreate-failure.log" 2>&1; then
   fail 'API recreation failure unexpectedly passed'
 fi

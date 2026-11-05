@@ -45,7 +45,9 @@ STATE_FILE="$(resolve_runtime_path "${DNS_STATE_FILE:-/var/lib/dnsguard/dns-stat
 JOBS_FILE="$(resolve_runtime_path "${RPZ_PUBLISH_JOBS_FILE:-/var/lib/dnsguard/publish-jobs.json}")"
 BASELINE_FILE="$(resolve_runtime_path "${RPZ_GLOBAL_DENY_BASELINE_FILE:-/var/lib/dnsguard/global-deny-baseline.json}")"
 GLOBAL_DENY_ZONE="${RPZ_GLOBAL_DENY_ZONE:-}"
+RPZ_ZONE="${RPZ_ZONE:-}"
 [[ -n "$GLOBAL_DENY_ZONE" ]] || die 'RPZ_GLOBAL_DENY_ZONE 未配置'
+[[ -n "$RPZ_ZONE" ]] || die 'RPZ_ZONE 未配置'
 [[ -n "${RPZ_GLOBAL_DENY_RECURSOR:-}" ]] || die 'RPZ_GLOBAL_DENY_RECURSOR 未配置'
 [[ -n "${RPZ_GLOBAL_DENY_CHECK_NAME:-}" ]] || die 'RPZ_GLOBAL_DENY_CHECK_NAME 未配置'
 
@@ -173,19 +175,28 @@ done
 pass '白名单已发布，最近任务成功且所有节点具备 verified 同步证据'
 
 query_soa_serial() {
-  local endpoint="$1" host port output serial
+  local endpoint="$1" zone="$2" host port output serial
   read -r host port < <(split_endpoint "$endpoint") || die "DNS 地址无效：$endpoint"
-  output="$(run_api_dig +norecurse +short +time=2 +tries=1 "@$host" -p "$port" "$GLOBAL_DENY_ZONE" SOA 2>/dev/null || true)"
+  output="$(run_api_dig +norecurse +short +time=2 +tries=1 "@$host" -p "$port" "$zone" SOA 2>/dev/null || true)"
   serial="$(awk 'NF >= 3 && $3 ~ /^[0-9]+$/ { print $3; exit }' <<<"$output")"
-  [[ -n "$serial" ]] || die "无法读取 $GLOBAL_DENY_ZONE 的权威 SOA：$endpoint"
+  [[ -n "$serial" ]] || die "无法读取 $zone 的权威 SOA：$endpoint"
   printf '%s\n' "$serial"
 }
 
-PRIMARY_SERIAL="$(query_soa_serial "$PRIMARY_ADDR")"
+BUSINESS_PRIMARY_SERIAL="$(query_soa_serial "$PRIMARY_ADDR" "$RPZ_ZONE")"
 for secondary in "${SECONDARY_ADDRS[@]}"; do
-  secondary_serial="$(query_soa_serial "$secondary")"
+  secondary_serial="$(query_soa_serial "$secondary" "$RPZ_ZONE")"
+  if [[ "$secondary_serial" != "$BUSINESS_PRIMARY_SERIAL" ]]; then
+    die "业务 RPZ Secondary Serial=$secondary_serial，与 Primary=$BUSINESS_PRIMARY_SERIAL 不一致；请等待同步后重试"
+  fi
+done
+pass "业务 RPZ Primary/Secondary SOA Serial 已实时一致：$BUSINESS_PRIMARY_SERIAL"
+
+PRIMARY_SERIAL="$(query_soa_serial "$PRIMARY_ADDR" "$GLOBAL_DENY_ZONE")"
+for secondary in "${SECONDARY_ADDRS[@]}"; do
+  secondary_serial="$(query_soa_serial "$secondary" "$GLOBAL_DENY_ZONE")"
   if [[ "$secondary_serial" != "$PRIMARY_SERIAL" ]]; then
-    die "Secondary Serial=$secondary_serial，与 Primary=$PRIMARY_SERIAL 不一致；请等待同步后重试"
+    die "Global Deny Secondary Serial=$secondary_serial，与 Primary=$PRIMARY_SERIAL 不一致；请等待同步后重试"
   fi
 done
 pass "Global Deny SOA/Serial 已一致：$PRIMARY_SERIAL"
@@ -209,11 +220,13 @@ check_trigger() {
 for endpoint in "$PRIMARY_ADDR" "${SECONDARY_ADDRS[@]}"; do check_trigger "$endpoint"; done
 pass 'Primary/Secondary 均存在权威 * CNAME . 触发项'
 
-BASELINE_VALUES="$(python3 - "$BASELINE_FILE" <<'PY'
+BASELINE_VALUES="$(python3 - "$BASELINE_FILE" "${RPZ_GLOBAL_DENY_CHECK_NAME}" "${RPZ_GLOBAL_DENY_RECURSOR}" <<'PY'
 import json
 import sys
 from pathlib import Path
 path = Path(sys.argv[1])
+expected_name = sys.argv[2]
+expected_recursor = sys.argv[3]
 if not path.is_file():
     raise SystemExit(f"正常解析基线不存在：{path}")
 try:
@@ -224,6 +237,8 @@ name = str(data.get("checkName", "")).strip()
 recursor = str(data.get("recursor", "")).strip()
 if not name or not recursor or data.get("rcode") != "NOERROR" or not data.get("observedAt"):
     raise SystemExit("正常解析基线无效；不能把任意 NXDOMAIN 当作 DENY 证据")
+if name.lower().rstrip(".") != expected_name.strip().lower().rstrip(".") or recursor != expected_recursor.strip():
+    raise SystemExit("正常解析基线的 checkName/recursor 与当前环境配置不一致；拒绝使用旧基线")
 print(f"{name}\t{recursor}")
 PY
 )" || die "$BASELINE_VALUES"
