@@ -80,6 +80,8 @@ DNSGUARD_BIND_LOG_DIR=/srv/dnsguard/bind-logs
 - `DNS_NODE_ADDRESSES`、`DNS_NODE_ALLOWED_CIDRS`；
 - `RPZ_ZONE`、`RPZ_PRIMARY`、`RPZ_PRIMARY_PORT`；
 - `RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key`；
+- 新部署的全局默认拒绝模式：`RPZ_DEFAULT_DENY_MODE=global`、`RPZ_GLOBAL_DENY_ZONE`、`RPZ_GLOBAL_DENY_RECURSOR` 和 `RPZ_GLOBAL_DENY_CHECK_NAME`；
+- `RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json`，该文件由对接脚本生成并放入 `docker-data/bootstrap/`；
 - `TLD_DENY_ENABLED=true`、`TLD_SOURCE_URL`、`TLD_SYNC_INTERVAL_SECONDS=86400`；
 - 隔离验收后才可启用 `TLD_DENY_PUBLISH_ENABLED=true`，并设置 `TLD_DENY_ZONE`、`TLD_DENY_TTL_SECONDS` 和 `TLD_DENY_ARTIFACT_FILE`；
 - `TLD_SYNC_TIMEOUT_SECONDS` 只控制 TLD 下载，`TLD_PUBLISH_TIMEOUT_SECONDS=120` 单独控制 deny RPZ 发布及 Primary/Secondary 验收；
@@ -133,14 +135,16 @@ docker compose ps
 
 ## 6. Web 首次初始化向导
 
-1. 从部署终端读取 `secrets/bootstrap.token`，不要通过聊天、日志或 URL 传递。
-2. 在浏览器向导输入一次性 Bootstrap Token。
-3. 设置管理员用户名和至少 12 位的管理员密码。
-4. 添加一个 `primary` 和至少一个 `secondary` 节点；Primary 角色不能填成 Secondary。
-5. 选择受保护目录中的 TSIG key，系统不会回显完整密钥。
-6. 确认 RPZ Zone、Primary/Secondary 地址后执行检查。
+1. 全局默认拒绝模式下，先确认 `docker-data/bootstrap/whitelist-seed.json` 已准备，且包含人工审核的初始白名单。
+2. 从部署终端读取 `secrets/bootstrap.token`，不要通过聊天、日志或 URL 传递。
+3. 在浏览器向导输入一次性 Bootstrap Token。
+4. 设置管理员用户名和至少 12 位的管理员密码。
+5. 添加一个 `primary` 和至少一个 `secondary` 节点；Primary 角色不能填成 Secondary。
+6. 选择受保护目录中的 TSIG key，系统不会回显完整密钥。
+7. 确认 RPZ Zone、Primary/Secondary 地址后执行检查。
 
-向导先做只读 SOA、Zone、Serial 和网络检查。勾选 TSIG 写权限检查后，系统会在
+向导先做只读 SOA、Zone、Serial 和网络检查。全局默认拒绝模式还会检查 deny Zone 的
+Primary/Secondary SOA，以及管理员配置的递归测试名称是否返回 `NXDOMAIN`。勾选 TSIG 写权限检查后，系统会在
 Primary RPZ Zone 写入随机临时 TXT 记录，然后立即删除。该步骤会真实修改一次
 Primary，页面必须明确展示影响；如果写入成功但清理失败，不得继续初始化，应使用
 相同 TSIG 人工删除提示中的临时记录并重新核对 Zone。

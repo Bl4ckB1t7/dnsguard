@@ -64,6 +64,7 @@ type dnsState struct {
 	Published     []RPZRule    `json:"published"`
 	Versions      []RPZVersion `json:"versions"`
 	RulesRevision uint64       `json:"rulesRevision,omitempty"`
+	PolicyMode    string       `json:"policyMode,omitempty"`
 }
 
 type RPZVersion struct {
@@ -794,7 +795,11 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 	rules := len(state.Rules)
 	published := len(state.Published)
 	pendingPublish := !rpzRulesEqual(state.Rules, state.Published)
+	policyMode := state.PolicyMode
 	dnsMu.RUnlock()
+	if policyMode == "" {
+		policyMode = configuredPolicyMode()
+	}
 	rpzHits, rpzHitsReady := rpzHitCount()
 	var rpzHitsValue any
 	if rpzHitsReady {
@@ -817,6 +822,8 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 		"rpzHitStatus":     map[bool]string{true: "ready", false: "not_configured"}[rpzHitsReady],
 		"lastSync":         time.Now().UTC().Format("15:04:05"),
 		"publisherMode":    rpzRuntime.Mode,
+		"policyMode":       policyMode,
+		"globalDenyZone":   configuredGlobalDenyZone(),
 		"lastPublish":      rpzRuntime.LastPublish,
 		"publishMessage":   rpzRuntime.Message,
 		"publishJobId":     rpzRuntime.JobID,

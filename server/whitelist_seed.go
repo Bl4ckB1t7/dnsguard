@@ -16,6 +16,18 @@ const (
 	whitelistSeedMaxRules = 100_000
 )
 
+func configuredPolicyMode() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("RPZ_DEFAULT_DENY_MODE")))
+	if mode == "global" {
+		return "global"
+	}
+	return "legacy"
+}
+
+func configuredGlobalDenyZone() string {
+	return strings.TrimSuffix(strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_ZONE")), ".")
+}
+
 type whitelistSeed struct {
 	Version     int       `json:"version"`
 	Source      string    `json:"source"`
@@ -40,6 +52,9 @@ func whitelistSeedPath() string {
 func inspectWhitelistSeed() whitelistSeedStatus {
 	path := whitelistSeedPath()
 	if path == "" {
+		if configuredPolicyMode() == "global" {
+			return whitelistSeedStatus{Error: "全局默认拒绝模式尚未配置白名单初始 JSON"}
+		}
 		return whitelistSeedStatus{}
 	}
 	seed, err := readWhitelistSeed(path, "")
@@ -130,6 +145,9 @@ func readWhitelistSeed(path, expectedZone string) (whitelistSeed, error) {
 func loadWhitelistSeedForZone(zone string) ([]RPZRule, error) {
 	path := whitelistSeedPath()
 	if path == "" {
+		if configuredPolicyMode() == "global" {
+			return nil, fmt.Errorf("全局默认拒绝模式必须配置白名单初始 JSON")
+		}
 		return nil, nil
 	}
 	seed, err := readWhitelistSeed(path, zone)

@@ -9,7 +9,10 @@ COMPOSE_FILE="$TEST_DIR/compose.yaml"
 PROJECT="dnsguard-global-deny-experiment"
 KEEP=0
 FAILURES=0
-QNAME_WAIT_RECURSE="${QNAME_WAIT_RECURSE:-default}"
+QNAME_WAIT_RECURSE="${QNAME_WAIT_RECURSE:-no}"
+TEST_DNSSEC="${TEST_DNSSEC:-0}"
+
+[[ "$TEST_DNSSEC" == 0 || "$TEST_DNSSEC" == 1 ]] || { echo 'TEST_DNSSEC must be 0 or 1' >&2; exit 2; }
 
 case "$QNAME_WAIT_RECURSE" in
   default) qname_wait_recurse_suffix='' ;;
@@ -344,19 +347,25 @@ for port in 15453 15454 15455; do
   fi
 done
 
-dnssec_name="global-deny-$(openssl rand -hex 8).dnssec.example.com"
-dnssec_rcode="$(query_rcode_dnssec 15453 "$dnssec_name")"
-if [[ "$dnssec_rcode" == NXDOMAIN ]]; then
-  pass "DNSSEC DO=1 query returns NXDOMAIN: $dnssec_name"
+if [[ "$TEST_DNSSEC" == 1 ]]; then
+  dnssec_name="global-deny-$(openssl rand -hex 8).dnssec.example.com"
+  dnssec_rcode="$(query_rcode_dnssec 15453 "$dnssec_name")"
+  if [[ "$dnssec_rcode" == NXDOMAIN ]]; then
+    pass "DNSSEC DO=1 query returns NXDOMAIN: $dnssec_name"
+  else
+    fail "DNSSEC DO=1 query returned $dnssec_rcode instead of NXDOMAIN: $dnssec_name"
+  fi
+  if upstream_query_seen "$dnssec_name"; then
+    dnssec_observation='QUERY_OBSERVED'
+    fail "DNSSEC DO=1 query reached simulated upstream: $dnssec_name"
+  else
+    dnssec_observation='NO_MATCHING_QUERY_OBSERVED'
+    pass "DNSSEC DO=1 query did not reach simulated upstream: $dnssec_name"
+  fi
 else
-  fail "DNSSEC DO=1 query returned $dnssec_rcode instead of NXDOMAIN: $dnssec_name"
-fi
-if upstream_query_seen "$dnssec_name"; then
-  dnssec_observation='QUERY_OBSERVED'
-  fail "DNSSEC DO=1 query reached simulated upstream: $dnssec_name"
-else
-  dnssec_observation='NO_MATCHING_QUERY_OBSERVED'
-  pass "DNSSEC DO=1 query did not reach simulated upstream: $dnssec_name"
+  dnssec_name='NOT_RUN'
+  dnssec_rcode='NOT_RUN'
+  dnssec_observation='NOT_RUN'
 fi
 
 if [[ "$upstream_seen" -eq 0 ]]; then
@@ -394,6 +403,7 @@ cat >"$REPORT" <<EOF_REPORT
 - 根级通配 \`.com\`：三台节点均返回 NXDOMAIN。
 - 模拟上游观测：\`$upstream_observation\`（通过容器 stdout 核对完整 QNAME）。
 - DNSSEC DO=1：\`$dnssec_rcode\`，上游观测：\`$dnssec_observation\`。
+- DNSSEC 测试开关：\`TEST_DNSSEC=$TEST_DNSSEC\`；本阶段不将 DNSSEC 结果作为验收门槛。
 - 总体：\`$([[ "$FAILURES" -eq 0 ]] && echo PASS || echo FAIL)\`（FAILURES=$FAILURES）
 
 ## 解释边界

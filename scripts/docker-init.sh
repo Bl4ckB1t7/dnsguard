@@ -48,6 +48,16 @@ mkdir -p "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 chmod 0750 "$DATA_DIR" "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 [[ ! -e "$DATA_DIR/.restore-in-progress.json" ]] || die "an incomplete restore marker exists at $DATA_DIR/.restore-in-progress.json; inspect and recover it before starting"
 
+if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == global ]]; then
+  [[ -n "${RPZ_GLOBAL_DENY_ZONE:-}" ]] || die "RPZ_GLOBAL_DENY_ZONE is required in global default-deny mode"
+  [[ -n "${RPZ_GLOBAL_DENY_RECURSOR:-}" && -n "${RPZ_GLOBAL_DENY_CHECK_NAME:-}" ]] || die "global default-deny mode requires RPZ_GLOBAL_DENY_RECURSOR and RPZ_GLOBAL_DENY_CHECK_NAME"
+  seed_path="${RPZ_WHITELIST_SEED_FILE:-}"
+  [[ "$seed_path" == /var/lib/dnsguard/* ]] || die "RPZ_WHITELIST_SEED_FILE must be inside /var/lib/dnsguard"
+  seed_host="$DATA_DIR/${seed_path#/var/lib/dnsguard/}"
+  [[ -f "$seed_host" && ! -L "$seed_host" ]] || die "copy the reviewed whitelist seed to $seed_host before first start"
+  [[ "$(stat -c '%a' "$seed_host")" =~ ^[0-7]*[0-6][0-6]$ ]] || die "whitelist seed must not be world-readable"
+fi
+
 KEY_FILE="$SECRET_DIR/rpz-manager.key"
 [[ -f "$KEY_FILE" ]] || die "copy the production RPZ TSIG key to $KEY_FILE; it will not be generated"
 [[ -f "$TLS_DIR/fullchain.pem" && -f "$TLS_DIR/privkey.pem" ]] || die "place HTTPS certificate and key in $TLS_DIR"

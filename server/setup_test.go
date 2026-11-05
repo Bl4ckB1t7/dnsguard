@@ -275,3 +275,39 @@ func TestSetupRejectsInvalidWhitelistSeedBeforeWritingState(t *testing.T) {
 		t.Fatal("invalid seed must not create authentication or DNS state")
 	}
 }
+
+func TestGlobalPolicyModeRequiresWhitelistSeed(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	if _, err := loadWhitelistSeedForZone("rpz.local"); err == nil {
+		t.Fatal("global policy mode must require a reviewed whitelist seed")
+	}
+}
+
+func TestGlobalPolicyModePersistsWithImportedDrafts(t *testing.T) {
+	dir, key := setupTestEnvironment(t)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	seedPath := filepath.Join(dir, "bootstrap", "whitelist.json")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"version":1,"source":"rpz-connect","mode":"global","generatedAt":"2026-11-05T00:00:00Z","zone":"rpz.local.","rules":[{"domain":"example.com","action":"passthru","type":"CNAME","value":"rpz-passthru.","reason":"seed"}]}`
+	if err := os.WriteFile(seedPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RPZ_WHITELIST_SEED_FILE", seedPath)
+	originalChecks := setupChecksFunc
+	setupChecksFunc = readySetupChecks
+	t.Cleanup(func() { setupChecksFunc = originalChecks })
+	request := validSetupRequest(key)
+	httpRequest := httptest.NewRequest(http.MethodPost, "/api/setup/complete", setupRequestBody(t, request))
+	httpRequest.Header.Set("X-DNSGuard-Bootstrap", "setup-bootstrap-token-012345678901234567890")
+	recorder := httptest.NewRecorder()
+	setupComplete(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("global setup failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if state.PolicyMode != "global" || initialization.PolicyMode != "global" {
+		t.Fatalf("global policy mode was not persisted: state=%q initialization=%q", state.PolicyMode, initialization.PolicyMode)
+	}
+}

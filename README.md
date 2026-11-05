@@ -102,6 +102,8 @@ printf '\nRPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.jso
 
 启动后初始化向导会显示发现的条目数量，并将其导入为未发布草稿；不会自动修改 BIND。管理员应在页面核对后，再使用正常发布流程提交白名单。已有 DNSGuard 数据时不会重新导入或覆盖现有规则。
 
+新部署若使用全局默认拒绝模式，还必须在 `dnsguard.env` 中配置 `RPZ_DEFAULT_DENY_MODE=global`、`RPZ_GLOBAL_DENY_ZONE`、递归测试地址和测试域名。初始化会只读核对 deny Zone 的 Primary/Secondary SOA，并要求递归测试返回预期的 `NXDOMAIN`；任何检查未执行都不会打开初始化完成条件。
+
 ### 可选：受控临时 TXT 写入测试
 
 脚本支持显式授权的临时 TXT 测试，但默认不开启。只有在隔离环境或已批准的维护窗口中，才执行：
@@ -147,7 +149,7 @@ docker compose ps
 
 **正式版本：** [DNSGuard v1.0.1 GitHub Release](https://github.com/Bl4ckB1t7/dnsguard/releases/tag/v1.0.1)
 
-推荐的部署顺序是：先准备并验证独立 BIND 集群，执行只读对接预检，再启动 DNSGuard Compose，完成 Web 初始化，发布少量受控规则并验证同步；需要 TLD deny 时，最后在独立 Zone 已准备并验证后显式开启。
+推荐的部署顺序是：先准备并验证独立 BIND 集群，整理白名单并导出初始 JSON，预置全局 deny Zone 和 RPZ 顺序，执行只读对接预检，再启动 DNSGuard Compose，完成 Web 初始化，核对并发布白名单，最后验证递归行为和同步状态。DNSGuard 不会替管理员修改 BIND 配置。
 
 ## 界面预览
 

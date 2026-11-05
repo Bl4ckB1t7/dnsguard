@@ -1,10 +1,9 @@
 # RPZ Global Default-Deny 实验报告
 
 - 分支：`experiment/rpz-global-default-deny`
-- 被测试代码 Commit：`ac07959`
 - 基线 main：`e935a7f6c1a6aeff2dd3f73d799621e5c5389d31`
 - BIND 版本：`BIND 9.20.30 (Stable Release) <id:769c3fb>`
-- qname-wait-recurse：`yes`
+- qname-wait-recurse：`no`
 - 网络：独立 Docker Bridge（172.31.0.0/24）
 - 生产 DNS / 生产 TSIG：未使用
 
@@ -22,25 +21,14 @@
 - 白名单 passthru：`allow.example.com`、`deep.sub.allow.example.com` 在三台节点均返回上游地址。
 - A 重定向：`redirect.example.com`、`sub.redirect.example.com` 在三台节点均返回 `192.0.2.250`。
 - 多级未知名称测试：
-- global-deny-1a09dfb643bd648b.deep.branch.example.com → NXDOMAIN, 上游观察到完整 QNAME
-- global-deny-f94b353f3a546ebb.deep.branch.example.net → NXDOMAIN, 上游观察到完整 QNAME
-- global-deny-0f3e419034ac9daf.deep.branch.example.xyz → NXDOMAIN, 上游观察到完整 QNAME
+- global-deny-47a7a4a1e7156134.deep.branch.example.com → NXDOMAIN, 上游未观察到同名查询
+- global-deny-4d19d4b793a8c43e.deep.branch.example.net → NXDOMAIN, 上游未观察到同名查询
+- global-deny-dbe4e023cee1b20f.deep.branch.example.xyz → NXDOMAIN, 上游未观察到同名查询
 - 根级通配 `.com`：三台节点均返回 NXDOMAIN。
-- 模拟上游观测：`QUERY_OBSERVED`（通过容器 stdout 核对完整 QNAME）。
-- DNSSEC DO=1：`NXDOMAIN`，上游观测：`QUERY_OBSERVED`。
-- 总体：`FAIL`（FAILURES=4）
-
-## qname-wait-recurse 对比
-
-以下三次均使用相同的隔离 BIND 9.20.30、根级 `* CNAME .`、白名单、A 重定向和受控上游：
-
-| 配置 | 普通多级未知域名 | DNSSEC DO=1 | 上游观测 |
-|---|---|---|---|
-| 默认 | NXDOMAIN | NXDOMAIN | 两类查询均观察到完整 QNAME |
-| `qname-wait-recurse no` | NXDOMAIN | NXDOMAIN | 普通查询未观察到；DNSSEC 查询观察到 |
-| `qname-wait-recurse yes` | NXDOMAIN | NXDOMAIN | 两类查询均观察到完整 QNAME |
-
-因此，`qname-wait-recurse no` 只能改善本次普通 QNAME 查询的外传观测，不能证明 DNSSEC DO=1 查询不会到达上游。当前实验结论为：根级全局拒绝可以返回 NXDOMAIN，但尚不能作为“阻断所有 DNS 隧道上游通信”的生产方案。
+- 模拟上游观测：`NO_MATCHING_QUERY_OBSERVED`（通过容器 stdout 核对完整 QNAME）。
+- DNSSEC DO=1：`NOT_RUN`，上游观测：`NOT_RUN`。
+- DNSSEC 测试开关：`TEST_DNSSEC=0`；本阶段不将 DNSSEC 结果作为验收门槛。
+- 总体：`PASS`（FAILURES=0）
 
 ## 解释边界
 

@@ -302,6 +302,8 @@ cp deploy/docker/rpz-connect.env.example /tmp/rpz-connect.env
 
 每行一个域名，空行和 `#` 注释会忽略；脚本会小写化、去除末尾点并去重，拒绝通配符、下划线、重复输出覆盖和无效域名。将结果放入 Docker 的 `docker-data/bootstrap/whitelist-seed.json`，并设置 `RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json` 后，首次初始化会将规则以 `draft` 导入。它们不会自动发布，已有部署也不会重新导入。
 
+若 DNSGuard 配置为 `RPZ_DEFAULT_DENY_MODE=global`，管理员必须提前准备 `RPZ_GLOBAL_DENY_ZONE`，并提供递归测试地址和已知应被拒绝的测试名称（`RPZ_GLOBAL_DENY_RECURSOR`、`RPZ_GLOBAL_DENY_CHECK_NAME`）。初始化向导只读核对 deny Zone 的 Primary/Secondary SOA 和递归 `NXDOMAIN`；检查未通过时不会完成初始化。`qname-wait-recurse` 等 BIND 递归选项仍由 BIND 管理员独立维护，DNSGuard 不会自动设置。
+
 脚本输出使用 `PASS`、`FAIL`、`WARN`，适合安装验收和故障排查。`--write-test` 不应在未经审批的生产变更窗口外执行。
 
 ## 7. 发布前检查
