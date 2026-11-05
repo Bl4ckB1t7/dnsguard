@@ -86,6 +86,39 @@ func TestParseTLDPolicyAXFRRequiresExactAndWildcardTriggers(t *testing.T) {
 	}
 }
 
+func TestVerifyTLDPolicyEntriesRequiresExactAXFRSet(t *testing.T) {
+	previousEntries := queryTLDEntriesFunc
+	defer func() { queryTLDEntriesFunc = previousEntries }()
+
+	t.Run("complete", func(t *testing.T) {
+		queryTLDEntriesFunc = func(context.Context) ([]string, error) {
+			return []string{"COM", "NET"}, nil
+		}
+		actual, err := verifyTLDPolicyEntries(context.Background(), []string{"COM", "NET"})
+		if err != nil || !tldEntriesEqual(actual, []string{"COM", "NET"}) {
+			t.Fatalf("complete AXFR set should pass: actual=%v err=%v", actual, err)
+		}
+	})
+
+	t.Run("missing-trigger-set", func(t *testing.T) {
+		queryTLDEntriesFunc = func(context.Context) ([]string, error) {
+			return []string{"COM"}, nil
+		}
+		if _, err := verifyTLDPolicyEntries(context.Background(), []string{"COM", "NET"}); err == nil {
+			t.Fatal("incomplete AXFR set must not pass")
+		}
+	})
+
+	t.Run("axfr-failure", func(t *testing.T) {
+		queryTLDEntriesFunc = func(context.Context) ([]string, error) {
+			return nil, errors.New("AXFR timeout")
+		}
+		if _, err := verifyTLDPolicyEntries(context.Background(), []string{"COM", "NET"}); err == nil {
+			t.Fatal("AXFR failure must not be treated as an empty zone")
+		}
+	})
+}
+
 func TestRunTLDNSUpdateUsesIncrementalBatches(t *testing.T) {
 	runtime := t.TempDir()
 	keyPath := filepath.Join(runtime, "rpz.key")

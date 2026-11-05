@@ -687,6 +687,17 @@ func queryTLDPolicyEntries(ctx context.Context) ([]string, error) {
 	return parseTLDPolicyAXFR(string(output), tldPolicyZone())
 }
 
+func verifyTLDPolicyEntries(ctx context.Context, expected []string) ([]string, error) {
+	actual, err := queryTLDEntriesFunc(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("TLD DENY Primary AXFR 全量核对失败: %w", err)
+	}
+	if !tldEntriesEqual(expected, actual) {
+		return actual, fmt.Errorf("TLD DENY Primary AXFR 集合不一致: 目标=%d，实际=%d", len(expected), len(actual))
+	}
+	return actual, nil
+}
+
 type tldPolicyVerification struct {
 	PrimarySerial     string
 	ZoneStatus        string
@@ -790,6 +801,9 @@ func verifyTLDPolicyOnce(ctx context.Context, entries []string) (tldPolicyVerifi
 					failures = append(failures, fmt.Sprintf("Secondary %s Serial=%s，Primary=%s", node.Name, serial, primarySerial))
 				}
 			}
+		}
+		if _, axfrErr := verifyTLDPolicyEntries(ctx, normalized); axfrErr != nil {
+			failures = append(failures, axfrErr.Error())
 		}
 	}
 	if primarySerial == "" {
@@ -1122,16 +1136,9 @@ func reconcileTLDPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), tldPublishTimeout())
 	defer cancel()
-	actual, err := queryTLDEntriesFunc(ctx)
+	actual, err := verifyTLDPolicyEntries(ctx, current.TLDs)
 	if err != nil {
 		current.PolicyMessage = "人工核对失败，未改变 reconcile_required 状态: " + err.Error()
-		setTLDStatus(current)
-		_ = saveTLDState(current)
-		writeJSON(w, http.StatusConflict, map[string]string{"error": current.PolicyMessage})
-		return
-	}
-	if !tldEntriesEqual(current.TLDs, actual) {
-		current.PolicyMessage = fmt.Sprintf("人工核对发现实际 Zone 与待发布列表不一致: expected=%d actual=%d；未恢复自动发布", len(current.TLDs), len(actual))
 		setTLDStatus(current)
 		_ = saveTLDState(current)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": current.PolicyMessage})
