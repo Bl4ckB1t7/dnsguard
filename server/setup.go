@@ -39,6 +39,9 @@ type initializationState struct {
 	SecondaryCnt int    `json:"secondaryCount,omitempty"`
 	Error        string `json:"error,omitempty"`
 	PolicyMode   string `json:"policyMode,omitempty"`
+	// Historical fact: later health or draft changes must not reopen the guide.
+	DeploymentCompleted   bool   `json:"deploymentCompleted,omitempty"`
+	DeploymentCompletedAt string `json:"deploymentCompletedAt,omitempty"`
 
 	// These fields make an interrupted setup recoverable. They never contain
 	// passwords, tokens, or TSIG material.
@@ -259,6 +262,56 @@ func globalDenyVerificationStatus() map[string]any {
 	}
 }
 
+func deploymentCompletionStatus() (bool, string) {
+	initializationMu.Lock()
+	completed, completedAt := initialization.DeploymentCompleted, initialization.DeploymentCompletedAt
+	initializationMu.Unlock()
+	return completed, completedAt
+}
+
+func currentPublishEvidenceReady() bool {
+	dnsMu.RLock()
+	nodes := append([]DNSNode(nil), state.Nodes...)
+	rules := copyRPZRules(state.Rules)
+	published := copyRPZRules(state.Published)
+	dnsMu.RUnlock()
+	if len(rules) == 0 || !rpzRulesEqual(rules, published) {
+		return false
+	}
+	job, ok := latestPublishJob()
+	return ok && publishJobHasVerifiedCluster(job, nodes)
+}
+
+func markDeploymentCompleted() error {
+	if configuredPolicyMode() != "global" {
+		return fmt.Errorf("当前不是 global 策略模式")
+	}
+	if !currentPublishEvidenceReady() {
+		return fmt.Errorf("缺少已成功发布且完成所有节点验证的 RPZ 证据")
+	}
+	if _, ok := currentGlobalDenyVerification(); !ok {
+		return fmt.Errorf("缺少有效的全局 DENY 只读核验证据")
+	}
+	initializationMu.Lock()
+	previous := initialization
+	if previous.DeploymentCompleted {
+		initializationMu.Unlock()
+		return nil
+	}
+	initialization.DeploymentCompleted = true
+	initialization.DeploymentCompletedAt = time.Now().UTC().Format(time.RFC3339)
+	initializationMu.Unlock()
+	if err := saveInitializationState(); err != nil {
+		initializationMu.Lock()
+		if initialization.DeploymentCompletedAt == previous.DeploymentCompletedAt {
+			initialization = previous
+		}
+		initializationMu.Unlock()
+		return fmt.Errorf("首次部署完成状态持久化失败: %w", err)
+	}
+	return nil
+}
+
 func loadGlobalDenyBaseline(checkName, recursor string) error {
 	content, err := os.ReadFile(globalDenyBaselinePath())
 	if err != nil {
@@ -395,6 +448,7 @@ func setupStatus(w http.ResponseWriter, r *http.Request) {
 	initializationMu.Lock()
 	current := initialization
 	initializationMu.Unlock()
+	deploymentCompleted, deploymentCompletedAt := deploymentCompletionStatus()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"initialized":             isInitialized(),
 		"inProgress":              current.Status == initializationPending,
@@ -406,6 +460,8 @@ func setupStatus(w http.ResponseWriter, r *http.Request) {
 		"policyMode":              configuredPolicyMode(),
 		"globalDenySetupDeferred": globalDenySetupDeferred(),
 		"globalDenyVerification":  globalDenyVerificationStatus(),
+		"deploymentCompleted":     deploymentCompleted,
+		"deploymentCompletedAt":   deploymentCompletedAt,
 		"whitelistSeed":           inspectWhitelistSeed(),
 	})
 }
@@ -886,6 +942,12 @@ func globalDenyCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	result := runGlobalDenyChecks(r.Context(), setupRequest{Primary: primary, Secondaries: secondaries})
 	ready := !globalDenySetupDeferred() && configuredPolicyMode() == "global" && setupChecksReady(result)
+	if ready {
+		if err := markDeploymentCompleted(); err != nil {
+			result = append(result, setupCheck{Name: "首次部署完成记录", Status: "fail", Detail: err.Error()})
+			ready = false
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ready":                   ready,
 		"policyMode":              configuredPolicyMode(),

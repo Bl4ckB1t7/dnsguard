@@ -436,6 +436,72 @@ func TestGlobalDenyVerificationPersistsEvidenceAndInvalidatesOnConfigChange(t *t
 	}
 }
 
+func TestDeploymentCompletionRequiresEvidenceAndSurvivesLaterChanges(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	t.Setenv("RPZ_GLOBAL_DENY_ZONE", "global-deny.rpz.local")
+	t.Setenv("RPZ_GLOBAL_DENY_RECURSOR", "127.0.0.1:5353")
+	t.Setenv("RPZ_GLOBAL_DENY_CHECK_NAME", "known.example.com")
+	state = dnsState{
+		Nodes: []DNSNode{
+			{ID: "primary-1", Name: "primary", Role: "primary", Address: "127.0.0.1:5353"},
+			{ID: "secondary-1", Name: "secondary", Role: "secondary", Address: "127.0.0.1:5354"},
+		},
+		Rules:     []RPZRule{{ID: "rule-1", Domain: "known.example.com", Status: "published"}},
+		Published: []RPZRule{{ID: "rule-1", Domain: "known.example.com", Status: "published"}},
+	}
+	originalJobs := publishJobs
+	publishJobs = map[string]PublishJob{}
+	t.Cleanup(func() { publishJobs = originalJobs })
+	if err := markDeploymentCompleted(); err == nil {
+		t.Fatal("deployment completion must require publish and DENY evidence")
+	}
+	if completed, _ := deploymentCompletionStatus(); completed {
+		t.Fatal("deployment must not be marked complete without evidence")
+	}
+	if err := saveGlobalDenyBaseline(globalDenyBaseline{
+		CheckName: "known.example.com", Recursor: "127.0.0.1:5353", RCode: "NOERROR", Observed: "2026-11-05T00:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveGlobalDenyVerification(setupRequest{
+		Primary:     setupNode{Name: "primary", Role: "primary", Address: "127.0.0.1:5353"},
+		Secondaries: []setupNode{{Name: "secondary", Role: "secondary", Address: "127.0.0.1:5354"}},
+	}, []setupCheck{{Name: "全局拒绝递归效果", Status: "pass"}}, "NXDOMAIN"); err != nil {
+		t.Fatal(err)
+	}
+	publishJobs = map[string]PublishJob{"publish-1": {
+		ID: "publish-1", Status: "succeeded", SyncStatus: "published", CreatedAt: "2026-11-05T00:00:00Z",
+		NodeChecks: []RPZNodeCheck{
+			{ID: "primary-1", Role: "primary", Address: "127.0.0.1:5353", Status: "verified"},
+			{ID: "secondary-1", Role: "secondary", Address: "127.0.0.1:5354", Status: "verified"},
+		},
+	}}
+	if err := markDeploymentCompleted(); err != nil {
+		t.Fatalf("complete deployment should be recorded: %v", err)
+	}
+	if completed, completedAt := deploymentCompletionStatus(); !completed || completedAt == "" {
+		t.Fatalf("deployment completion was not persisted: completed=%v at=%q", completed, completedAt)
+	}
+	if err := saveInitializationState(); err != nil {
+		t.Fatal(err)
+	}
+	initialization = initializationState{}
+	if err := loadInitializationState(); err != nil {
+		t.Fatal(err)
+	}
+	statusRecorder := httptest.NewRecorder()
+	setupStatus(statusRecorder, httptest.NewRequest(http.MethodGet, "/api/setup/status", nil))
+	if !strings.Contains(statusRecorder.Body.String(), `"deploymentCompleted":true`) {
+		t.Fatalf("setup status must expose persisted deployment completion: %s", statusRecorder.Body.String())
+	}
+	state.Rules = append(state.Rules, RPZRule{ID: "draft", Domain: "new.example.com", Status: "draft"})
+	state.Nodes[1].Status = "offline"
+	if completed, _ := deploymentCompletionStatus(); !completed {
+		t.Fatal("later drafts or node health changes must not reopen the completed deployment guide")
+	}
+}
+
 func writeInitializedPolicyState(t *testing.T, policyMode string, includePolicyMode bool) {
 	t.Helper()
 	hash, err := bcrypt.GenerateFromPassword([]byte("existing-password"), bcrypt.MinCost)

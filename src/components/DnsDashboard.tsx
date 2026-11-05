@@ -11,7 +11,7 @@ type RPZVersion = { id: string; createdAt: string; mode: string; ruleCount: numb
 type PublishJob = { id: string; status: string; message?: string; error?: string };
 type AuditResponse = { items: AuditEntry[]; total: number; page: number; pageSize: number };
 type TelegramSettings = { enabled: boolean; botTokenSet: boolean; botTokenHint?: string; chatId: string; events: string[]; cooldownSeconds: number };
-type SetupStatus = { globalDenySetupDeferred?: boolean; policyMode?: "global" | "legacy"; error?: string; globalDenyVerification?: { status?: string; verifiedAt?: string; nodeCount?: number } };
+type SetupStatus = { globalDenySetupDeferred?: boolean; policyMode?: "global" | "legacy"; error?: string; globalDenyVerification?: { status?: string; verifiedAt?: string; nodeCount?: number }; deploymentCompleted?: boolean };
 type GlobalDenyCheck = { name: string; status: "pass" | "fail" | "not_run"; detail: string };
 type GlobalDenyCheckResponse = { ready: boolean; policyMode?: string; globalDenySetupDeferred?: boolean; checks: GlobalDenyCheck[] };
 type DashboardView = "overview" | "audit";
@@ -230,7 +230,11 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       const result = await readJSON<GlobalDenyCheckResponse>("/api/dns/global-deny/check");
       setDenyChecks(result.checks ?? []);
       setDenyReady(result.ready === true);
-      setSetupStatus({ globalDenySetupDeferred: result.globalDenySetupDeferred, policyMode: result.policyMode === "global" ? "global" : "legacy" });
+      // The check can persist the historical first-deployment fact. Reload the
+      // authoritative setup status so the guide disappears immediately rather
+      // than waiting for a manual page refresh.
+      const nextSetupStatus = await readJSON<SetupStatus>("/api/setup/status");
+      setSetupStatus(nextSetupStatus);
       setDenyNotice(result.ready === true ? "全局 DENY 只读检查通过，结果来自当前配置的 Primary / Secondary 和递归检查。" : "检查未全部通过，保持“未验证”；请按失败项处理后重新检查。");
     } catch (error) {
       setDenyNotice(`只读状态读取失败：${(error as Error).message}`);
