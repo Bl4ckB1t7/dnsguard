@@ -162,6 +162,15 @@ func validateSecurityConfig() error {
 	if err := validateProductionRuntimeFiles(initialized); err != nil {
 		return err
 	}
+	if configuredPolicyMode() == "global" {
+		zone := configuredGlobalDenyZone()
+		if zone == "" || !domainPattern.MatchString(zone) {
+			return fmt.Errorf("RPZ_GLOBAL_DENY_ZONE must be a valid zone in global default-deny mode")
+		}
+		if strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_RECURSOR")) == "" || strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_CHECK_NAME")) == "" {
+			return fmt.Errorf("RPZ_GLOBAL_DENY_RECURSOR and RPZ_GLOBAL_DENY_CHECK_NAME are required in global default-deny mode")
+		}
+	}
 	return nil
 }
 

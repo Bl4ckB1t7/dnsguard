@@ -1,0 +1,67 @@
+name: dnsguard-global-deny-acceptance
+
+services:
+  upstream:
+    image: internetsystemsconsortium/bind9:9.20
+    command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
+    ports:
+      - "127.0.0.1:15456:53/tcp"
+      - "127.0.0.1:15456:53/udp"
+    networks:
+      acceptance:
+        ipv4_address: 172.31.0.20
+    volumes:
+      - ./runtime/upstream/named.conf:/etc/bind/named.conf:ro
+      - ./runtime/upstream/data:/var/lib/bind/upstream:ro
+      - ./runtime/upstream/logs:/var/log/bind
+
+  primary:
+    image: internetsystemsconsortium/bind9:9.20
+    command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
+    ports:
+      - "127.0.0.1:15453:53/tcp"
+      - "127.0.0.1:15453:53/udp"
+    networks:
+      acceptance:
+        ipv4_address: 172.31.0.10
+    volumes:
+      - ./runtime/primary/named.conf:/etc/bind/named.conf:ro
+      - ./runtime/primary/data:/var/lib/bind/primary
+      - ./runtime/primary/logs:/var/log/bind
+      - ./runtime/keys:/etc/bind/keys:ro
+
+  secondary-1:
+    image: internetsystemsconsortium/bind9:9.20
+    command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
+    ports:
+      - "127.0.0.1:15454:53/tcp"
+      - "127.0.0.1:15454:53/udp"
+    networks:
+      acceptance:
+        ipv4_address: 172.31.0.11
+    volumes:
+      - ./runtime/secondary-1/named.conf:/etc/bind/named.conf:ro
+      - ./runtime/secondary-1/data:/var/lib/bind/secondary
+      - ./runtime/secondary-1/logs:/var/log/bind
+
+  secondary-2:
+    image: internetsystemsconsortium/bind9:9.20
+    command: ["-f", "-g", "-c", "/etc/bind/named.conf"]
+    ports:
+      - "127.0.0.1:15455:53/tcp"
+      - "127.0.0.1:15455:53/udp"
+    networks:
+      acceptance:
+        ipv4_address: 172.31.0.12
+    volumes:
+      - ./runtime/secondary-2/named.conf:/etc/bind/named.conf:ro
+      - ./runtime/secondary-2/data:/var/lib/bind/secondary
+      - ./runtime/secondary-2/logs:/var/log/bind
+
+networks:
+  acceptance:
+    name: dnsguard-global-deny-acceptance
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

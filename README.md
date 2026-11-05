@@ -19,11 +19,11 @@ DNSGuard 不替代 BIND，不参与客户端 DNS 查询，也不要求改造现�
 | 功能 | 说明 |
 |---|---|
 | RPZ 规则管理 | 支持 passthru 白名单、A 记录重定向和多级子域名匹配 |
-| TLD deny RPZ | 独立 Zone，显式启用后管理 TLD 拒绝触发项 |
-| TLD 数据同步 | 校验并同步 IANA TLD 列表，保留版本和数量状态 |
+| 全局默认 DENY | 独立 `global-deny` RPZ Zone；白名单和 A 重定向优先，其余默认拒绝 |
+| 初始白名单导入 | 对接脚本生成经过校验的 JSON，初始化时作为未发布草稿导入 |
 | 受控策略发布 | 增量、分批 `nsupdate + TSIG` 发布和发布预览 |
 | BIND 集群管理 | Primary / Secondary 状态、SOA Serial 和同步检查 |
-| 完整性核对 | 只读 AXFR 全量规则集合校验 |
+| 完整性核对 | Primary / Secondary SOA、只读 AXFR 和实际递归效果校验 |
 | 发布任务追踪 | `pending_verification`、`reconcile_required`、异常诊断和人工核对 |
 | 版本与审计 | 策略版本、受控回滚、审计哈希链和恢复保护 |
 | 安全认证 | 管理员登录、会话保护、CSRF 和访问限制 |
@@ -61,11 +61,11 @@ DNSGuard 是 DNS 策略控制面，生产 Docker Compose 只部署 `dnsguard-api
 
 1. BIND Primary 和至少一台 Secondary 已正常工作。
 2. 白名单 / A 重定向 RPZ Zone 已创建并可用。
-3. 递归 DNS 的 `response-policy` 已按管理员规划配置正确的 Zone 顺序，白名单 / 重定向 Zone 位于 TLD deny Zone 之前。
+3. 递归 DNS 的 `response-policy` 已按管理员规划配置正确的 Zone 顺序，白名单 / 重定向 Zone 位于全局 deny Zone 之前。
 4. 已准备最小权限 TSIG Key 和动态更新权限。
 5. Primary 到 Secondary 的 NOTIFY / IXFR / AXFR 已配置并可用。
-6. 如需 TLD deny，已提前创建独立 deny RPZ Zone。
-7. 如需自动发布 TLD deny，已为 DNSGuard 配置该 Zone 的只读 AXFR 权限。
+6. 如启用 v1.1.0 全局默认 DENY，已提前创建独立 `global-deny` RPZ Zone，并在递归实例配置白名单 / 重定向 Zone 优先。
+7. 已为 DNSGuard 配置必要的只读 SOA / AXFR 检查权限；DNSGuard 不会自动创建或写入全局 DENY Zone。
 8. DNS TCP/UDP 53、必要的 Zone Transfer、DNSGuard HTTPS 等网络路径可达。
 9. 如启用 IANA 同步，DNSGuard 可以访问 IANA HTTPS 数据源。
 10. 管理员已独立评估递归设置和 DNS 查询外传风险。
@@ -83,7 +83,7 @@ cp deploy/docker/rpz-connect.env.example /path/to/rpz-connect.env
 ./scripts/rpz-connect.sh --env-file /path/to/rpz-connect.env
 ```
 
-默认是只读预检，检查工具、TSIG 文件权限、Primary / Secondary SOA Serial、节点连通性和同步一致性；配置可选参数时，还会执行实际递归 A、白名单或 TLD deny 证据检查。参数不完整的可选检查会显示 `NOT RUN`。该命令不修改 RPZ 记录、不修改 BIND 配置、不 reload/restart BIND，也不会自动修复失败项。
+默认是只读预检，检查工具、TSIG 文件权限、Primary / Secondary SOA Serial、节点连通性和同步一致性；配置可选参数时，还会执行实际递归 A、白名单或全局 deny 证据检查。参数不完整的可选检查会显示 `NOT RUN`。该命令不修改 RPZ 记录、不修改 BIND 配置、不 reload/restart BIND，也不会自动修复失败项。
 
 检查失败时，应先排查 BIND 配置、TSIG 权限和网络连通性，不要绕过安全检查。
 
@@ -102,6 +102,8 @@ printf '\nRPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.jso
 
 启动后初始化向导会显示发现的条目数量，并将其导入为未发布草稿；不会自动修改 BIND。管理员应在页面核对后，再使用正常发布流程提交白名单。已有 DNSGuard 数据时不会重新导入或覆盖现有规则。
 
+新部署的 v1.1.0 模式使用 `RPZ_DEFAULT_DENY_MODE=global`，还必须配置预先存在的 `RPZ_GLOBAL_DENY_ZONE`、递归测试地址和测试域名。初始化只读核对 deny Zone 的 Primary/Secondary SOA、根级通配触发项和递归测试；任何必要检查未通过都不会打开初始化完成条件。
+
 ### 可选：受控临时 TXT 写入测试
 
 脚本支持显式授权的临时 TXT 测试，但默认不开启。只有在隔离环境或已批准的维护窗口中，才执行：
@@ -114,23 +116,23 @@ printf '\nRPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.jso
 
 该模式只使用脚本生成的随机测试名称和随机 TXT 内容，默认限制在 `_dnsguard-preflight.<RPZ_ZONE>` 命名空间；自定义名称也必须位于受保护测试命名空间内。脚本会先确认目标不存在，写入后精确删除并再次查询确认。写入、读回或清理结果不确定时会失败并要求人工核对，不会执行正式 RPZ 发布。不要把实际业务域名或业务策略作为测试对象。
 
-### 双 RPZ Zone 架构
+### 双 RPZ Zone 架构（v1.1.0）
 
 - **Zone 1：白名单与 A 重定向**：管理 `passthru` 白名单、域名及多级子域名放行，以及 A 记录重定向。
-- **Zone 2：TLD deny**：独立管理 IANA TLD 列表对应的精确和通配触发项，并通过增量方式维护。
+- **Zone 2：全局 DENY**：由 BIND 管理员预先准备，例如 `global-deny.rpz.local` 中的 `* IN CNAME .`；DNSGuard 只读核对，不自动修改该 Zone。
 
-白名单 / 重定向 Zone 必须在 BIND 的 RPZ 策略顺序中具有更高优先级。DNSGuard 只通过 `nsupdate + TSIG` 更新管理员预先配置的 Primary Zone；Primary / Secondary 同步由 BIND 原生 NOTIFY / IXFR / AXFR 完成。
+白名单 / 重定向 Zone 必须在 BIND 的 RPZ 策略顺序中具有更高优先级。DNSGuard 只通过 `nsupdate + TSIG` 更新白名单 / 重定向 Primary Zone；全局 DENY Zone 由 BIND 管理员独立维护，Primary / Secondary 同步由 BIND 原生 NOTIFY / IXFR / AXFR 完成。
 
-TLD deny 发布是**显式启用**功能，不是默认开启。它不能被描述为在所有 BIND 配置下百分之百阻止 DNS C2 或 DNS 数据外传。本文不包含未经验证的 `* CNAME .` 根级全局拒绝方案。
+v1.1.0 的全局 DENY 是显式配置的正式策略，但不应宣传为在所有 BIND 配置、查询类型和 DNSSEC 场景下百分之百阻止 DNS C2 或数据外传。`NXDOMAIN` 只能说明客户端收到的结果；上游是否看到 QNAME 必须在目标递归配置下单独验证。`qname-wait-recurse` 等选项由 BIND 管理员独立维护，DNSGuard 不会自动设置。
 
 ## 快速开始
 
-DNSGuard v1.0.1 采用 **Docker Compose Only** 部署。
+DNSGuard v1.1.0 继续采用 **Docker Compose Only** 部署；v1.1.0 尚未创建正式 Tag 或 Release。
 
 环境要求：Docker Engine、Docker Compose Plugin、现有 BIND RPZ 集群、TSIG Key 和 HTTPS 证书。
 
 ```bash
-git clone --branch v1.0.1 --single-branch https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
+git clone --branch main --single-branch https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
 
 cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
@@ -145,9 +147,9 @@ docker compose ps
 
 **完整安装说明：** [Docker 部署与运维手册](deploy/docker/README.md)
 
-**正式版本：** [DNSGuard v1.0.1 GitHub Release](https://github.com/Bl4ckB1t7/dnsguard/releases/tag/v1.0.1)
+**当前稳定版本：** [DNSGuard v1.0.1 GitHub Release](https://github.com/Bl4ckB1t7/dnsguard/releases/tag/v1.0.1)。v1.1.0 全局 DENY 功能在本分支开发和验收，正式发布前不要用于生产。
 
-推荐的部署顺序是：先准备并验证独立 BIND 集群，执行只读对接预检，再启动 DNSGuard Compose，完成 Web 初始化，发布少量受控规则并验证同步；需要 TLD deny 时，最后在独立 Zone 已准备并验证后显式开启。
+推荐的部署顺序是：先准备并验证独立 BIND 集群，整理白名单并导出初始 JSON，预置全局 deny Zone 和 RPZ 顺序，执行只读对接预检，再启动 DNSGuard Compose，完成 Web 初始化，核对并发布白名单，最后验证递归行为和同步状态。DNSGuard 不会替管理员修改 BIND 配置。
 
 ## 界面预览
 
@@ -161,7 +163,7 @@ docker compose ps
 
 DNSGuard 仅管理经过授权的 BIND RPZ 集群，不会自动安装、修改或重启生产 BIND。生产环境必须使用 HTTPS，并妥善保护 TSIG 密钥和持久化数据。
 
-控制台的 **TLD 数据状态**卡片显示 IANA TLD 数据的数量、版本和同步状态。默认每 24 小时检查一次；下载失败时保留上一份有效状态。默认不发布 deny RPZ；管理员在隔离环境配置并验证第二个 RPZ Zone 后，可显式启用 `TLD_DENY_PUBLISH_ENABLED=true`，由 DNSGuard 通过现有 `nsupdate + TSIG` 更新该 Zone。DNSGuard 不会自动修改 `named.conf`、重启 BIND 或改变递归配置。
+控制台显示当前策略模式和全局 DENY Zone。v1.1.0 不再依赖 IANA TLD 列表实现默认拒绝；旧版 TLD 状态、发布记录和接口仍保留用于升级兼容，但默认关闭，不作为全局 DENY 可用性的判断依据。
 
 正式部署前，应在隔离环境完成 RPZ 发布、同步、备份和恢复测试。
 
@@ -176,6 +178,10 @@ DNSGuard 仅管理经过授权的 BIND RPZ 集群，不会自动安装、修改�
 - 总结果：`20 PASS / 0 FAIL / 0 NOT RUN`。
 
 这些结果来自隔离 BIND 配置，不代表所有生产 BIND 配置均已验证；客户端收到 `NXDOMAIN` 也不能单独等同于完全阻止 DNS 数据外传。详见：[v1.0.1 隔离 BIND 正式验收报告](docs/acceptance/v1.0.1-bind-acceptance.md)。
+
+## v1.1.0 全局 DENY 验收边界
+
+v1.1.0 的正式功能验收使用独立 BIND Primary、两台 Secondary 和受控上游，覆盖全局 deny Zone、白名单 / 多级子域名、A 重定向、SOA 同步和递归结果。DO=1、AAAA、TXT 及上游是否观察到被拒绝 QNAME，必须按目标 BIND 版本和递归配置分别记录；任何未执行项都不会写成通过。验收证据在功能完成后补充到 `docs/acceptance/`。
 
 ## 文档
 

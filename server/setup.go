@@ -38,6 +38,7 @@ type initializationState struct {
 	Primary      string `json:"primary,omitempty"`
 	SecondaryCnt int    `json:"secondaryCount,omitempty"`
 	Error        string `json:"error,omitempty"`
+	PolicyMode   string `json:"policyMode,omitempty"`
 
 	// These fields make an interrupted setup recoverable. They never contain
 	// passwords, tokens, or TSIG material.
@@ -239,6 +240,7 @@ func setupStatus(w http.ResponseWriter, r *http.Request) {
 		"tsigKeyPath":       strings.TrimSpace(os.Getenv("RPZ_KEY_FILE")),
 		"keyCandidates":     protectedKeyCandidates(),
 		"writeTestRequired": true,
+		"policyMode":        configuredPolicyMode(),
 		"whitelistSeed":     inspectWhitelistSeed(),
 	})
 }
@@ -531,7 +533,7 @@ func commitSetup(request setupRequest, nodes []DNSNode, seedRules []RPZRule, r *
 		}
 	}
 	initializationMu.Lock()
-	initialization = initializationState{Status: initializationPending, Version: 1, StartedAt: time.Now().UTC().Format(time.RFC3339), Username: request.Username, Zone: request.Zone, Primary: nodes[0].Address, SecondaryCnt: len(nodes) - 1, BackupDir: backupDir, AuthExisted: existed[0], NodesExisted: existed[1], DNSStateExisted: existed[2]}
+	initialization = initializationState{Status: initializationPending, Version: 1, StartedAt: time.Now().UTC().Format(time.RFC3339), Username: request.Username, Zone: request.Zone, Primary: nodes[0].Address, SecondaryCnt: len(nodes) - 1, PolicyMode: configuredPolicyMode(), BackupDir: backupDir, AuthExisted: existed[0], NodesExisted: existed[1], DNSStateExisted: existed[2]}
 	initializationMu.Unlock()
 	if err := saveInitializationState(); err != nil {
 		_ = os.RemoveAll(backupDir)
@@ -550,6 +552,7 @@ func commitSetup(request setupRequest, nodes []DNSNode, seedRules []RPZRule, r *
 	newState.Published = []RPZRule{}
 	newState.Versions = []RPZVersion{}
 	newState.RulesRevision = uint64(len(seedRules))
+	newState.PolicyMode = configuredPolicyMode()
 	dnsMu.RUnlock()
 	stateContent, _ := json.MarshalIndent(newState, "", "  ")
 	stages := []struct {
@@ -650,7 +653,7 @@ func recoverInterruptedSetup(current initializationState) error {
 }
 
 func runSetupChecks(ctx context.Context, request setupRequest) setupCheckResult {
-	checks := make([]setupCheck, 0, 5)
+	checks := make([]setupCheck, 0, 10)
 	primarySerial, primaryCheck := querySetupSOA(ctx, "Primary SOA / Zone", request.Primary.Address, request.Zone)
 	checks = append(checks, primaryCheck)
 	for index, secondary := range request.Secondaries {
@@ -660,6 +663,9 @@ func runSetupChecks(ctx context.Context, request setupRequest) setupCheckResult 
 			check.Detail = fmt.Sprintf("SOA Serial=%s，与 Primary Serial=%s 不一致", serial, primarySerial)
 		}
 		checks = append(checks, check)
+	}
+	if configuredPolicyMode() == "global" {
+		checks = append(checks, runGlobalDenyChecks(ctx, request)...)
 	}
 	if !request.WriteTest {
 		checks = append(checks, setupCheck{Name: "TSIG 动态更新权限", Status: "not_run", Detail: "未执行写权限验证；只读 SOA 检查不能证明 nsupdate 权限", Impact: "完整验证会在 Primary Zone 临时写入一条 TXT 记录", Cleanup: "不执行写测试，因此没有临时记录"})
@@ -673,6 +679,56 @@ func runSetupChecks(ctx context.Context, request setupRequest) setupCheckResult 
 		}
 	}
 	return setupCheckResult{Ready: ready, Checks: checks}
+}
+
+func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck {
+	zone := configuredGlobalDenyZone()
+	if zone == "" || !domainPattern.MatchString(zone) {
+		return []setupCheck{{Name: "全局默认拒绝 Zone", Status: "fail", Detail: "RPZ_GLOBAL_DENY_ZONE 未配置或格式无效"}}
+	}
+	checks := make([]setupCheck, 0, len(request.Secondaries)+3)
+	primarySerial, check := querySetupSOA(ctx, "全局拒绝 Primary Zone", request.Primary.Address, zone)
+	checks = append(checks, check)
+	for index, secondary := range request.Secondaries {
+		serial, secondaryCheck := querySetupSOA(ctx, fmt.Sprintf("全局拒绝 Secondary %d Zone", index+1), secondary.Address, zone)
+		if primarySerial != "" && serial != "" && primarySerial != serial {
+			secondaryCheck.Status = "fail"
+			secondaryCheck.Detail = fmt.Sprintf("SOA Serial=%s，与全局拒绝 Primary Serial=%s 不一致", serial, primarySerial)
+		}
+		checks = append(checks, secondaryCheck)
+	}
+	checks = append(checks, querySetupGlobalDenyTrigger(ctx, request.Primary.Address, zone))
+	recursor := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_RECURSOR"))
+	checkName := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_CHECK_NAME"))
+	if recursor == "" || checkName == "" {
+		checks = append(checks, setupCheck{Name: "全局拒绝递归效果", Status: "not_run", Detail: "未配置 RPZ_GLOBAL_DENY_RECURSOR 和 RPZ_GLOBAL_DENY_CHECK_NAME", Impact: "仅 SOA 一致不能证明递归策略已生效"})
+		return checks
+	}
+	rcode, rcodeCheck := querySetupRcode(ctx, recursor, checkName)
+	if rcodeCheck.Status == "pass" && rcode != "NXDOMAIN" {
+		rcodeCheck.Status = "fail"
+		rcodeCheck.Detail = "递归策略返回 " + rcode + "，预期 NXDOMAIN"
+	}
+	checks = append(checks, rcodeCheck)
+	return checks
+}
+
+func querySetupGlobalDenyTrigger(ctx context.Context, address, zone string) setupCheck {
+	host, port := splitDNSAddress(address)
+	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	name := "*." + strings.TrimSuffix(zone, ".") + "."
+	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, "+norecurse", "+comments", name, "CNAME", "+time=2", "+tries=1").CombinedOutput()
+	if err != nil {
+		return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Detail: "无法读取 deny Zone 的通配触发项"}
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 5 && strings.EqualFold(fields[3], "CNAME") && fields[4] == "." {
+			return setupCheck{Name: "全局拒绝根级通配触发项", Status: "pass", Detail: "已读取 * CNAME .，Zone=" + zone}
+		}
+	}
+	return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Detail: "deny Zone 缺少可验证的 * CNAME . 触发项"}
 }
 
 func querySetupSOA(ctx context.Context, name, address, zone string) (string, setupCheck) {
@@ -692,6 +748,26 @@ func querySetupSOA(ctx context.Context, name, address, zone string) (string, set
 		return "", setupCheck{Name: name, Status: "fail", Detail: "SOA Serial 无效"}
 	}
 	return serial, setupCheck{Name: name, Status: "pass", Detail: "可读取 Zone SOA，Serial=" + serial}
+}
+
+func querySetupRcode(ctx context.Context, address, name string) (string, setupCheck) {
+	host, port := splitDNSAddress(address)
+	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, name, "A", "+comments", "+time=2", "+tries=1").CombinedOutput()
+	if err != nil {
+		return "", setupCheck{Name: "全局拒绝递归效果", Status: "fail", Detail: "无法读取递归策略 RCODE"}
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if marker := strings.Index(line, "status: "); marker >= 0 {
+			value := strings.TrimSpace(strings.SplitN(line[marker+len("status: "):], ",", 2)[0])
+			if value == "" {
+				break
+			}
+			return value, setupCheck{Name: "全局拒绝递归效果", Status: "pass", Detail: "递归测试返回 RCODE=" + value + "，测试名=" + name}
+		}
+	}
+	return "", setupCheck{Name: "全局拒绝递归效果", Status: "fail", Detail: "递归响应缺少有效 RCODE"}
 }
 
 func splitDNSAddress(address string) (string, string) {

@@ -34,7 +34,7 @@ DNSGuard 只需要能够访问：
 - `SECONDARY_1_IP`
 - `SECONDARY_2_IP`
 - `RECURSOR_IP`
-- `TLD_DENY_ZONE`
+- `RPZ_GLOBAL_DENY_ZONE`
 - `DNSGUARD_IP`
 
 先在隔离环境用实际 BIND 版本验证配置，再安排生产变更窗口。
@@ -111,57 +111,48 @@ zone "RPZ_ZONE" {
 - DNSGuard -> Primary：UDP/TCP 53，用于 `nsupdate`；
 - DNSGuard -> Secondary：UDP/TCP 53，用于状态检查。
 
-### 2.4 可选：配置 TLD 默认拒绝 Zone
+### 2.4 配置全局默认 DENY Zone（v1.1.0）
 
-如果要启用 DNSGuard 的 TLD 默认拒绝策略，在同一台 RPZ Primary 上再配置一个独立的 deny Zone。这个 Zone 由 DNSGuard 使用同一份 TSIG 通过 `nsupdate` 更新；DNSGuard 不会自动写入或修改下面的 BIND 配置。
-
-Primary 增加：
+v1.1.0 的默认拒绝由 BIND 管理员独立准备，不由 DNSGuard 创建或发布。以
+`global-deny.rpz.local` 为例，Primary 上预先创建：
 
 ```conf
-zone "TLD_DENY_ZONE" {
+zone "global-deny.rpz.local" {
     type primary;
-    file "/var/lib/bind/db.TLD_DENY_ZONE";
-
-    // 只允许 DNSGuard 管理该 deny Zone 的 CNAME 触发项。
+    file "/var/lib/bind/db.global-deny.rpz.local";
     update-policy {
         grant dnsguard-rpz zonesub CNAME;
     };
-
     notify yes;
-    also-notify {
-        SECONDARY_1_IP;
-        SECONDARY_2_IP;
-    };
+    also-notify { SECONDARY_1_IP; SECONDARY_2_IP; };
     allow-transfer {
         SECONDARY_1_IP;
         SECONDARY_2_IP;
-        // 仅用于人工 reconcile 的只读 AXFR 核对。
-        DNSGUARD_IP;
+        DNSGUARD_IP; // 仅供只读 AXFR 核对（如环境需要）
     };
 };
 ```
 
-每台 Secondary 增加：
+Zone 内容至少应包含 SOA、NS 和根级通配动作：
 
-```conf
-zone "TLD_DENY_ZONE" {
-    type secondary;
-    primaries {
-        PRIMARY_IP;
-    };
-    file "/var/cache/bind/db.TLD_DENY_ZONE";
-    allow-notify { PRIMARY_IP; };
-};
+```dns
+$TTL 60
+$ORIGIN global-deny.rpz.local.
+@ IN SOA localhost. hostmaster.localhost. (1 1h 15m 30d 60)
+  IN NS localhost.
+* IN CNAME .
 ```
 
-配置完成后先只读校验，再安排 BIND 配置变更窗口：
+每台 Secondary 以同一个 Zone 配置为 secondary，并允许来自 Primary 的 NOTIFY/IXFR/AXFR。
+管理员应在隔离环境执行：
 
 ```bash
 named-checkconf
-named-checkzone TLD_DENY_ZONE /var/lib/bind/db.TLD_DENY_ZONE
+named-checkzone global-deny.rpz.local /var/lib/bind/db.global-deny.rpz.local
 ```
 
-首次创建的 Zone 至少应包含 SOA 和 NS 记录。不要把该 Zone 文件交给 DNSGuard 容器管理，也不要把生产 TSIG 写进仓库或环境变量。
+DNSGuard 不会写入 `* CNAME .`、修改 `named.conf`、修改 `response-policy` 或重启 BIND。
+
 
 ## 3. 在递归 DNS 上启用 RPZ
 
@@ -178,30 +169,30 @@ options {
 
 如果 Secondary 只承担权威 Zone Transfer，不承担递归解析，不要仅为测试 RPZ 而开启递归。实际生效验证应查询企业递归 DNS，而不是只查询 RPZ 权威 Zone。
 
-### 3.1 TLD 数据状态与默认拒绝边界
+### 3.1 两个 RPZ Zone 的顺序与安全边界
 
-DNSGuard 控制台中的 TLD 数据状态用于展示和校验 IANA TLD 列表版本、数量与同步状态。默认情况下只同步列表，不发布 deny RPZ。完成隔离验收并明确设置 `TLD_DENY_PUBLISH_ENABLED=true` 后，DNSGuard 才会通过现有 `nsupdate + TSIG` 向管理员预先配置的第二个 deny Zone 发布 TLD 触发项；它仍然不会自动修改 `named.conf`、reload/restart BIND。
-
-生产 BIND 需要由管理员独立配置第二个动态 Zone（见 [2.4](#24-可选配置-tld-默认拒绝-zone)），并在递归实例按顺序加载两个 RPZ：白名单/重定向 Zone 在前，TLD deny Zone 在后。示例（先在隔离环境验证）：
+实际递归 BIND 必须由管理员配置两个 Zone，并把白名单 / A 重定向 Zone 放在全局 deny
+Zone 之前：
 
 ```conf
 response-policy {
     zone "RPZ_ZONE";
-    zone "TLD_DENY_ZONE";
+    zone "global-deny.rpz.local";
 };
 ```
 
-每台 Secondary 以同样的 `TLD_DENY_ZONE` 配置为 secondary，并允许 Primary NOTIFY/IXFR/AXFR。不要让 DNSGuard 自动写入这些 BIND 配置。DNSGuard 发布每个 TLD 的精确触发项和 `*.TLD` 通配触发项，动作是 `CNAME .`；白名单 Zone 的 `passthru` 命中优先级和多 Zone 行为必须用当前 BIND 版本的隔离测试确认。
+Zone 1 由 DNSGuard 通过 `nsupdate + TSIG` 管理：`rpz-passthru` 白名单和 A 重定向
+均自动生成精确项与通配项，覆盖任意层级子域名。Zone 2 仅由 BIND 管理员预先创建和
+维护根级 `* IN CNAME .`，DNSGuard 在初始化时只读检查其 SOA、通配触发项、Secondary
+同步和指定递归测试。
 
-必须同时验证：
+v1.1.0 默认拒绝不依赖 IANA TLD 列表，不再为每个 TLD 生成拒绝记录。旧 v1.0.1 的
+TLD 状态文件、历史发布任务和备份字段保留用于升级兼容，但 `TLD_DENY_ENABLED` 和
+`TLD_DENY_PUBLISH_ENABLED` 默认关闭，旧 TLD 状态不会作为全局 DENY 的可用性判断。
 
-- 白名单域名及其子域名仍然 PASSTHRU；
-- A 重定向返回预期 IPv4；
-- deny RPZ 的已知可解析测试域名返回预期 RCODE；
-- deny RPZ 权威触发项存在明确的动作证据（例如 `CNAME .`），不能把普通域名本身不存在误判为策略命中；
-- BIND 的上游查询、DNSSEC、AAAA/TXT/CNAME 和内部域名行为符合企业策略。
-
-TLD 拒绝不等于 100% 全局封锁：它只能覆盖已配置并被 BIND 实际加载的触发项，且 RPZ 匹配、递归缓存、DNSSEC 和例外规则都会影响结果。DNS C2 防护必须在递归前拦截路径上核对真实查询效果；DNSGuard 只负责受控管理现有 RPZ，不代替 BIND 的策略配置。`qname-wait-recurse` 等选项如需使用，必须由管理员依据当前 BIND 版本的官方文档和隔离测试结果独立决定，DNSGuard 不会自动设置。
+客户端的 `NXDOMAIN` 不能单独证明 QNAME 未到达上游。`qname-wait-recurse`、DNSSEC、
+AAAA/TXT/CNAME 和缓存行为必须在目标 BIND 版本、目标递归设置和受控上游下分别验证。
+DNSGuard 不会自动设置这些 BIND 选项。
 
 ## 4. DNSGuard 配置
 
@@ -213,21 +204,17 @@ RPZ_ZONE=RPZ_ZONE
 RPZ_PRIMARY=PRIMARY_IP
 RPZ_PRIMARY_PORT=53
 RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key
+RPZ_DEFAULT_DENY_MODE=global
+RPZ_GLOBAL_DENY_ZONE=global-deny.rpz.local
+RPZ_GLOBAL_DENY_RECURSOR=RECURSOR_IP:53
+RPZ_GLOBAL_DENY_CHECK_NAME=KNOWN_RESOLVABLE_DENY_TEST_NAME
+RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json
+TLD_DENY_ENABLED=false
 TLD_DENY_PUBLISH_ENABLED=false
-TLD_DENY_ZONE=TLD_DENY_ZONE
-TLD_DENY_TTL_SECONDS=300
-TLD_PUBLISH_TIMEOUT_SECONDS=120
-TLD_PUBLISH_BATCH_TLDS=100
-TLD_PUBLISH_BATCH_BYTES=32768
-TLD_DENY_ARTIFACT_FILE=/var/lib/dnsguard/rpz/TLD_DENY_ZONE.db
 ```
 
-`TLD_SYNC_TIMEOUT_SECONDS` 只限制 TLD 下载和格式校验；`TLD_PUBLISH_TIMEOUT_SECONDS` 单独限制批量 `nsupdate`、Primary/Secondary SOA 和代表性触发项的发布验收。发布超时不会自动重放，而是进入人工核对状态。
-`TLD_PUBLISH_BATCH_TLDS` 和 `TLD_PUBLISH_BATCH_BYTES` 分别限制单批 TLD 变更数和 DNS UPDATE 文本大小，默认 100 个 TLD、32 KiB；实际批次以先达到的限制为准。
-
-控制台会分别显示 `DENY Zone`、`Secondary` 和递归检查状态：Zone 发布成功不等于 Secondary 已同步，Secondary 已同步也不等于递归路径已经验证。需要验证递归效果时，额外配置 `TLD_DENY_RECURSOR`、`TLD_DENY_CHECK_NAME`，可选设置 `TLD_DENY_EXPECTED_RCODE`（默认 `NXDOMAIN`）；未配置时显示“递归未配置”，不会伪装成通过。
-
-如果 IANA 列表相对上一份有效列表减少超过 10%，DNSGuard 会保留旧列表和已发布策略，记录新旧数量并拒绝自动发布。首次同步没有旧列表基线，不执行该比例判断。
+全局模式下，初始化检查 deny Zone 的 Primary/Secondary SOA、根级通配触发项和递归测试；
+只读检查失败不会完成初始化。IANA TLD 同步仅作为旧版兼容路径保留，不是 v1.1.0 默认拒绝的依赖。
 
 ### 3.2 `reconcile_required` 人工恢复
 
@@ -235,10 +222,10 @@ TLD_DENY_ARTIFACT_FILE=/var/lib/dnsguard/rpz/TLD_DENY_ZONE.db
 
 恢复步骤：
 
-1. 先在 Primary 上确认动态更新日志、TLD deny Zone SOA 和 AXFR 权限；再确认每台 Secondary 的 SOA Serial。
-2. 登录 DNSGuard，在 TLD 数据状态卡片点击“人工核对并恢复”。该操作通过认证和 CSRF 保护的 `POST /api/dns/tld/reconcile` 执行。
-3. DNSGuard 使用 TSIG 对 Primary 执行只读 AXFR，要求实际 Zone 中每个 TLD 的精确和通配 `CNAME .` 触发项都存在，并且集合与当前待发布列表完全一致。
-4. 通过后，系统再次核对 Primary、Secondary、代表性触发项和已配置的递归检查，成功才清除 `reconcile_required` 并恢复自动同步；任何不一致都保持锁定并返回原因。
+1. 先在 Primary 上确认白名单 / 重定向 Zone 的动态更新日志、SOA 和 AXFR 权限；再确认每台 Secondary 的 SOA Serial。
+2. 如果是 v1.0.1 旧 TLD 发布任务，登录 DNSGuard，在兼容的 TLD 状态卡片点击“人工核对并恢复”。该操作通过认证和 CSRF 保护的 `POST /api/dns/tld/reconcile` 执行。
+3. 旧 TLD 路径使用 TSIG 对 Primary 执行只读 AXFR，要求精确和通配 `CNAME .` 触发项集合完整；v1.1.0 全局 DENY 不通过该旧接口恢复，而是由 BIND 管理员核对全局 Zone 后重新执行初始化 / 只读预检。
+4. 任何不一致都保持锁定并返回原因；不要直接编辑 JSON 或把状态字符串改成 `published`。
 
 该恢复动作不会发送 DNS UPDATE，不会修改 `named.conf`、`response-policy` 或重启 BIND，并会写入审计记录。不要直接编辑 JSON 状态文件或把状态字符串改成 `published`。
 
@@ -301,6 +288,8 @@ cp deploy/docker/rpz-connect.env.example /tmp/rpz-connect.env
 ```
 
 每行一个域名，空行和 `#` 注释会忽略；脚本会小写化、去除末尾点并去重，拒绝通配符、下划线、重复输出覆盖和无效域名。将结果放入 Docker 的 `docker-data/bootstrap/whitelist-seed.json`，并设置 `RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json` 后，首次初始化会将规则以 `draft` 导入。它们不会自动发布，已有部署也不会重新导入。
+
+若 DNSGuard 配置为 `RPZ_DEFAULT_DENY_MODE=global`，管理员必须提前准备 `RPZ_GLOBAL_DENY_ZONE`，并提供递归测试地址和已知应被拒绝的测试名称（`RPZ_GLOBAL_DENY_RECURSOR`、`RPZ_GLOBAL_DENY_CHECK_NAME`）。初始化向导只读核对 deny Zone 的 Primary/Secondary SOA 和递归 `NXDOMAIN`；检查未通过时不会完成初始化。`qname-wait-recurse` 等 BIND 递归选项仍由 BIND 管理员独立维护，DNSGuard 不会自动设置。
 
 脚本输出使用 `PASS`、`FAIL`、`WARN`，适合安装验收和故障排查。`--write-test` 不应在未经审批的生产变更窗口外执行。
 

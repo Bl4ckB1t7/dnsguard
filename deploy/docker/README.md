@@ -1,4 +1,4 @@
-# DNSGuard v1.0.1 Docker Compose 交付手册
+# DNSGuard v1.1.0 Docker Compose 交付手册（开发分支）
 
 Docker Compose 是 DNSGuard 的推荐生产部署方式。Compose 只运行 DNSGuard
 控制面：`dnsguard-api` 和 `dnsguard-web`。生产 BIND Primary/Secondary 必须继续
@@ -42,12 +42,12 @@ RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json
 
 ## 3. 获取正式版本
 
-发布后固定使用 Git Tag，不要直接跟随 `main`：
+v1.1.0 尚未创建正式 Tag 或 Release。生产仍应固定使用已批准的版本 Tag；验收本分支前不要将其用于生产：
 
 ```bash
-git clone --branch v1.0.0 --single-branch https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
+git clone --branch main --single-branch https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
-git checkout v1.0.0
+# v1.1.0 发布后再改为对应的正式 Tag
 ```
 
 如果使用内部镜像仓库，也应固定镜像 digest 或已批准的版本号，不使用 `latest`。
@@ -80,10 +80,9 @@ DNSGUARD_BIND_LOG_DIR=/srv/dnsguard/bind-logs
 - `DNS_NODE_ADDRESSES`、`DNS_NODE_ALLOWED_CIDRS`；
 - `RPZ_ZONE`、`RPZ_PRIMARY`、`RPZ_PRIMARY_PORT`；
 - `RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key`；
-- `TLD_DENY_ENABLED=true`、`TLD_SOURCE_URL`、`TLD_SYNC_INTERVAL_SECONDS=86400`；
-- 隔离验收后才可启用 `TLD_DENY_PUBLISH_ENABLED=true`，并设置 `TLD_DENY_ZONE`、`TLD_DENY_TTL_SECONDS` 和 `TLD_DENY_ARTIFACT_FILE`；
-- `TLD_SYNC_TIMEOUT_SECONDS` 只控制 TLD 下载，`TLD_PUBLISH_TIMEOUT_SECONDS=120` 单独控制 deny RPZ 发布及 Primary/Secondary 验收；
-- `TLD_PUBLISH_BATCH_TLDS=100`、`TLD_PUBLISH_BATCH_BYTES=32768` 控制单个 DNS UPDATE 批次的 TLD 数量和文本大小；
+- v1.1.0 全局默认拒绝模式：`RPZ_DEFAULT_DENY_MODE=global`、预先配置的 `RPZ_GLOBAL_DENY_ZONE`、`RPZ_GLOBAL_DENY_RECURSOR` 和 `RPZ_GLOBAL_DENY_CHECK_NAME`；
+- `RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json`，该文件由对接脚本生成并放入 `docker-data/bootstrap/`；
+- 旧 v1.0.1 TLD 兼容路径默认关闭（`TLD_DENY_ENABLED=false`、`TLD_DENY_PUBLISH_ENABLED=false`）；旧状态文件保留用于升级兼容，不参与 v1.1.0 全局 DENY 可用性判断；
 - `TRUSTED_PROXY_CIDRS` 和 HTTPS 反向代理选项（如使用企业入口）。
 
 不要把真实值写入 Git：
@@ -133,14 +132,16 @@ docker compose ps
 
 ## 6. Web 首次初始化向导
 
-1. 从部署终端读取 `secrets/bootstrap.token`，不要通过聊天、日志或 URL 传递。
-2. 在浏览器向导输入一次性 Bootstrap Token。
-3. 设置管理员用户名和至少 12 位的管理员密码。
-4. 添加一个 `primary` 和至少一个 `secondary` 节点；Primary 角色不能填成 Secondary。
-5. 选择受保护目录中的 TSIG key，系统不会回显完整密钥。
-6. 确认 RPZ Zone、Primary/Secondary 地址后执行检查。
+1. 全局默认拒绝模式下，先确认 `docker-data/bootstrap/whitelist-seed.json` 已准备，且包含人工审核的初始白名单。
+2. 从部署终端读取 `secrets/bootstrap.token`，不要通过聊天、日志或 URL 传递。
+3. 在浏览器向导输入一次性 Bootstrap Token。
+4. 设置管理员用户名和至少 12 位的管理员密码。
+5. 添加一个 `primary` 和至少一个 `secondary` 节点；Primary 角色不能填成 Secondary。
+6. 选择受保护目录中的 TSIG key，系统不会回显完整密钥。
+7. 确认 RPZ Zone、Primary/Secondary 地址后执行检查。
 
-向导先做只读 SOA、Zone、Serial 和网络检查。勾选 TSIG 写权限检查后，系统会在
+向导先做只读 SOA、Zone、Serial 和网络检查。全局默认拒绝模式还会检查 deny Zone 的
+Primary/Secondary SOA，以及管理员配置的递归测试名称是否返回 `NXDOMAIN`。勾选 TSIG 写权限检查后，系统会在
 Primary RPZ Zone 写入随机临时 TXT 记录，然后立即删除。该步骤会真实修改一次
 Primary，页面必须明确展示影响；如果写入成功但清理失败，不得继续初始化，应使用
 相同 TSIG 人工删除提示中的临时记录并重新核对 Zone。
@@ -154,27 +155,46 @@ Primary，页面必须明确展示影响；如果写入成功但清理失败，�
 
 ## 7. 持久化数据和权限
 
-### TLD 数据状态
+### v1.1.0 全局默认 DENY
 
-DNSGuard 默认每天检查一次 IANA TLD 列表，并将版本、数量、校验摘要和最后成功时间保存到
-`docker-data/tld-state.json`。下载、格式或持久化校验失败时不会清空上一份状态，也不会触碰
-BIND。默认 `TLD_DENY_PUBLISH_ENABLED=false`，此时只展示 TLD 数据。管理员在隔离 BIND 环境
-完成第二个 deny Zone、response-policy 顺序和解析效果验证后，才可设置为 `true`。启用后
-DNSGuard 通过现有 `nsupdate + TSIG` 更新该 Zone，但不会自动修改 `named.conf`、重启 BIND
-或替管理员启用递归策略。发布成功状态会分别核对 Primary、已配置 Secondary 和代表性 TLD
-触发项；可选的递归验证通过 `TLD_DENY_RECURSOR`、`TLD_DENY_CHECK_NAME` 配置，未配置时明确显示未验证。
-新列表相对上一份有效列表减少超过 10% 时不会自动替换或发布。
+新部署的正式策略是“白名单与 A 重定向优先，其余默认 DENY”。BIND 管理员必须先在
+递归实例加载两个 RPZ Zone，并保证白名单 / 重定向 Zone 排在全局 deny Zone 前面：
 
-| 宿主机目录 | 容器路径 | 内容 |
-|---|---|---|
-| `docker-data/` | `/var/lib/dnsguard` | 规则、节点、认证、审计、版本、发布任务、初始化状态、Telegram、RPZ 产物及轮转备份 |
-| `secrets/` | `/run/dnsguard-secrets` | TSIG key、Bootstrap Token，只读挂载 |
-| `tls/` | `/run/dnsguard-tls` | Web HTTPS 证书和私钥，只读挂载 |
-| `bind-logs/` | `/mnt/bind-logs` | 可选的 BIND RPZ 日志，只读挂载 |
+```conf
+response-policy {
+    zone "RPZ_ZONE";
+    zone "global-deny.rpz.local";
+};
+```
 
-API 以 `10001:10001` 运行，Web 以 `101:101` 运行；根文件系统只读，Compose 启用
-`no-new-privileges`、丢弃 capabilities、资源限制和日志轮转。不要删除 `docker-data`
-来处理发布异常。
+全局 deny Zone 由管理员独立创建，例如：
+
+```dns
+$ORIGIN global-deny.rpz.local.
+* IN CNAME .
+```
+
+DNSGuard 不创建、修改、reload 或 restart BIND，也不会在初始化时向该 Zone 写入规则。
+初始化仅只读检查 deny Zone 的 Primary / Secondary SOA、根级通配触发项和管理员配置的
+递归测试名称。`NXDOMAIN` 只代表客户端看到的 RCODE；是否有被拒绝 QNAME 到达上游，必须在
+目标 BIND 配置中单独观测。`qname-wait-recurse`、DNSSEC 和其他递归选项由 BIND 管理员
+独立评估，不能把本项目的隔离结果直接推广到生产。
+
+全局模式首次初始化必须准备经过人工审核的白名单 JSON：
+
+```dotenv
+RPZ_DEFAULT_DENY_MODE=global
+RPZ_GLOBAL_DENY_ZONE=global-deny.rpz.local
+RPZ_GLOBAL_DENY_RECURSOR=RECURSOR_IP:53
+RPZ_GLOBAL_DENY_CHECK_NAME=KNOWN_RESOLVABLE_DENY_TEST_NAME
+RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json
+TLD_DENY_ENABLED=false
+TLD_DENY_PUBLISH_ENABLED=false
+```
+
+对接脚本只生成 JSON，不写入 BIND；初始化将其导入为未发布草稿。现有 v1.0.1 部署的
+TLD 状态、发布历史和备份字段不会被删除，升级时不会强制重新初始化；升级后是否切换
+到全局模式，必须由管理员先完成 BIND 侧准备和隔离验证。
 
 ## 8. 备份
 
