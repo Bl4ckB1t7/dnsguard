@@ -24,6 +24,55 @@ func configuredPolicyMode() string {
 	return "legacy"
 }
 
+func configuredPolicyModeError() error {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("RPZ_DEFAULT_DENY_MODE")))
+	if mode == "" || mode == "legacy" || mode == "global" {
+		return nil
+	}
+	return fmt.Errorf("RPZ_DEFAULT_DENY_MODE 无效: %q（只能是 global 或 legacy）", mode)
+}
+
+// effectivePolicyMode is deliberately based on persisted state after setup.
+// An old state without PolicyMode is historical legacy data, not an implicit
+// opt-in to global deny.
+func effectivePolicyMode() string {
+	dnsMu.RLock()
+	persisted := strings.ToLower(strings.TrimSpace(state.PolicyMode))
+	dnsMu.RUnlock()
+	if persisted == "global" || persisted == "legacy" {
+		return persisted
+	}
+	if isInitialized() {
+		// A completed installation without the v1.1 field is historical legacy
+		// data. Never let a new environment variable opt it into global deny.
+		return "legacy"
+	}
+	return configuredPolicyMode()
+}
+
+func validatePolicyModeConsistency() error {
+	if err := configuredPolicyModeError(); err != nil {
+		return err
+	}
+	if !isInitialized() {
+		return nil
+	}
+	dnsMu.RLock()
+	persisted := strings.ToLower(strings.TrimSpace(state.PolicyMode))
+	dnsMu.RUnlock()
+	if persisted == "" {
+		persisted = "legacy"
+	}
+	if persisted != "global" && persisted != "legacy" {
+		return fmt.Errorf("DNS 状态中的 PolicyMode 无效: %q；为保护现有策略，已停止启动", persisted)
+	}
+	configured := configuredPolicyMode()
+	if persisted != configured {
+		return fmt.Errorf("策略模式不一致：持久化状态=%s，环境变量=%s；旧部署不会自动迁移，请完成受控迁移后再启动", persisted, configured)
+	}
+	return nil
+}
+
 func configuredGlobalDenyZone() string {
 	return strings.TrimSuffix(strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_ZONE")), ".")
 }

@@ -795,11 +795,8 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 	rules := len(state.Rules)
 	published := len(state.Published)
 	pendingPublish := !rpzRulesEqual(state.Rules, state.Published)
-	policyMode := state.PolicyMode
 	dnsMu.RUnlock()
-	if policyMode == "" {
-		policyMode = configuredPolicyMode()
-	}
+	policyMode := effectivePolicyMode()
 	rpzHits, rpzHitsReady := rpzHitCount()
 	var rpzHitsValue any
 	if rpzHitsReady {

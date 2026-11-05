@@ -722,13 +722,74 @@ func querySetupGlobalDenyTrigger(ctx context.Context, address, zone string) setu
 	if err != nil {
 		return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Detail: "无法读取 deny Zone 的通配触发项"}
 	}
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 5 && strings.EqualFold(fields[3], "CNAME") && fields[4] == "." {
-			return setupCheck{Name: "全局拒绝根级通配触发项", Status: "pass", Detail: "已读取 * CNAME .，Zone=" + zone}
+	if err := validateGlobalDenyTriggerResponse(string(output), name); err != nil {
+		return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Detail: err.Error()}
+	}
+	return setupCheck{Name: "全局拒绝根级通配触发项", Status: "pass", Detail: "已从权威回答读取 * CNAME .，Zone=" + zone}
+}
+
+func normalizeDNSName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "." {
+		return "."
+	}
+	return strings.TrimSuffix(name, ".")
+}
+
+func validateGlobalDenyTriggerResponse(output, expectedOwner string) error {
+	status := ""
+	aa := false
+	for _, line := range strings.Split(output, "\n") {
+		if marker := strings.Index(line, "status: "); marker >= 0 {
+			status = strings.TrimSpace(strings.SplitN(line[marker+len("status: "):], ",", 2)[0])
+		}
+		if strings.HasPrefix(line, ";; flags:") {
+			for _, flag := range strings.Fields(strings.TrimPrefix(line, ";; flags:")) {
+				if strings.Trim(flag, ";") == "aa" {
+					aa = true
+				}
+			}
 		}
 	}
-	return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Detail: "deny Zone 缺少可验证的 * CNAME . 触发项"}
+	if status != "NOERROR" {
+		return fmt.Errorf("deny Zone 通配查询 RCODE=%s，预期 NOERROR", statusOrUnknown(status))
+	}
+	if !aa {
+		return fmt.Errorf("deny Zone 通配查询不是权威回答（缺少 AA 标志）")
+	}
+
+	inAnswer := false
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, ";; ANSWER SECTION:") {
+			inAnswer = true
+			continue
+		}
+		if inAnswer && strings.HasPrefix(line, ";;") {
+			break
+		}
+		if !inAnswer || strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 5 || normalizeDNSName(fields[0]) != normalizeDNSName(expectedOwner) {
+			continue
+		}
+		if !strings.EqualFold(fields[3], "CNAME") {
+			return fmt.Errorf("通配触发项 owner 正确但 RR Type=%s，预期 CNAME", fields[3])
+		}
+		if normalizeDNSName(fields[4]) != "." {
+			return fmt.Errorf("通配触发项 CNAME 目标=%s，预期根域名 .", fields[4])
+		}
+		return nil
+	}
+	return fmt.Errorf("权威 Answer 中缺少 owner=%s 的 CNAME . 记录", expectedOwner)
+}
+
+func statusOrUnknown(status string) string {
+	if status == "" {
+		return "UNKNOWN"
+	}
+	return status
 }
 
 func querySetupSOA(ctx context.Context, name, address, zone string) (string, setupCheck) {

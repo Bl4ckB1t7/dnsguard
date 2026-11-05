@@ -60,10 +60,10 @@ func main() {
 	if err := loadInitializationState(); err != nil {
 		log.Fatal(err)
 	}
-	if err := validateSecurityConfig(); err != nil {
+	if err := loadDNSState(); err != nil {
 		log.Fatal(err)
 	}
-	if err := loadDNSState(); err != nil {
+	if err := validateSecurityConfig(); err != nil {
 		log.Fatal(err)
 	}
 	if err := loadTLDState(); err != nil {
@@ -130,6 +130,9 @@ func main() {
 }
 
 func validateSecurityConfig() error {
+	if err := configuredPolicyModeError(); err != nil {
+		return err
+	}
 	if authEnabled() && strings.TrimSpace(os.Getenv("AUTH_SECRET")) == "" {
 		return fmt.Errorf("AUTH_SECRET must be configured when authentication is enabled")
 	}
@@ -160,6 +163,9 @@ func validateSecurityConfig() error {
 		return fmt.Errorf("configure TLS_CERT_FILE/TLS_KEY_FILE or set TRUST_PROXY_TLS=true in production")
 	}
 	if err := validateProductionRuntimeFiles(initialized); err != nil {
+		return err
+	}
+	if err := validatePolicyModeConsistency(); err != nil {
 		return err
 	}
 	if configuredPolicyMode() == "global" {

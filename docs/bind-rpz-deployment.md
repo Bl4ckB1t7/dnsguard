@@ -216,6 +216,10 @@ TLD_DENY_PUBLISH_ENABLED=false
 全局模式下，初始化检查 deny Zone 的 Primary/Secondary SOA、根级通配触发项和递归测试；
 只读检查失败不会完成初始化。IANA TLD 同步仅作为旧版兼容路径保留，不是 v1.1.0 默认拒绝的依赖。
 
+升级旧 v1.0.1 时，缺少 `PolicyMode` 的历史状态按 `legacy` 处理。环境变量与持久化模式
+不一致时 DNSGuard 会停止启动并提示受控迁移，不会静默切换、清空状态或重新发布 RPZ；
+管理员必须先备份并完成隔离验证，不能通过直接修改 JSON 绕过该保护。
+
 ### 3.2 `reconcile_required` 人工恢复
 
 当某个批次超时、Primary 状态无法确认、或发布状态文件保存失败时，系统会进入 `reconcile_required`，并停止自动重放。此时不会把部分批次误记为完整发布，也不会自动删除或回滚 Zone 中已有记录。

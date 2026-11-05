@@ -311,3 +311,108 @@ func TestGlobalPolicyModePersistsWithImportedDrafts(t *testing.T) {
 		t.Fatalf("global policy mode was not persisted: state=%q initialization=%q", state.PolicyMode, initialization.PolicyMode)
 	}
 }
+
+func writeInitializedPolicyState(t *testing.T, policyMode string, includePolicyMode bool) {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte("existing-password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("AUTH_FILE"), []byte(`{"username":"admin","passwordHash":"`+string(hash)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("DNS_NODE_CONFIG_FILE"), []byte(`[{"id":"primary-1","name":"primary","role":"primary","address":"127.0.0.1:5353"}]`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"nodes":[],"rules":[{"id":"rule-1","domain":"example.com","action":"passthru","type":"CNAME","value":"rpz-passthru.","reason":"existing","status":"published","updatedAt":"2026-11-05T00:00:00Z"}],"published":[],"versions":[]}`
+	if includePolicyMode {
+		content = strings.TrimSuffix(content, "}") + `,"policyMode":"` + policyMode + `"}`
+	}
+	if err := os.WriteFile(os.Getenv("DNS_STATE_FILE"), []byte(content), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	initialization = initializationState{}
+	if err := loadDNSState(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHistoricalStateWithoutPolicyModeRemainsLegacy(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "", false)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "legacy")
+	if err := validatePolicyModeConsistency(); err != nil {
+		t.Fatalf("historical legacy state should remain usable: %v", err)
+	}
+	if effectivePolicyMode() != "legacy" || state.PolicyMode != "" {
+		t.Fatalf("historical state must remain legacy without being rewritten: effective=%q stored=%q", effectivePolicyMode(), state.PolicyMode)
+	}
+}
+
+func TestHistoricalStateWithoutPolicyModeRejectsGlobalOptIn(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "", false)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	if err := validatePolicyModeConsistency(); err == nil || !strings.Contains(err.Error(), "策略模式不一致") {
+		t.Fatalf("historical state must reject an implicit global opt-in, got %v", err)
+	}
+	if effectivePolicyMode() != "legacy" || len(state.Rules) != 1 {
+		t.Fatalf("historical state must remain legacy and preserve rules: effective=%q rules=%d", effectivePolicyMode(), len(state.Rules))
+	}
+}
+
+func TestLegacyStateDoesNotSilentlySwitchToGlobal(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "legacy", true)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	err := validatePolicyModeConsistency()
+	if err == nil || !strings.Contains(err.Error(), "策略模式不一致") {
+		t.Fatalf("legacy state must reject an unapproved global switch, got %v", err)
+	}
+	if effectivePolicyMode() != "legacy" || len(state.Rules) != 1 {
+		t.Fatalf("conflict must preserve legacy state and rules: effective=%q rules=%d", effectivePolicyMode(), len(state.Rules))
+	}
+}
+
+func TestGlobalStateDoesNotSilentlySwitchToLegacy(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "global", true)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "legacy")
+	err := validatePolicyModeConsistency()
+	if err == nil || !strings.Contains(err.Error(), "策略模式不一致") {
+		t.Fatalf("global state must reject an unapproved legacy switch, got %v", err)
+	}
+	if effectivePolicyMode() != "global" || len(state.Rules) != 1 {
+		t.Fatalf("conflict must preserve global state and rules: effective=%q rules=%d", effectivePolicyMode(), len(state.Rules))
+	}
+}
+
+func TestValidateGlobalDenyTriggerResponseRequiresStrictAuthoritativeRecord(t *testing.T) {
+	const owner = "*.global-deny.rpz.local."
+	valid := `;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1
+;; flags: qr aa;
+;; ANSWER SECTION:
+*.global-deny.rpz.local. 60 IN CNAME .
+;; AUTHORITY SECTION:`
+	cases := []struct {
+		name   string
+		output string
+		valid  bool
+	}{
+		{"authoritative exact CNAME root", valid, true},
+		{"non-authoritative", strings.Replace(valid, "qr aa", "qr ra", 1), false},
+		{"wrong RCODE", strings.Replace(valid, "NOERROR", "SERVFAIL", 1), false},
+		{"wrong owner", strings.Replace(valid, owner, "other.global-deny.rpz.local.", 1), false},
+		{"wrong type", strings.Replace(valid, "CNAME .", "A 192.0.2.1", 1), false},
+		{"wrong target", strings.Replace(valid, "CNAME .", "CNAME sink.example.", 1), false},
+		{"missing answer", strings.Replace(valid, "*.global-deny.rpz.local. 60 IN CNAME .\n", "", 1), false},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateGlobalDenyTriggerResponse(test.output, owner)
+			if (err == nil) != test.valid {
+				t.Fatalf("valid=%v, error=%v", test.valid, err)
+			}
+		})
+	}
+}
