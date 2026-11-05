@@ -11,8 +11,10 @@ KEEP=0
 FAILURES=0
 QNAME_WAIT_RECURSE="${QNAME_WAIT_RECURSE:-no}"
 TEST_DNSSEC="${TEST_DNSSEC:-0}"
+STAGED_FIRST_DEPLOYMENT="${STAGED_FIRST_DEPLOYMENT:-0}"
 
 [[ "$TEST_DNSSEC" == 0 || "$TEST_DNSSEC" == 1 ]] || { echo 'TEST_DNSSEC must be 0 or 1' >&2; exit 2; }
+[[ "$STAGED_FIRST_DEPLOYMENT" == 0 || "$STAGED_FIRST_DEPLOYMENT" == 1 ]] || { echo 'STAGED_FIRST_DEPLOYMENT must be 0 or 1' >&2; exit 2; }
 
 case "$QNAME_WAIT_RECURSE" in
   default) qname_wait_recurse_suffix='' ;;
@@ -44,7 +46,7 @@ while (($#)); do
   esac
 done
 
-for tool in docker dig openssl named-checkzone python3 fuser; do
+for tool in docker dig nsupdate openssl named-checkzone python3 fuser; do
   command -v "$tool" >/dev/null 2>&1 || { echo "NOT RUN: missing $tool" >&2; exit 125; }
 done
 docker info >/dev/null 2>&1 || { echo 'NOT RUN: Docker daemon unavailable' >&2; exit 125; }
@@ -242,6 +244,26 @@ for dir in "$RUNTIME_DIR"/upstream "$RUNTIME_DIR"/primary "$RUNTIME_DIR"/seconda
   chmod 0775 "$dir" "$dir/data" "$dir/logs"
 done
 
+if [[ "$STAGED_FIRST_DEPLOYMENT" == 1 ]]; then
+  # Start with the deny Zone authoritative and synchronized, but not active in
+  # response-policy. Remove the business rules so the following nsupdate is
+  # the first whitelist publication in this isolated deployment rehearsal.
+  python3 - "$RUNTIME_DIR" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+zone = root / "primary" / "data" / "rpz.local.zone"
+zone.write_text("".join(
+    line for line in zone.read_text().splitlines(True)
+    if not any(item in line for item in ("allow.example.com", "redirect.example.com"))
+))
+for path in (root / "primary" / "named.conf", root / "secondary-1" / "named.conf", root / "secondary-2" / "named.conf"):
+    path.write_text(path.read_text().replace('        zone "global-deny.rpz.local";\n', ""))
+for path in root.glob("*/data/*.jnl"):
+    path.unlink()
+PY
+fi
+
 named-checkzone global-deny.rpz.local "$RUNTIME_DIR/primary/data/global-deny.rpz.local.zone" >"$RUNTIME_DIR/named-checkzone.log"
 compose config >/dev/null
 compose up -d >/dev/null
@@ -285,6 +307,75 @@ if [[ "${serials[0]}" == "1" && "${serials[0]}" == "${serials[1]}" && "${serials
   pass "global-deny zone loaded and Primary/Secondary SOA agree: ${serials[*]}"
 else
   fail "global-deny SOA mismatch: ${serials[*]}"
+fi
+
+if [[ "$STAGED_FIRST_DEPLOYMENT" == 1 ]]; then
+  initial_allow="$(node_dig 15453 +tcp +time=2 +tries=1 allow.example.com A +short 2>/dev/null || true)"
+  if [[ "$initial_allow" == *192.0.2.10* ]]; then
+    pass "staged deployment starts without global DENY; business name resolves: $initial_allow"
+  else
+    fail "staged deployment initial business query failed before whitelist publication: $initial_allow"
+  fi
+
+  compose exec -T primary nsupdate -k /etc/bind/keys/acceptance-rpz.key <<'UPDATE'
+server 127.0.0.1 53
+zone rpz.local.
+update add allow.example.com.rpz.local. 60 CNAME rpz-passthru.
+update add *.allow.example.com.rpz.local. 60 CNAME rpz-passthru.
+update add redirect.example.com.rpz.local. 60 A 192.0.2.250
+update add *.redirect.example.com.rpz.local. 60 A 192.0.2.250
+send
+UPDATE
+
+  synced=0
+  for _ in $(seq 1 60); do
+    allow_primary="$(node_dig 15453 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
+    allow_secondary_1="$(node_dig 15454 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
+    allow_secondary_2="$(node_dig 15455 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
+    redirect_primary="$(node_dig 15453 +tcp +time=1 +tries=1 redirect.example.com A +short 2>/dev/null || true)"
+    redirect_secondary_1="$(node_dig 15454 +tcp +time=1 +tries=1 redirect.example.com A +short 2>/dev/null || true)"
+    redirect_secondary_2="$(node_dig 15455 +tcp +time=1 +tries=1 redirect.example.com A +short 2>/dev/null || true)"
+    if [[ "$allow_primary" == *192.0.2.10* && "$allow_secondary_1" == *192.0.2.10* && "$allow_secondary_2" == *192.0.2.10* && "$redirect_primary" == *192.0.2.250* && "$redirect_secondary_1" == *192.0.2.250* && "$redirect_secondary_2" == *192.0.2.250* ]]; then
+      synced=1
+      break
+    fi
+    sleep 0.5
+  done
+  if ((synced)); then
+    pass "reviewed whitelist published and synchronized before global DENY"
+  else
+    fail "whitelist did not synchronize before global DENY: allow=$allow_primary/$allow_secondary_1/$allow_secondary_2 redirect=$redirect_primary/$redirect_secondary_1/$redirect_secondary_2"
+  fi
+
+  redirect_before_deny="$(node_dig 15453 +tcp +time=2 +tries=1 redirect.example.com A +short 2>/dev/null || true)"
+  if [[ "$redirect_before_deny" == *192.0.2.250* ]]; then
+    pass "A redirect is valid before global DENY activation: $redirect_before_deny"
+  else
+    fail "A redirect was not valid before global DENY activation: $redirect_before_deny"
+  fi
+
+  python3 - "$RUNTIME_DIR" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for path in (root / "primary" / "named.conf", root / "secondary-1" / "named.conf", root / "secondary-2" / "named.conf"):
+    path.write_text(path.read_text().replace(
+        '        zone "rpz.local";\n',
+        '        zone "rpz.local";\n        zone "global-deny.rpz.local";\n',
+        1,
+    ))
+PY
+  compose up -d --force-recreate >/dev/null
+  for port in 15453 15454 15455; do
+    wait_soa "$port" global-deny.rpz.local || fail "staged global DENY did not reload on port $port"
+  done
+  for _ in $(seq 1 60); do
+    final_allow_1="$(node_dig 15454 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
+    final_allow_2="$(node_dig 15455 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
+    if [[ "$final_allow_1" == *192.0.2.10* && "$final_allow_2" == *192.0.2.10* ]]; then break; fi
+    sleep 0.5
+  done
+  pass "global DENY activated only after whitelist publication and synchronization"
 fi
 
 query_rcode() {
@@ -409,6 +500,7 @@ cat >"$REPORT" <<EOF_REPORT
 - 模拟上游观测：\`$upstream_observation\`（通过容器 stdout 核对完整 QNAME）。
 - DNSSEC DO=1：\`$dnssec_rcode\`，上游观测：\`$dnssec_observation\`。
 - DNSSEC 测试开关：\`TEST_DNSSEC=$TEST_DNSSEC\`；本阶段不将 DNSSEC 结果作为验收门槛。
+- 首次部署顺序演练：\`STAGED_FIRST_DEPLOYMENT=$STAGED_FIRST_DEPLOYMENT\`；白名单先发布并同步，再启用全局 DENY。
 - 总体：\`$([[ "$FAILURES" -eq 0 ]] && echo PASS || echo FAIL)\`（FAILURES=$FAILURES）
 
 ## 解释边界

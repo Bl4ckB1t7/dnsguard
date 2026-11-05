@@ -61,10 +61,10 @@ DNSGuard 是 DNS 策略控制面，生产 Docker Compose 只部署 `dnsguard-api
 
 1. BIND Primary 和至少一台 Secondary 已正常工作。
 2. 白名单 / A 重定向 RPZ Zone 已创建并可用。
-3. 递归 DNS 的 `response-policy` 已按管理员规划配置正确的 Zone 顺序，白名单 / 重定向 Zone 位于全局 deny Zone 之前。
+3. 递归 DNS 已准备 `response-policy`；首次上线阶段先只启用白名单 / 重定向 Zone，完成白名单发布后再按顺序加入全局 deny Zone。
 4. 已准备最小权限 TSIG Key 和动态更新权限。
 5. Primary 到 Secondary 的 NOTIFY / IXFR / AXFR 已配置并可用。
-6. 如启用 v1.1.0 全局默认 DENY，已提前创建独立 `global-deny` RPZ Zone，并在递归实例配置白名单 / 重定向 Zone 优先。
+6. 如启用 v1.1.0 全局默认 DENY，已提前创建独立 `global-deny` RPZ Zone；首次上线不要在白名单发布前把它加入 `response-policy`。
 7. 已为 DNSGuard 配置必要的只读 SOA / AXFR 检查权限；DNSGuard 不会自动创建或写入全局 DENY Zone。
 8. DNS TCP/UDP 53、必要的 Zone Transfer、DNSGuard HTTPS 等网络路径可达。
 9. 如启用 IANA 同步，DNSGuard 可以访问 IANA HTTPS 数据源。
@@ -149,7 +149,7 @@ docker compose ps
 
 **当前稳定版本：** [DNSGuard v1.0.1 GitHub Release](https://github.com/Bl4ckB1t7/dnsguard/releases/tag/v1.0.1)。v1.1.0 全局 DENY 功能在本分支开发和验收，正式发布前不要用于生产。
 
-推荐的部署顺序是：先准备并验证独立 BIND 集群，整理白名单并导出初始 JSON，预置全局 deny Zone 和 RPZ 顺序，执行只读对接预检，再启动 DNSGuard Compose，完成 Web 初始化，核对并发布白名单，最后验证递归行为和同步状态。DNSGuard 不会替管理员修改 BIND 配置。
+推荐的部署顺序是：先准备并验证独立 BIND 集群，整理白名单并导出初始 JSON，预置全局 deny Zone，执行只读对接预检，再启动 DNSGuard Compose，完成 Web 初始化，核对并发布白名单并确认同步，最后由 BIND 管理员加入全局 deny Zone、验证递归行为。DNSGuard 不会替管理员修改 BIND 配置。
 
 ## 界面预览
 

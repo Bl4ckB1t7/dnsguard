@@ -65,11 +65,12 @@ type setupRequest struct {
 }
 
 type setupCheck struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // pass, fail, not_run
-	Detail  string `json:"detail"`
-	Impact  string `json:"impact,omitempty"`
-	Cleanup string `json:"cleanup,omitempty"`
+	Name     string `json:"name"`
+	Status   string `json:"status"` // pass, fail, not_run
+	Detail   string `json:"detail"`
+	Impact   string `json:"impact,omitempty"`
+	Cleanup  string `json:"cleanup,omitempty"`
+	Optional bool   `json:"optional,omitempty"`
 }
 
 type setupCheckResult struct {
@@ -233,15 +234,16 @@ func setupStatus(w http.ResponseWriter, r *http.Request) {
 	current := initialization
 	initializationMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"initialized":       isInitialized(),
-		"inProgress":        current.Status == initializationPending,
-		"status":            current.Status,
-		"error":             current.Error,
-		"tsigKeyPath":       strings.TrimSpace(os.Getenv("RPZ_KEY_FILE")),
-		"keyCandidates":     protectedKeyCandidates(),
-		"writeTestRequired": true,
-		"policyMode":        configuredPolicyMode(),
-		"whitelistSeed":     inspectWhitelistSeed(),
+		"initialized":             isInitialized(),
+		"inProgress":              current.Status == initializationPending,
+		"status":                  current.Status,
+		"error":                   current.Error,
+		"tsigKeyPath":             strings.TrimSpace(os.Getenv("RPZ_KEY_FILE")),
+		"keyCandidates":           protectedKeyCandidates(),
+		"writeTestRequired":       true,
+		"policyMode":              configuredPolicyMode(),
+		"globalDenySetupDeferred": globalDenySetupDeferred(),
+		"whitelistSeed":           inspectWhitelistSeed(),
 	})
 }
 
@@ -672,13 +674,16 @@ func runSetupChecks(ctx context.Context, request setupRequest) setupCheckResult 
 	} else {
 		checks = append(checks, setupTSIGProbe(ctx, request))
 	}
-	ready := true
+	return setupCheckResult{Ready: setupChecksReady(checks), Checks: checks}
+}
+
+func setupChecksReady(checks []setupCheck) bool {
 	for _, check := range checks {
-		if check.Status != "pass" {
-			ready = false
+		if check.Status != "pass" && !check.Optional {
+			return false
 		}
 	}
-	return setupCheckResult{Ready: ready, Checks: checks}
+	return true
 }
 
 func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck {
@@ -700,6 +705,16 @@ func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck
 	checks = append(checks, querySetupGlobalDenyTrigger(ctx, request.Primary.Address, zone))
 	recursor := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_RECURSOR"))
 	checkName := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_CHECK_NAME"))
+	if globalDenySetupDeferred() {
+		checks = append(checks, setupCheck{
+			Name:     "全局拒绝递归效果",
+			Status:   "not_run",
+			Detail:   "分阶段首次部署：白名单发布并确认同步前不启用全局 DENY，因此暂不执行递归拒绝检查",
+			Impact:   "初始化完成前请勿将全局 deny Zone 加入 response-policy；白名单发布完成后必须由管理员启用并重新执行只读策略检查",
+			Optional: true,
+		})
+		return checks
+	}
 	if recursor == "" || checkName == "" {
 		checks = append(checks, setupCheck{Name: "全局拒绝递归效果", Status: "not_run", Detail: "未配置 RPZ_GLOBAL_DENY_RECURSOR 和 RPZ_GLOBAL_DENY_CHECK_NAME", Impact: "仅 SOA 一致不能证明递归策略已生效"})
 		return checks

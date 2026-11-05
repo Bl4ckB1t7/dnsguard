@@ -157,8 +157,9 @@ Primary，页面必须明确展示影响；如果写入成功但清理失败，�
 
 ### v1.1.0 全局默认 DENY
 
-新部署的正式策略是“白名单与 A 重定向优先，其余默认 DENY”。BIND 管理员必须先在
-递归实例加载两个 RPZ Zone，并保证白名单 / 重定向 Zone 排在全局 deny Zone 前面：
+新部署的正式策略是“白名单与 A 重定向优先，其余默认 DENY”。BIND 管理员必须先准备
+两个 RPZ Zone，并保证白名单 / 重定向 Zone 排在全局 deny Zone 前面。首次上线时，建议
+先只在递归实例启用白名单 / 重定向 Zone，待白名单发布并确认同步后再加入全局 deny：
 
 ```conf
 response-policy {
@@ -179,6 +180,8 @@ DNSGuard 不创建、修改、reload 或 restart BIND，也不会在初始化时
 递归测试名称。`NXDOMAIN` 只代表客户端看到的 RCODE；是否有被拒绝 QNAME 到达上游，必须在
 目标 BIND 配置中单独观测。`qname-wait-recurse`、DNSSEC 和其他递归选项由 BIND 管理员
 独立评估，不能把本项目的隔离结果直接推广到生产。
+
+首次上线必须按以下顺序操作：先准备并人工审核白名单 JSON，再完成初始化、核对草稿、发布白名单并确认 Primary/Secondary 同步，最后才把全局 deny Zone 加入 BIND 的 `response-policy`。如需在 deny 尚未启用时完成首次初始化，可临时设置 `RPZ_GLOBAL_DENY_SETUP_DEFERRED=true`；该模式会明确显示递归拒绝检查未执行，不能替代最终验证。白名单发布和同步完成后启用 deny，并移除该变量；已初始化服务在重启时会拒绝保留该临时配置。
 
 全局模式首次初始化必须准备经过人工审核的白名单 JSON：
 

@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
 type SetupCheck = { name: string; status: "pass" | "fail" | "not_run"; detail: string; impact?: string; cleanup?: string };
-type SetupStatus = { tsigKeyPath?: string; keyCandidates?: string[]; writeTestRequired?: boolean; policyMode?: "global" | "legacy"; whitelistSeed?: { available?: boolean; count?: number; mode?: string; error?: string }; error?: string };
+type SetupStatus = { tsigKeyPath?: string; keyCandidates?: string[]; writeTestRequired?: boolean; policyMode?: "global" | "legacy"; globalDenySetupDeferred?: boolean; whitelistSeed?: { available?: boolean; count?: number; mode?: string; error?: string }; error?: string };
 type SetupPayload = { ready?: boolean; checks?: SetupCheck[]; error?: string };
 
 export function SetupWizard({ onComplete }: { onComplete: () => void }) {
@@ -18,6 +18,7 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
   const [loading, setLoading] = useState(false);
   const [complete, setComplete] = useState(false);
   const [policyMode, setPolicyMode] = useState<SetupStatus["policyMode"]>("legacy");
+  const [globalDenySetupDeferred, setGlobalDenySetupDeferred] = useState(false);
   const [whitelistSeed, setWhitelistSeed] = useState<SetupStatus["whitelistSeed"]>();
 
   useEffect(() => {
@@ -26,6 +27,7 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
       .then((value) => {
         setTsigKeyPath(value.tsigKeyPath ?? value.keyCandidates?.[0] ?? "");
         setPolicyMode(value.policyMode ?? "legacy");
+        setGlobalDenySetupDeferred(value.globalDenySetupDeferred === true);
         setWhitelistSeed(value.whitelistSeed);
         if (value.error) setError(value.error);
       })
@@ -77,7 +79,7 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
         <p className="setup-eyebrow">DNSGuard · FIRST RUN</p>
         <h1>首次初始化向导</h1>
         <p className="setup-intro">初始化完成前不会开放登录和 RPZ 发布。Bootstrap Token 只从部署终端获取，不会显示在页面、日志或 API 响应中。</p>
-        <div className="setup-warning">策略模式：{policyMode === "global" ? "全局默认拒绝" : "普通 RPZ"}。DNSGuard 不会修改 BIND 配置；全局模式必须先由管理员在 BIND 中准备 deny Zone，并完成递归效果核验。</div>
+        <div className="setup-warning">策略模式：{policyMode === "global" ? "全局默认拒绝" : "普通 RPZ"}。DNSGuard 不会修改 BIND 配置；全局模式必须先由管理员在 BIND 中准备 deny Zone，并完成递归效果核验。{globalDenySetupDeferred && "当前为分阶段首次部署：请先发布并确认白名单，再由 BIND 管理员启用全局 DENY。"}</div>
         {whitelistSeed?.available && <div className="setup-warning">已发现 {whitelistSeed.count ?? 0} 条部署前白名单。完成初始化后将以草稿导入，不会自动写入 BIND；请先在页面核对，再通过正常发布流程提交。</div>}
         {whitelistSeed?.error && <div className="setup-warning">部署前白名单不可用：{whitelistSeed.error}。请修正挂载文件后重新加载页面。</div>}
         <form onSubmit={(event) => void submit(event, "validate")}>

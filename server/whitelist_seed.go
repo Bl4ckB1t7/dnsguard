@@ -77,6 +77,13 @@ func configuredGlobalDenyZone() string {
 	return strings.TrimSuffix(strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_ZONE")), ".")
 }
 
+// globalDenySetupDeferred is an explicit first-install safety switch. It lets
+// an administrator complete setup and publish the reviewed whitelist before
+// adding the pre-created deny Zone to BIND response-policy.
+func globalDenySetupDeferred() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED")), "true")
+}
+
 type whitelistSeed struct {
 	Version     int       `json:"version"`
 	Source      string    `json:"source"`

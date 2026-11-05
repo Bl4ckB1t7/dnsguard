@@ -312,6 +312,24 @@ func TestGlobalPolicyModePersistsWithImportedDrafts(t *testing.T) {
 	}
 }
 
+func TestStagedGlobalDenySetupDoesNotTreatDeferredCheckAsPassed(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")
+	if !globalDenySetupDeferred() {
+		t.Fatal("staged global-deny setup flag should be recognized")
+	}
+	checks := []setupCheck{
+		{Name: "deny recursive effect", Status: "not_run", Optional: true},
+	}
+	if !setupChecksReady(checks) {
+		t.Fatal("optional deferred check should not block staged first initialization")
+	}
+	checks[0].Optional = false
+	if setupChecksReady(checks) {
+		t.Fatal("a mandatory not_run check must still block initialization")
+	}
+}
+
 func writeInitializedPolicyState(t *testing.T, policyMode string, includePolicyMode bool) {
 	t.Helper()
 	hash, err := bcrypt.GenerateFromPassword([]byte("existing-password"), bcrypt.MinCost)
