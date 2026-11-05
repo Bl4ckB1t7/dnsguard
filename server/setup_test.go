@@ -354,6 +354,21 @@ func TestStagedGlobalDenySetupDoesNotTreatDeferredCheckAsPassed(t *testing.T) {
 	}
 }
 
+func TestGlobalDenyBaselineRequiresMatchingTestConfiguration(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_GLOBAL_DENY_BASELINE_FILE", filepath.Join(t.TempDir(), "global-deny-baseline.json"))
+	baseline := globalDenyBaseline{CheckName: "known.example.com", Recursor: "127.0.0.1:53", RCode: "NOERROR", Observed: "2026-11-05T00:00:00Z"}
+	if err := saveGlobalDenyBaseline(baseline); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadGlobalDenyBaseline("known.example.com", "127.0.0.1:53"); err != nil {
+		t.Fatalf("matching baseline must load: %v", err)
+	}
+	if err := loadGlobalDenyBaseline("missing.example.com", "127.0.0.1:53"); err == nil {
+		t.Fatal("baseline for a different test name must not be accepted")
+	}
+}
+
 func writeInitializedPolicyState(t *testing.T, policyMode string, includePolicyMode bool) {
 	t.Helper()
 	hash, err := bcrypt.GenerateFromPassword([]byte("existing-password"), bcrypt.MinCost)

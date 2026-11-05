@@ -16,6 +16,48 @@ need python3
 need realpath
 docker compose version >/dev/null 2>&1 || die "Docker Compose Plugin 不可用"
 
+validate_dns_name() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+
+name = sys.argv[1].strip().rstrip(".")
+labels = name.split(".")
+label = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+if not name or len(name) > 253 or len(labels) < 2 or any(not label.fullmatch(item) for item in labels):
+    raise SystemExit(1)
+PY
+}
+
+split_dns_address() {
+  python3 - "$1" <<'PY'
+import sys
+
+value = sys.argv[1].strip()
+if value.startswith("[") and "]" in value:
+    host, _, port = value[1:].partition("]")
+    port = port.removeprefix(":") or "53"
+elif value.count(":") == 1:
+    host, port = value.rsplit(":", 1)
+else:
+    host, port = value, "53"
+if not host or not port.isdigit() or not (1 <= int(port) <= 65535):
+    raise SystemExit("invalid DNS address")
+print(host, port)
+PY
+}
+
+verify_deny_baseline() {
+  local recursor="$1" check_name="$2" recursor_host recursor_port output status answer
+  need dig
+  validate_dns_name "$check_name" || die "RPZ_GLOBAL_DENY_CHECK_NAME 必须是明确的、可解析的测试域名"
+  read -r recursor_host recursor_port < <(split_dns_address "$recursor") || die "RPZ_GLOBAL_DENY_RECURSOR 地址无效"
+  output="$(dig "@$recursor_host" -p "$recursor_port" +comments +answer "$check_name" A +time=2 +tries=1 2>/dev/null || true)"
+  status="$(printf '%s\n' "$output" | sed -n 's/.*status: \([^, ]*\).*/\1/p' | head -n 1)"
+  answer="$(printf '%s\n' "$output" | awk '/^;; ANSWER SECTION:/{in_answer=1; next} /^;;/{if(in_answer) exit} in_answer && NF >= 5{print; exit}')"
+  [[ "$status" == "NOERROR" && -n "$answer" ]] || die "测试域名未通过启用 DENY 前的正常解析基线（需要 NOERROR 且存在 Answer）：$check_name"
+}
+
 ENV_FILE="$(dnsguard_resolve_path "${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}" "$ROOT")"
 export DNSGUARD_ENV_FILE="$ENV_FILE"
 
@@ -42,7 +84,11 @@ else
     read -r -p "递归 DNS 地址（回车使用 $recursor）: " answer
     [[ -z "$answer" ]] || recursor="$answer"
   fi
-  check_name="${RPZ_GLOBAL_DENY_CHECK_NAME:-blocked.example.com}"
+  check_name="${RPZ_GLOBAL_DENY_CHECK_NAME:-}"
+  if [[ -z "$check_name" && -t 0 ]]; then
+    read -r -p "全局 DENY 测试域名（启用前必须可以正常解析）: " check_name
+  fi
+  [[ -n "$check_name" ]] || die "必须提供 RPZ_GLOBAL_DENY_CHECK_NAME；不能使用默认或未知测试域名"
   umask 077
   auth_secret="$(openssl rand -hex 32)"
   monitoring_token="$(openssl rand -hex 32)"
@@ -83,6 +129,7 @@ RPZ_GLOBAL_DENY_ZONE=global-deny.rpz.local
 RPZ_GLOBAL_DENY_RECURSOR=$recursor
 RPZ_GLOBAL_DENY_CHECK_NAME=$check_name
 RPZ_GLOBAL_DENY_SETUP_DEFERRED=true
+RPZ_GLOBAL_DENY_BASELINE_FILE=/var/lib/dnsguard/global-deny-baseline.json
 RPZ_PUBLISH_MODE=nsupdate
 RPZ_ARTIFACT_FILE=/var/lib/dnsguard/rpz/rpz.local.db
 RPZ_PUBLISH_JOBS_FILE=/var/lib/dnsguard/publish-jobs.json
@@ -103,6 +150,13 @@ set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 set +a
+if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == "global" ]]; then
+  check_name="${RPZ_GLOBAL_DENY_CHECK_NAME:-}"
+  [[ -n "$check_name" && "$check_name" != "KNOWN_RESOLVABLE_DENY_TEST_NAME" && "$check_name" != "blocked.example.com" ]] || die "请配置真实的 RPZ_GLOBAL_DENY_CHECK_NAME，不得使用占位或默认域名"
+  if [[ "${RPZ_GLOBAL_DENY_SETUP_DEFERRED:-}" == "true" ]]; then
+    verify_deny_baseline "${RPZ_GLOBAL_DENY_RECURSOR:-}" "$check_name"
+  fi
+fi
 dnsguard_prepare_paths "$ROOT"
 mkdir -p "$DNSGUARD_DATA_DIR/rpz" "$DNSGUARD_SECRET_DIR" "$DNSGUARD_TLS_DIR" "$DNSGUARD_BIND_LOG_DIR"
 chmod 0750 "$DNSGUARD_DATA_DIR" "$DNSGUARD_DATA_DIR/rpz" "$DNSGUARD_SECRET_DIR" "$DNSGUARD_TLS_DIR" "$DNSGUARD_BIND_LOG_DIR"

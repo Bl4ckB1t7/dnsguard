@@ -79,6 +79,13 @@ type setupCheckResult struct {
 	Error  string       `json:"error,omitempty"`
 }
 
+type globalDenyBaseline struct {
+	CheckName string `json:"checkName"`
+	Recursor  string `json:"recursor"`
+	RCode     string `json:"rcode"`
+	Observed  string `json:"observedAt"`
+}
+
 var initializationMu sync.Mutex
 var initializationFileMu sync.Mutex
 var setupTransactionMu sync.Mutex
@@ -110,6 +117,36 @@ func bootstrapKeyDir() string {
 		return filepath.Dir(path)
 	}
 	return "."
+}
+
+func globalDenyBaselinePath() string {
+	if path := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_BASELINE_FILE")); path != "" {
+		return path
+	}
+	return filepath.Join(filepath.Dir(dnsStatePath()), "global-deny-baseline.json")
+}
+
+func saveGlobalDenyBaseline(baseline globalDenyBaseline) error {
+	content, err := json.MarshalIndent(baseline, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomicSetupFile(globalDenyBaselinePath(), append(content, '\n'), 0o640)
+}
+
+func loadGlobalDenyBaseline(checkName, recursor string) error {
+	content, err := os.ReadFile(globalDenyBaselinePath())
+	if err != nil {
+		return err
+	}
+	var baseline globalDenyBaseline
+	if err := json.Unmarshal(content, &baseline); err != nil {
+		return err
+	}
+	if normalizeDNSName(baseline.CheckName) != normalizeDNSName(checkName) || strings.TrimSpace(baseline.Recursor) != strings.TrimSpace(recursor) || baseline.RCode != "NOERROR" || strings.TrimSpace(baseline.Observed) == "" {
+		return fmt.Errorf("递归基线与当前测试配置不一致")
+	}
+	return nil
 }
 
 func writeAtomicSetupFile(path string, content []byte, mode os.FileMode) error {
@@ -740,18 +777,30 @@ func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck
 	checks = append(checks, querySetupGlobalDenyTrigger(ctx, request.Primary.Address, zone))
 	recursor := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_RECURSOR"))
 	checkName := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_CHECK_NAME"))
+	if recursor == "" || checkName == "" {
+		checks = append(checks, setupCheck{Name: "全局拒绝递归基线", Status: "not_run", Detail: "未配置 RPZ_GLOBAL_DENY_RECURSOR 和 RPZ_GLOBAL_DENY_CHECK_NAME", Impact: "缺少已知可解析基线，不能证明启用 DENY 后的 NXDOMAIN 命中了 RPZ"})
+		return checks
+	}
 	if globalDenySetupDeferred() {
+		baseline, baselineCheck := querySetupResolvableName(ctx, recursor, checkName)
+		if baselineCheck.Status == "pass" {
+			if err := saveGlobalDenyBaseline(baseline); err != nil {
+				baselineCheck.Status = "fail"
+				baselineCheck.Detail = "测试域名基线已通过，但无法持久化；未保存的对照证据不能用于后续 DENY 验收"
+			}
+		}
+		checks = append(checks, baselineCheck)
 		checks = append(checks, setupCheck{
 			Name:     "全局拒绝递归效果",
 			Status:   "not_run",
-			Detail:   "分阶段首次部署：白名单发布并确认同步前不启用全局 DENY，因此暂不执行递归拒绝检查",
+			Detail:   "分阶段首次部署：已记录测试域名正常解析基线；白名单发布并确认同步、启用全局 DENY 后再执行 NXDOMAIN 检查",
 			Impact:   "初始化完成前请勿将全局 deny Zone 加入 response-policy；白名单发布完成后必须由管理员启用并重新执行只读策略检查",
 			Optional: true,
 		})
 		return checks
 	}
-	if recursor == "" || checkName == "" {
-		checks = append(checks, setupCheck{Name: "全局拒绝递归效果", Status: "not_run", Detail: "未配置 RPZ_GLOBAL_DENY_RECURSOR 和 RPZ_GLOBAL_DENY_CHECK_NAME", Impact: "仅 SOA 一致不能证明递归策略已生效"})
+	if err := loadGlobalDenyBaseline(checkName, recursor); err != nil {
+		checks = append(checks, setupCheck{Name: "全局拒绝递归基线", Status: "not_run", Detail: "缺少当前测试域名的已持久化正常解析基线：" + err.Error(), Impact: "不能仅凭 NXDOMAIN 认定命中了 RPZ；请在 DENY 启用前完成基线核验"})
 		return checks
 	}
 	rcode, rcodeCheck := querySetupRcode(ctx, recursor, checkName)
@@ -761,6 +810,41 @@ func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck
 	}
 	checks = append(checks, rcodeCheck)
 	return checks
+}
+
+func querySetupResolvableName(ctx context.Context, address, name string) (globalDenyBaseline, setupCheck) {
+	host, port := splitDNSAddress(address)
+	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, "+comments", "+answer", name, "A", "+time=2", "+tries=1").CombinedOutput()
+	if err != nil {
+		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Detail: "无法查询测试域名正常解析基线"}
+	}
+	status := ""
+	inAnswer := false
+	answerFound := false
+	for _, line := range strings.Split(string(output), "\n") {
+		if marker := strings.Index(line, "status: "); marker >= 0 {
+			status = strings.TrimSpace(strings.SplitN(line[marker+len("status: "):], ",", 2)[0])
+		}
+		if strings.HasPrefix(line, ";; ANSWER SECTION:") {
+			inAnswer = true
+			continue
+		}
+		if inAnswer && strings.HasPrefix(line, ";;") {
+			break
+		}
+		if inAnswer && len(strings.Fields(line)) >= 5 {
+			answerFound = true
+		}
+	}
+	if status != "NOERROR" {
+		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Detail: "测试域名正常解析基线 RCODE=" + statusOrUnknown(status) + "，需要 NOERROR"}
+	}
+	if !answerFound {
+		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Detail: "测试域名正常解析基线没有 Answer；不能使用不存在或无数据的名称进行 DENY 验收"}
+	}
+	return globalDenyBaseline{CheckName: name, Recursor: address, RCode: status, Observed: time.Now().UTC().Format(time.RFC3339)}, setupCheck{Name: "全局拒绝递归基线", Status: "pass", Detail: "测试域名在启用 DENY 前返回 NOERROR 且存在 Answer，可用于后续对照：" + name}
 }
 
 func querySetupGlobalDenyTrigger(ctx context.Context, address, zone string) setupCheck {

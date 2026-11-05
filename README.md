@@ -96,6 +96,8 @@ RPZ_GLOBAL_DENY_SETUP_DEFERRED=true
 
 白名单发布并确认同步后，由 BIND 管理员加入 deny Zone，重新验证并移除该临时变量。DNSGuard 不会代为修改 BIND。
 
+安装时必须提供一个在启用 DENY 前确实能正常解析的测试域名；安装和初始化会保存该基线，启用后只有在同一名称返回预期拒绝时才可判定递归检查通过。
+
 ## 安全边界
 
 - `NXDOMAIN` 只代表客户端收到拒绝结果，不等于完整 QNAME 没有到达上游。

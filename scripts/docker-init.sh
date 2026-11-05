@@ -50,7 +50,7 @@ chmod 0750 "$DATA_DIR" "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 
 if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == global ]]; then
   [[ -n "${RPZ_GLOBAL_DENY_ZONE:-}" ]] || die "RPZ_GLOBAL_DENY_ZONE is required in global default-deny mode"
-  [[ -n "${RPZ_GLOBAL_DENY_RECURSOR:-}" && -n "${RPZ_GLOBAL_DENY_CHECK_NAME:-}" ]] || die "global default-deny mode requires RPZ_GLOBAL_DENY_RECURSOR and RPZ_GLOBAL_DENY_CHECK_NAME"
+  [[ -n "${RPZ_GLOBAL_DENY_RECURSOR:-}" && -n "${RPZ_GLOBAL_DENY_CHECK_NAME:-}" && "${RPZ_GLOBAL_DENY_CHECK_NAME}" != "KNOWN_RESOLVABLE_DENY_TEST_NAME" && "${RPZ_GLOBAL_DENY_CHECK_NAME}" != "blocked.example.com" ]] || die "global default-deny mode requires a real RPZ_GLOBAL_DENY_CHECK_NAME; placeholder/default names are forbidden"
   # Existing v1.0.1 data is not forced through the first-run seed import.
   # A new deployment must provide the reviewed seed before initialization.
   initialized=0
