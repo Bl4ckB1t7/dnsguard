@@ -33,6 +33,51 @@ DNSGuard 生产环境只支持 Docker Compose。Compose 只运行 DNSGuard 控�
 DNSGuard 不会自动编辑 `named.conf`、`response-policy` 或 Zone 文件。详细 BIND 配置见
 [BIND RPZ 对接文档](../../docs/bind-rpz-deployment.md)。
 
+### BIND 位于另一套 Docker 网络时
+
+如果 BIND 在独立物理机或虚拟机上，直接在 Web 初始化和节点配置中填写该机器可达的
+DNS 地址即可，不需要使用下面的 override。
+
+如果 BIND 在另一套 Docker 网络中，先由 BIND 管理员确认网络已经存在，然后使用仓库根目录的
+`compose.bind-network.yaml`。该文件只把 `dnsguard-api` 加入指定的**外部网络**；`dnsguard-web`
+仍只连接 `dnsguard-internal`。DNSGuard 不创建、修改或删除 BIND 网络。
+
+```bash
+# 使用已经存在的 BIND Docker 网络名称；不要填写宿主机映射端口
+export DNSGUARD_BIND_NETWORK=existing-bind-network
+docker network inspect "$DNSGUARD_BIND_NETWORK" >/dev/null
+
+docker compose --env-file deploy/docker/dnsguard.env \
+  -f compose.yaml -f compose.bind-network.yaml config
+docker compose --env-file deploy/docker/dnsguard.env \
+  -f compose.yaml -f compose.bind-network.yaml up -d
+```
+
+容器内的 DNSGuard API 必须使用 BIND 容器在该网络上的可达地址和 `53` 端口（例如
+`BIND_CONTAINER_IP:53` 或该网络中的 DNS 服务名）。宿主机上执行的对接脚本才使用 BIND
+Compose 暴露的映射端口，例如 `127.0.0.1:15353`；不要把 `127.0.0.1:15353` 填入 API
+容器配置，因为容器内的 `127.0.0.1` 指向 DNSGuard API 自身。
+
+API 重建时继续使用同一组 Compose 文件，外部网络连接会由 Compose 自动恢复：
+
+```bash
+docker compose --env-file deploy/docker/dnsguard.env \
+  -f compose.yaml -f compose.bind-network.yaml up -d --force-recreate dnsguard-api
+```
+
+若 `DNSGUARD_BIND_NETWORK` 未设置，或指定的外部网络不存在，Compose 会在启动前报错并退出；
+它不会自动创建网络。未使用 override 时，正式 `compose.yaml` 的默认网络架构保持不变。
+
+首次安装时不需要再手动执行 `docker network connect`，直接使用一键入口即可：
+
+```bash
+export DNSGUARD_BIND_NETWORK=your-existing-bind-network
+./install.sh
+```
+
+安装脚本会先检查外部网络，再让 `docker-init.sh`、Compose 启动和状态查看使用同一组文件。
+普通独立 BIND 部署不设置该变量，直接执行 `./install.sh` 即可。
+
 ## 第 2 步：获取代码并一键准备
 
 正式部署使用已批准的版本 Tag。v1.1.0 发布后使用：

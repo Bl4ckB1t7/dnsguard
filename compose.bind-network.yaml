@@ -1,0 +1,11 @@
+# Optional local/test override for a BIND cluster running on another Docker network.
+# The network is deliberately external: DNSGuard never creates or manages it.
+services:
+  dnsguard-api:
+    networks:
+      - bind-external
+
+networks:
+  bind-external:
+    external: true
+    name: ${DNSGUARD_BIND_NETWORK:?Set DNSGUARD_BIND_NETWORK to an existing BIND Docker network}

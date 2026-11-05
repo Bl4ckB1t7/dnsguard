@@ -150,6 +150,13 @@ set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 set +a
+
+COMPOSE_FILES=(-f compose.yaml)
+if [[ -n "${DNSGUARD_BIND_NETWORK:-}" ]]; then
+  [[ -f "$ROOT/compose.bind-network.yaml" ]] || die "缺少可选 Compose 文件：$ROOT/compose.bind-network.yaml"
+  docker network inspect "$DNSGUARD_BIND_NETWORK" >/dev/null 2>&1 || die "指定的 BIND Docker 网络不存在：$DNSGUARD_BIND_NETWORK；DNSGuard 不会自动创建该网络"
+  COMPOSE_FILES+=(-f compose.bind-network.yaml)
+fi
 if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == "global" ]]; then
   check_name="${RPZ_GLOBAL_DENY_CHECK_NAME:-}"
   [[ -n "$check_name" && "$check_name" != "KNOWN_RESOLVABLE_DENY_TEST_NAME" && "$check_name" != "blocked.example.com" ]] || die "请配置真实的 RPZ_GLOBAL_DENY_CHECK_NAME，不得使用占位或默认域名"
@@ -196,8 +203,8 @@ fi
 
 echo "准备 Docker Compose（不会覆盖现有数据、Token 或证书）"
 "$ROOT/scripts/docker-init.sh"
-docker compose --env-file "$ENV_FILE" -f compose.yaml up -d
-docker compose --env-file "$ENV_FILE" -f compose.yaml ps
+docker compose --env-file "$ENV_FILE" "${COMPOSE_FILES[@]}" up -d
+docker compose --env-file "$ENV_FILE" "${COMPOSE_FILES[@]}" ps
 host="${DNSGUARD_INSTALL_HOST:-localhost}"
 port="${DNSGUARD_WEB_PORT:-443}"
 echo "安装完成：https://${host}:${port}/"
