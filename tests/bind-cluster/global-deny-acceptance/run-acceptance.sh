@@ -291,7 +291,7 @@ node_dig() {
 wait_soa() {
   local port="$1" zone="$2"
   for _ in $(seq 1 60); do
-    if node_dig "$port" +tcp +time=1 +tries=1 "$zone" SOA +short 2>/dev/null | grep -q '[0-9]'; then return 0; fi
+    if node_dig "$port" +tcp +norecurse +time=1 +tries=1 "$zone" SOA +short 2>/dev/null | grep -q '[0-9]'; then return 0; fi
     sleep 0.5
   done
   return 1
@@ -303,7 +303,7 @@ done
 
 serials=()
 for port in 15453 15454 15455; do
-  serials+=("$(node_dig "$port" +tcp +time=2 +tries=1 global-deny.rpz.local SOA +short | awk '{print $3}')")
+  serials+=("$(node_dig "$port" +tcp +norecurse +time=2 +tries=1 global-deny.rpz.local SOA +short | awk '{print $3}')")
 done
 if [[ "${serials[0]}" == "1" && "${serials[0]}" == "${serials[1]}" && "${serials[0]}" == "${serials[2]}" ]]; then
   pass "global-deny zone loaded and Primary/Secondary SOA agree: ${serials[*]}"

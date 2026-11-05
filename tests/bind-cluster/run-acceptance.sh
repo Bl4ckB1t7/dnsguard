@@ -271,7 +271,7 @@ EOF
 wait_dns() {
   local port="$1" i
   for i in $(seq 1 60); do
-    if dig +tcp +time=1 +tries=1 @127.0.0.1 -p "$port" rpz.local SOA +short 2>/dev/null | grep -q '[0-9]'; then
+    if dig +tcp +norecurse +time=1 +tries=1 @127.0.0.1 -p "$port" rpz.local SOA +short 2>/dev/null | grep -q '[0-9]'; then
       return 0
     fi
     sleep 0.5
@@ -293,14 +293,14 @@ start_bind() {
   dig +tcp +time=1 +tries=1 @127.0.0.1 -p ${BASELINE_PORT} example.com SOA +short >/dev/null
   for port in ${PRIMARY_PORT} ${SECONDARY_1_PORT} ${SECONDARY_2_PORT}; do
     for _ in $(seq 1 60); do
-      if dig +tcp +time=1 +tries=1 @127.0.0.1 -p "$port" tld-deny.rpz.local SOA +short 2>/dev/null | grep -q '[0-9]'; then
+      if dig +tcp +norecurse +time=1 +tries=1 @127.0.0.1 -p "$port" tld-deny.rpz.local SOA +short 2>/dev/null | grep -q '[0-9]'; then
         break
       fi
       sleep 0.5
     done
-    dig +tcp +time=1 +tries=1 @127.0.0.1 -p "$port" tld-deny.rpz.local SOA +short >/dev/null
+    dig +tcp +norecurse +time=1 +tries=1 @127.0.0.1 -p "$port" tld-deny.rpz.local SOA +short >/dev/null
   done
-  dig +tcp +time=2 +tries=1 @127.0.0.1 -p ${PRIMARY_PORT} rpz.local SOA +short
+  dig +tcp +norecurse +time=2 +tries=1 @127.0.0.1 -p ${PRIMARY_PORT} rpz.local SOA +short
   compose ps
 }
 
@@ -459,7 +459,7 @@ wait_job_running() {
   return 1
 }
 
-soa_serial() { dig +tcp +time=2 +tries=1 @127.0.0.1 -p "$1" rpz.local SOA +short | awk '{print $3}'; }
+soa_serial() { dig +tcp +norecurse +time=2 +tries=1 @127.0.0.1 -p "$1" rpz.local SOA +short | awk '{print $3}'; }
 answer() { dig +tcp +time=2 +tries=1 @127.0.0.1 -p "$1" "$2" A +short | tr '\n' ' ' | sed 's/[[:space:]]*$//'; }
 wait_answer() {
   local port="$1" query="$2" wanted="$3" expected
@@ -660,7 +660,7 @@ case_axfr_recovery() {
     sleep 0.25
   done
   [[ "$secondary_after" == "$primary_after" ]]
-  [[ "$(dig +tcp +time=2 +tries=1 @127.0.0.1 -p ${SECONDARY_1_PORT} axfr-recovery.app.test.rpz.local A +short)" == "192.0.2.90" ]]
+    [[ "$(dig +tcp +norecurse +time=2 +tries=1 @127.0.0.1 -p ${SECONDARY_1_PORT} axfr-recovery.app.test.rpz.local A +short)" == "192.0.2.90" ]]
   direct_delete_rpz_rule axfr-recovery.app.test
   echo "Secondary recovered by full transfer after local RPZ data removal: serial=$secondary_after"
 }

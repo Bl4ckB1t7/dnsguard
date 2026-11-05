@@ -396,7 +396,10 @@ func queryDNSNode(ctx context.Context, address, name, recordType string) ([]stri
 	if host == "" || strings.TrimSpace(name) == "" || strings.TrimSpace(recordType) == "" {
 		return nil, fmt.Errorf("DNS 查询参数无效")
 	}
-	command := exec.CommandContext(ctx, "dig", "@"+host, "-p", port, name, recordType, "+short", "+time=2", "+tries=1")
+	// Rule verification reads records from the RPZ zone itself. It must be an
+	// authoritative, non-recursive query; recursive policy evaluation is tested
+	// separately and must not be used as publication evidence.
+	command := exec.CommandContext(ctx, "dig", "@"+host, "-p", port, "+norecurse", name, recordType, "+short", "+time=2", "+tries=1")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("dig 失败: %s", strings.TrimSpace(string(output)))

@@ -231,7 +231,10 @@ func probeDNSZone(ctx context.Context, address, zone string) (string, error) {
 	if zone == "" || !domainPattern.MatchString(strings.TrimSuffix(zone, ".")) {
 		return "", fmt.Errorf("DNS Zone 名称无效")
 	}
-	command := exec.CommandContext(ctx, "dig", "@"+host, "-p", port, zone, "SOA", "+short", "+time=2", "+tries=1")
+	// RPZ health and publication checks query the authoritative zone data. Do
+	// not let the recursive response-policy rewrite these control-plane
+	// queries, especially when global deny is enabled.
+	command := exec.CommandContext(ctx, "dig", "@"+host, "-p", port, "+norecurse", zone, "SOA", "+short", "+time=2", "+tries=1")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("dig 失败: %s", strings.TrimSpace(string(output)))

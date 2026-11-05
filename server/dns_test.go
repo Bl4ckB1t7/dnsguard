@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,44 @@ import (
 	"testing"
 	"time"
 )
+
+func writeDigRequiringNoRecurse(t *testing.T, dir string) {
+	t.Helper()
+	digPath := filepath.Join(dir, "dig")
+	script := `#!/bin/sh
+found=0
+soa=0
+for arg in "$@"; do
+  [ "$arg" = "+norecurse" ] && found=1
+  [ "$arg" = "SOA" ] && soa=1
+done
+[ "$found" -eq 1 ] || { echo "missing +norecurse" >&2; exit 7; }
+if [ "$soa" -eq 1 ]; then
+  printf '%s\n' 'ns.example. hostmaster.example. 42 3600 900 2592000 60'
+else
+  printf '%s\n' 'rpz-passthru.'
+fi
+`
+	if err := os.WriteFile(digPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestAuthoritativeRPZQueriesUseNoRecurse(t *testing.T) {
+	setupTestEnvironment(t)
+	binDir := t.TempDir()
+	writeDigRequiringNoRecurse(t, binDir)
+
+	serial, err := probeDNSZone(context.Background(), "127.0.0.1:53", "rpz.local")
+	if err != nil || serial != "42" {
+		t.Fatalf("authoritative SOA probe failed: serial=%q err=%v", serial, err)
+	}
+	answers, err := queryDNSNode(context.Background(), "127.0.0.1:53", "example.rpz.local.", "CNAME")
+	if err != nil || len(answers) != 1 || answers[0] != "rpz-passthru." {
+		t.Fatalf("authoritative RPZ record probe failed: answers=%v err=%v", answers, err)
+	}
+}
 
 func TestDNSNodeCannotDeletePrimary(t *testing.T) {
 	original := state
