@@ -35,10 +35,10 @@ DNSGuard 不会自动编辑 `named.conf`、`response-policy` 或 Zone 文件。�
 
 ## 第 2 步：获取代码并一键准备
 
-正式部署使用已批准的版本 Tag。v1.1.0 尚在当前分支验收时，可使用：
+正式部署使用已批准的版本 Tag。v1.1.0 发布后使用：
 
 ```bash
-git clone --branch feat/v1.1.0-global-default-deny --single-branch \
+git clone --branch v1.1.0 --single-branch \
   https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
 chmod 0750 install.sh

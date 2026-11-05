@@ -65,13 +65,12 @@ install -m 0600 whitelist-seed.json docker-data/bootstrap/whitelist-seed.json
 
 ## 快速开始
 
-正式部署请使用已批准的版本；当前 `v1.1.0` 全局 DENY 仍在开发分支验收：
+正式部署请使用已批准的 `v1.1.0` 版本：
 
 ```bash
-git clone --branch feat/v1.1.0-global-default-deny --single-branch \
+git clone --branch v1.1.0 --single-branch \
   https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
-cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
 ```
 
 准备现有 BIND 的 TSIG Key 和企业 HTTPS 证书后，使用一键入口：
