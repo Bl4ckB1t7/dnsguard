@@ -20,6 +20,7 @@ dev/bind-rpz/keys/*.private
 
 # Docker BIND acceptance runtime (generated TSIG, journals, logs, reports)
 tests/bind-cluster/runtime/
+tests/bind-cluster/global-deny-experiment/runtime/
 tests/docker-production-runtime/
 tests/docker-production-bind/runtime/
 tests/docker-initialization-runtime/
