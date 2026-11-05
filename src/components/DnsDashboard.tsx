@@ -1,9 +1,9 @@
-import { FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { AuditPanel, type AuditEntry } from "./AuditPanel";
 import { DnsNodePanel, type DnsNode } from "./DnsNodePanel";
+import { DeploymentGuide } from "./DeploymentGuide";
 
-type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; lastPublish: string; publishMessage: string; publishJobId: string; publishJobStatus: string };
-type TLDStatus = { status: string; source: string; version?: string; lastUpdated?: string; tldCount: number; sha256?: string; lastChecked?: string; lastSuccessfulSync?: string; message?: string; policyStatus?: string; policyMessage?: string; policyZoneStatus?: string; policySecondaryStatus?: string; policyRecursionStatus?: string };
+type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; publishEvidenceReady?: boolean; publishEvidence?: { id: string; status: string; syncStatus?: string; finishedAt?: string; nodeChecks?: Array<{ id: string; name: string; role: string; address: string; status: string; error?: string }> }; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; policyMode?: string; globalDenyZone?: string; lastPublish: string; publishMessage: string; publishJobId: string; publishJobStatus: string };
 type Rule = { id: string; domain: string; action: string; type?: string; value?: string; reason: string; status: string; updatedAt: string };
 type RPZChange = { type: string; domain: string; before: string; after: string };
 type RPZPreview = { pending: boolean; currentCount: number; publishedCount: number; changes: RPZChange[] };
@@ -11,6 +11,9 @@ type RPZVersion = { id: string; createdAt: string; mode: string; ruleCount: numb
 type PublishJob = { id: string; status: string; message?: string; error?: string };
 type AuditResponse = { items: AuditEntry[]; total: number; page: number; pageSize: number };
 type TelegramSettings = { enabled: boolean; botTokenSet: boolean; botTokenHint?: string; chatId: string; events: string[]; cooldownSeconds: number };
+type SetupStatus = { globalDenySetupDeferred?: boolean; policyMode?: "global" | "legacy"; error?: string };
+type GlobalDenyCheck = { name: string; status: "pass" | "fail" | "not_run"; detail: string };
+type GlobalDenyCheckResponse = { ready: boolean; policyMode?: string; globalDenySetupDeferred?: boolean; checks: GlobalDenyCheck[] };
 type DashboardView = "overview" | "audit";
 
 const telegramEventOptions = [
@@ -70,10 +73,70 @@ function ruleActionLabel(rule: Rule): string {
   return "白名单";
 }
 
+type WhitelistImportPreview = { fileName: string; domains: string[]; invalid: string[]; duplicates: number };
+
+const importLabelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+function normalizeImportedDomain(value: string): string {
+  const domain = value.trim().toLowerCase().replace(/\.+$/, "");
+  const labels = domain.split(".");
+  if (!domain || domain.length > 253 || labels.length < 2 || domain.includes("_") || domain.includes("*") || labels.some((label) => !importLabelPattern.test(label))) return "";
+  return domain;
+}
+
+function parseWhitelistImport(content: string, fileName: string): WhitelistImportPreview {
+  const domains: string[] = [];
+  const invalid: string[] = [];
+  const seen = new Set<string>();
+  let duplicates = 0;
+  const add = (value: unknown, label: string) => {
+    const domain = typeof value === "string" ? normalizeImportedDomain(value) : "";
+    if (!domain) {
+      invalid.push(label);
+      return;
+    }
+    if (seen.has(domain)) {
+      duplicates += 1;
+      return;
+    }
+    seen.add(domain);
+    domains.push(domain);
+  };
+  const trimmed = content.trim();
+  if (fileName.toLowerCase().endsWith(".json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      const entries = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && Array.isArray((parsed as { rules?: unknown }).rules) ? (parsed as { rules: unknown[] }).rules : null;
+      if (!entries) throw new Error("JSON 必须是域名数组或包含 rules 数组的白名单 JSON");
+      entries.forEach((entry, index) => {
+        if (typeof entry === "string") {
+          add(entry, `第 ${index + 1} 条`);
+          return;
+        }
+        if (entry && typeof entry === "object") {
+          const rule = entry as { domain?: unknown; type?: unknown; action?: unknown };
+          if (rule.type !== undefined && String(rule.type).toUpperCase() !== "CNAME") invalid.push(`第 ${index + 1} 条（仅支持 CNAME 白名单）`);
+          else if (rule.action !== undefined && String(rule.action).toLowerCase() !== "passthru") invalid.push(`第 ${index + 1} 条（仅支持 passthru 白名单）`);
+          else add(rule.domain, `第 ${index + 1} 条`);
+          return;
+        }
+        invalid.push(`第 ${index + 1} 条`);
+      });
+    } catch (error) {
+      invalid.push(`JSON 格式错误：${(error as Error).message}`);
+    }
+  } else {
+    content.split(/\r?\n/).forEach((raw, index) => {
+      const value = raw.split("#", 1)[0].trim();
+      if (value) add(value, `第 ${index + 1} 行`);
+    });
+  }
+  return { fileName, domains, invalid, duplicates };
+}
+
 export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword = false }: { onLogout: () => void; authEnabled?: boolean; mustChangePassword?: boolean }) {
   const [activeView, setActiveView] = useState<DashboardView>(dashboardViewFromURL);
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [tldStatus, setTldStatus] = useState<TLDStatus | null>(null);
   const [nodes, setNodes] = useState<DnsNode[]>([]);
   const [nodeDrafts, setNodeDrafts] = useState<Record<string, string>>({});
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
@@ -117,6 +180,12 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [telegramChatId, setTelegramChatId] = useState("");
   const [telegramEvents, setTelegramEvents] = useState<string[]>([]);
   const [telegramCooldown, setTelegramCooldown] = useState(300);
+  const [whitelistImport, setWhitelistImport] = useState<WhitelistImportPreview | null>(null);
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [checkingDeny, setCheckingDeny] = useState(false);
+  const [denyNotice, setDenyNotice] = useState("");
+  const [denyReady, setDenyReady] = useState(false);
+  const [denyChecks, setDenyChecks] = useState<GlobalDenyCheck[]>([]);
   const selectView = (view: DashboardView) => {
     setActiveView(view);
     const url = new URL(window.location.href);
@@ -129,13 +198,13 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
     setLoading(true);
     setLoadError("");
     try {
-      const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions, nextTLDStatus] = await Promise.all([
+      const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions, nextSetupStatus] = await Promise.all([
         readJSON<Overview>("/api/dns/overview"),
         readJSON<DnsNode[]>("/api/dns/nodes"),
         readJSON<Rule[]>("/api/dns/rpz"),
         readJSON<RPZPreview>("/api/dns/rpz/preview"),
         readJSON<RPZVersion[]>("/api/dns/rpz/versions"),
-        readJSON<TLDStatus>("/api/dns/tld/status"),
+        readJSON<SetupStatus>("/api/setup/status"),
       ]);
       setOverview(nextOverview);
       setNodes(nextNodes ?? []);
@@ -144,12 +213,28 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setSelectedRuleIds((selected) => selected.filter((id) => (nextRules ?? []).some((rule) => rule.id === id)));
       setPreview(nextPreview);
       setVersions(nextVersions ?? []);
-      setTldStatus(nextTLDStatus);
+      setSetupStatus(nextSetupStatus);
     } catch (error) {
       setLoadError(`状态加载失败：${(error as Error).message}。`);
       throw error;
     } finally {
       setLoading(false);
+    }
+  };
+
+  const checkGlobalDeny = async () => {
+    setCheckingDeny(true);
+    setDenyNotice("");
+    try {
+      const result = await readJSON<GlobalDenyCheckResponse>("/api/dns/global-deny/check");
+      setDenyChecks(result.checks ?? []);
+      setDenyReady(result.ready === true);
+      setSetupStatus({ globalDenySetupDeferred: result.globalDenySetupDeferred, policyMode: result.policyMode === "global" ? "global" : "legacy" });
+      setDenyNotice(result.ready === true ? "全局 DENY 只读检查通过，结果来自当前配置的 Primary / Secondary 和递归检查。" : "检查未全部通过，保持“未验证”；请按失败项处理后重新检查。");
+    } catch (error) {
+      setDenyNotice(`只读状态读取失败：${(error as Error).message}`);
+    } finally {
+      setCheckingDeny(false);
     }
   };
 
@@ -161,20 +246,6 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setAuditPage(result.page ?? page);
     } catch (error) {
       setLoadError(`审计日志加载失败：${(error as Error).message}。`);
-    }
-  };
-
-  const reconcileTLD = async () => {
-    setBusy(true);
-    setNotice("");
-    try {
-      await readJSON<TLDStatus>("/api/dns/tld/reconcile", { method: "POST", headers: { "Content-Type": "application/json", ...csrfHeaders() }, body: "{}" });
-      setNotice("TLD DENY 已完成 AXFR、节点和代表性触发项核对，自动发布已恢复。");
-      await load();
-    } catch (error) {
-      setNotice(`TLD DENY 人工核对未通过：${(error as Error).message}`);
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -286,6 +357,56 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       await load();
     } catch (error) { setNotice(`RPZ 发布失败：${(error as Error).message}`); }
     finally { setBusy(false); }
+  };
+
+  const previewWhitelistFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      setNotice("白名单文件不能超过 4 MiB");
+      setWhitelistImport(null);
+      return;
+    }
+    try {
+      setWhitelistImport(parseWhitelistImport(await file.text(), file.name));
+      setNotice("");
+    } catch (error) {
+      setNotice(`白名单文件读取失败：${(error as Error).message}`);
+      setWhitelistImport(null);
+    }
+  };
+
+  const importWhitelistDrafts = async () => {
+    if (!whitelistImport || whitelistImport.domains.length === 0 || whitelistImport.invalid.length > 0) return;
+    const existing = new Set(rules.map((rule) => rule.domain.toLowerCase().replace(/\.+$/, "")));
+    const domains = whitelistImport.domains.filter((item) => !existing.has(item));
+    if (domains.length === 0) {
+      setNotice("文件中的域名都已存在，没有新增草稿");
+      return;
+    }
+    if (!window.confirm(`确认导入 ${domains.length} 个白名单域名？只会创建 draft，不会发布到 BIND。`)) return;
+    setBusy(true);
+    setNotice("");
+    let imported = 0;
+    try {
+      for (const importedDomain of domains) {
+        await readJSON<Rule>("/api/dns/rpz", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...csrfHeaders() },
+          body: JSON.stringify({ domain: importedDomain, type: "CNAME", value: "", reason: "白名单文件导入" }),
+        });
+        imported += 1;
+      }
+      setWhitelistImport(null);
+      setNotice(`已导入 ${imported} 个白名单 draft；请审核后手动发布`);
+      await load();
+    } catch (error) {
+      setNotice(`已导入 ${imported}/${domains.length} 个 draft，后续未继续：${(error as Error).message}`);
+      await load().catch(() => undefined);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const saveNode = async (node: DnsNode) => {
@@ -496,6 +617,9 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
 
       {loadError && <div className="global-notice" role="alert"><span>{loadError}</span><button onClick={() => void load().catch(() => undefined)}>重试</button></div>}
 
+      {activeView === "overview" && <DeploymentGuide overview={overview} nodes={nodes} preview={preview ? { pending: preview.pending, changes: preview.changes?.length ?? 0 } : null} setupStatus={setupStatus} checkingDeny={checkingDeny} denyNotice={denyNotice} denyReady={denyReady} denyChecks={denyChecks} onRefresh={() => void load().catch(() => undefined)} onCheckDeny={() => void checkGlobalDeny()} />}
+
+
       {showPasswordPanel && <div className="password-overlay" role="presentation" onMouseDown={(event) => { if (!mustChangePassword && event.target === event.currentTarget && !busy) setShowPasswordPanel(false); }}><section className="password-panel" role="dialog" aria-modal="true" aria-labelledby="password-title"><div className="panel-heading"><div><h2 id="password-title">{mustChangePassword ? "首次登录请修改密码" : "修改密码"}</h2><span>{mustChangePassword ? "为保障生产安全，修改密码后才能继续使用" : "修改成功后当前会话将退出"}</span></div>{!mustChangePassword && <button className="password-close" type="button" disabled={busy} onClick={() => setShowPasswordPanel(false)} aria-label="关闭">×</button>}</div><form className="password-form" onSubmit={changePassword}><label>当前密码<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" required /></label><label>新密码<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><label>确认新密码<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><p className="form-hint">新密码至少 8 位，修改后需要重新登录。</p><div className="password-actions">{!mustChangePassword && <button type="button" className="password-cancel" disabled={busy} onClick={() => setShowPasswordPanel(false)}>取消</button>}<button type="submit" disabled={busy}>{busy ? "保存中…" : "保存新密码"}</button></div></form></section></div>}
 
       {showTelegramPanel && <div className="password-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setShowTelegramPanel(false); }}><section className="password-panel telegram-panel" role="dialog" aria-modal="true" aria-labelledby="telegram-title"><div className="panel-heading"><div><h2 id="telegram-title">告警配置</h2><span>{telegramSettings?.enabled ? "已启用 · 配置保存在服务端" : "未启用 · 配置保存在服务端"}</span></div><button className="password-close" type="button" disabled={busy} onClick={() => setShowTelegramPanel(false)} aria-label="关闭">×</button></div><form className="password-form" onSubmit={saveTelegramSettings}><label>Bot Token<input type="password" value={telegramToken} onChange={(event) => setTelegramToken(event.target.value)} placeholder={telegramSettings?.botTokenSet ? `已保存 ${telegramSettings.botTokenHint ?? "Token"}，留空保持不变` : "请输入 BotFather 生成的 Token"} autoComplete="new-password" /></label><label>Chat ID<input value={telegramChatId} onChange={(event) => setTelegramChatId(event.target.value)} placeholder="例如 -1001234567890" /></label><fieldset className="telegram-events"><legend>告警事件</legend>{telegramEventOptions.map((event) => <label key={event.value}><input type="checkbox" checked={telegramEvents.includes(event.value)} onChange={() => setTelegramEvents((selected) => selected.includes(event.value) ? selected.filter((item) => item !== event.value) : [...selected, event.value])} />{event.label}</label>)}</fieldset><label>重复告警冷却时间（秒）<input type="number" min={0} max={86400} value={telegramCooldown} onChange={(event) => setTelegramCooldown(Number(event.target.value))} /></label><p className="form-hint">Token 只会提交到后端，页面不会回显完整 Token。</p><div className="password-actions"><button type="button" className="password-cancel" disabled={busy || !telegramSettings?.enabled} onClick={() => void clearTelegramSettings()}>停用并清除</button><button type="button" className="password-cancel" disabled={busy || !telegramSettings?.enabled} onClick={() => void sendTelegramTest()}>发送测试</button><button type="submit" disabled={busy}>{busy ? "保存中…" : "保存配置"}</button></div></form></section></div>}
@@ -504,7 +628,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       <section className="dns-cards">
         <article><span>DNS 节点</span><strong>{overview ? `${overview.healthyNodes}/${overview.nodes}` : "—"}</strong><small>健康节点</small></article>
         <article><span>RPZ 规则</span><strong>{overview?.rules ?? "—"}</strong><small>{overview?.publishedRules ?? 0} 条已发布</small></article>
-        <article className={tldStatus?.status === "ready" ? "" : "muted"}><span>TLD 数据状态</span><strong>{tldStatus?.tldCount?.toLocaleString() ?? "—"}</strong><small>{tldStatus?.status === "ready" ? `数据已同步 · ${tldStatus.version ?? "无版本"}` : tldStatus?.status === "error" ? "同步异常，保留上一份状态" : "等待 TLD 数据同步"}{tldStatus?.policyStatus === "published" ? " · DENY 已发布" : tldStatus?.policyStatus === "reconcile_required" ? " · DENY 需人工核对" : tldStatus?.policyStatus === "sync_exception" ? " · DENY 同步异常" : tldStatus?.policyStatus === "not_configured" ? " · DENY 未启用" : ""}{tldStatus?.policySecondaryStatus === "synced" ? " · Secondary 已同步" : tldStatus?.policySecondaryStatus === "sync_exception" ? " · Secondary 未完成" : ""}{tldStatus?.policyRecursionStatus === "verified" ? " · 递归已验证" : tldStatus?.policyRecursionStatus === "not_configured" ? " · 递归未配置" : ""}</small>{tldStatus?.policyStatus === "reconcile_required" && <button className="ghost" type="button" disabled={busy} onClick={() => void reconcileTLD()}>人工核对并恢复</button>}</article>
+        <article className={overview?.policyMode === "global" ? "" : "muted"}><span>默认拒绝策略</span><strong>{overview?.policyMode === "global" ? "全局 DENY" : "普通 RPZ"}</strong><small>{overview?.policyMode === "global" ? `Zone：${overview.globalDenyZone || "已配置"} · 白名单 / A 重定向优先` : "兼容模式，不启用全局默认拒绝"}</small></article>
         <article><span>最后同步</span><strong className="sync-value">{overview?.lastSync ?? "—"}</strong><small>Primary → Secondary</small></article>
       </section>
 
@@ -530,7 +654,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
           onRemove={(node) => { void removeNode(node); }}
         />
 
-        <div className="dns-panel"><div className="panel-heading"><h2>添加 RPZ 规则</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>记录类型<select value={ruleType} onChange={(event) => setRuleType(event.target.value as "CNAME" | "A")}><option value="CNAME">白名单（CNAME / passthru）</option><option value="A">A 记录重定向</option></select></label>{ruleType === "A" && <label>目标 IPv4<input value={recordValue} onChange={(event) => setRecordValue(event.target.value)} placeholder="例如 192.0.2.10" inputMode="numeric" pattern="(?:[0-9]{1,3}\.){3}[0-9]{1,3}" required /></label>}<label>原因（可选）<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder={ruleType === "A" ? "业务流量导向指定服务" : "业务系统依赖"} /></label><button disabled={busy}>{busy ? "保存中…" : "保存 RPZ 规则"}</button></form>{notice && <p className="notice">{notice}</p>}</div>
+        <div className="dns-panel" id="rpz-rules"><div className="panel-heading"><h2>添加 RPZ 规则</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>记录类型<select value={ruleType} onChange={(event) => setRuleType(event.target.value as "CNAME" | "A")}><option value="CNAME">白名单（CNAME / passthru）</option><option value="A">A 记录重定向</option></select></label>{ruleType === "A" && <label>目标 IPv4<input value={recordValue} onChange={(event) => setRecordValue(event.target.value)} placeholder="例如 192.0.2.10" inputMode="numeric" pattern="(?:[0-9]{1,3}\.){3}[0-9]{1,3}" required /></label>}<label>原因（可选）<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder={ruleType === "A" ? "业务流量导向指定服务" : "业务系统依赖"} /></label><button disabled={busy}>{busy ? "保存中…" : "保存 RPZ 规则"}</button></form><div className="rule-import"><strong>批量导入白名单</strong><input type="file" accept=".txt,.json,text/plain,application/json" onChange={(event) => void previewWhitelistFile(event)} disabled={busy} /><p className="form-hint">TXT 每行一个域名；JSON 支持域名数组或现有白名单 JSON。导入只创建 draft，不会自动发布。</p>{whitelistImport && <div className="import-preview"><span>{whitelistImport.fileName}：{whitelistImport.domains.length} 个有效域名，{whitelistImport.duplicates} 个重复项</span>{whitelistImport.invalid.length > 0 && <small>有 {whitelistImport.invalid.length} 项格式错误，请修正后重新选择文件。</small>}<button type="button" className="publish-button" disabled={busy || whitelistImport.domains.length === 0 || whitelistImport.invalid.length > 0} onClick={() => void importWhitelistDrafts()}>导入为 draft</button></div>}</div>{notice && <p className="notice">{notice}</p>}</div>
       </section>
 
       <section className="release-grid">

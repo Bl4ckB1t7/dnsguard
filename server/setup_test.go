@@ -219,3 +219,260 @@ func TestInitializationMiddlewareLocksRPZPublish(t *testing.T) {
 		t.Fatalf("uninitialized RPZ publish must be locked, got %d", recorder.Code)
 	}
 }
+
+func TestSetupImportsWhitelistSeedAsDraftOnly(t *testing.T) {
+	dir, key := setupTestEnvironment(t)
+	seedPath := filepath.Join(dir, "bootstrap", "whitelist.json")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"version":1,"source":"rpz-connect","mode":"global","generatedAt":"2026-11-05T00:00:00Z","zone":"rpz.local.","rules":[{"domain":"Example.COM.","action":"passthru","type":"CNAME","value":"rpz-passthru.","reason":"seed"},{"domain":"child.example.net","action":"passthru","type":"CNAME","value":"rpz-passthru.","reason":"seed"}]}`
+	if err := os.WriteFile(seedPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RPZ_WHITELIST_SEED_FILE", seedPath)
+	originalChecks := setupChecksFunc
+	setupChecksFunc = readySetupChecks
+	t.Cleanup(func() { setupChecksFunc = originalChecks })
+	request := validSetupRequest(key)
+	httpRequest := httptest.NewRequest(http.MethodPost, "/api/setup/complete", setupRequestBody(t, request))
+	httpRequest.Header.Set("X-DNSGuard-Bootstrap", "setup-bootstrap-token-012345678901234567890")
+	recorder := httptest.NewRecorder()
+	setupComplete(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("setup with whitelist seed failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if len(state.Rules) != 2 || len(state.Published) != 0 {
+		t.Fatalf("seed rules must be imported as unpublished drafts: rules=%d published=%d", len(state.Rules), len(state.Published))
+	}
+	if state.Rules[0].Domain != "example.com" || state.Rules[0].Status != "draft" || state.Rules[0].Type != "CNAME" {
+		t.Fatalf("seed rule was not normalized as a draft: %#v", state.Rules[0])
+	}
+}
+
+func TestSetupRejectsInvalidWhitelistSeedBeforeWritingState(t *testing.T) {
+	dir, key := setupTestEnvironment(t)
+	seedPath := filepath.Join(dir, "bootstrap", "whitelist.json")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(seedPath, []byte(`{"version":1,"source":"rpz-connect","mode":"global","zone":"rpz.local.","rules":[{"domain":"bad_domain.example","action":"passthru","type":"CNAME"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RPZ_WHITELIST_SEED_FILE", seedPath)
+	originalChecks := setupChecksFunc
+	setupChecksFunc = readySetupChecks
+	t.Cleanup(func() { setupChecksFunc = originalChecks })
+	request := validSetupRequest(key)
+	httpRequest := httptest.NewRequest(http.MethodPost, "/api/setup/complete", setupRequestBody(t, request))
+	httpRequest.Header.Set("X-DNSGuard-Bootstrap", "setup-bootstrap-token-012345678901234567890")
+	recorder := httptest.NewRecorder()
+	setupComplete(recorder, httpRequest)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid seed must be rejected, got %d %s", recorder.Code, recorder.Body.String())
+	}
+	if regularFileExists(os.Getenv("AUTH_FILE")) || regularFileExists(os.Getenv("DNS_STATE_FILE")) {
+		t.Fatal("invalid seed must not create authentication or DNS state")
+	}
+}
+
+func TestGlobalPolicyModeRequiresWhitelistSeed(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	if _, err := loadWhitelistSeedForZone("rpz.local"); err == nil {
+		t.Fatal("global policy mode must require a reviewed whitelist seed")
+	}
+}
+
+func TestDeferredGlobalPolicyAllowsWebWhitelistImportWithoutSeed(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")
+	if rules, err := loadWhitelistSeedForZone("rpz.local"); err != nil || rules != nil {
+		t.Fatalf("deferred global setup should allow Web draft import without a seed: rules=%#v err=%v", rules, err)
+	}
+	if status := inspectWhitelistSeed(); status.Error != "" {
+		t.Fatalf("deferred global setup should not report a missing seed: %#v", status)
+	}
+}
+
+func TestGlobalPolicyModePersistsWithImportedDrafts(t *testing.T) {
+	dir, key := setupTestEnvironment(t)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	seedPath := filepath.Join(dir, "bootstrap", "whitelist.json")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"version":1,"source":"rpz-connect","mode":"global","generatedAt":"2026-11-05T00:00:00Z","zone":"rpz.local.","rules":[{"domain":"example.com","action":"passthru","type":"CNAME","value":"rpz-passthru.","reason":"seed"}]}`
+	if err := os.WriteFile(seedPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RPZ_WHITELIST_SEED_FILE", seedPath)
+	originalChecks := setupChecksFunc
+	setupChecksFunc = readySetupChecks
+	t.Cleanup(func() { setupChecksFunc = originalChecks })
+	request := validSetupRequest(key)
+	httpRequest := httptest.NewRequest(http.MethodPost, "/api/setup/complete", setupRequestBody(t, request))
+	httpRequest.Header.Set("X-DNSGuard-Bootstrap", "setup-bootstrap-token-012345678901234567890")
+	recorder := httptest.NewRecorder()
+	setupComplete(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("global setup failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if state.PolicyMode != "global" || initialization.PolicyMode != "global" {
+		t.Fatalf("global policy mode was not persisted: state=%q initialization=%q", state.PolicyMode, initialization.PolicyMode)
+	}
+}
+
+func TestGlobalDenyCheckFailsClosedWithoutConfiguredNodes(t *testing.T) {
+	setupTestEnvironment(t)
+	recorder := httptest.NewRecorder()
+	globalDenyCheck(recorder, httptest.NewRequest(http.MethodGet, "/api/dns/global-deny/check", nil))
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("global deny check without nodes must fail closed, got %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"ready":false`) {
+		t.Fatalf("global deny check must not claim ready without nodes: %s", recorder.Body.String())
+	}
+}
+
+func TestStagedGlobalDenySetupDoesNotTreatDeferredCheckAsPassed(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")
+	if !globalDenySetupDeferred() {
+		t.Fatal("staged global-deny setup flag should be recognized")
+	}
+	checks := []setupCheck{
+		{Name: "deny recursive effect", Status: "not_run", Optional: true},
+	}
+	if !setupChecksReady(checks) {
+		t.Fatal("optional deferred check should not block staged first initialization")
+	}
+	checks[0].Optional = false
+	if setupChecksReady(checks) {
+		t.Fatal("a mandatory not_run check must still block initialization")
+	}
+}
+
+func TestGlobalDenyBaselineRequiresMatchingTestConfiguration(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_GLOBAL_DENY_BASELINE_FILE", filepath.Join(t.TempDir(), "global-deny-baseline.json"))
+	if err := loadGlobalDenyBaseline("known.example.com", "127.0.0.1:53"); err == nil {
+		t.Fatal("missing baseline must not be accepted")
+	}
+	baseline := globalDenyBaseline{CheckName: "known.example.com", Recursor: "127.0.0.1:53", RCode: "NOERROR", Observed: "2026-11-05T00:00:00Z"}
+	if err := saveGlobalDenyBaseline(baseline); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadGlobalDenyBaseline("known.example.com", "127.0.0.1:53"); err != nil {
+		t.Fatalf("matching baseline must load: %v", err)
+	}
+	if err := loadGlobalDenyBaseline("missing.example.com", "127.0.0.1:53"); err == nil {
+		t.Fatal("baseline for a different test name must not be accepted")
+	}
+}
+
+func writeInitializedPolicyState(t *testing.T, policyMode string, includePolicyMode bool) {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte("existing-password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("AUTH_FILE"), []byte(`{"username":"admin","passwordHash":"`+string(hash)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("DNS_NODE_CONFIG_FILE"), []byte(`[{"id":"primary-1","name":"primary","role":"primary","address":"127.0.0.1:5353"}]`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"nodes":[],"rules":[{"id":"rule-1","domain":"example.com","action":"passthru","type":"CNAME","value":"rpz-passthru.","reason":"existing","status":"published","updatedAt":"2026-11-05T00:00:00Z"}],"published":[],"versions":[]}`
+	if includePolicyMode {
+		content = strings.TrimSuffix(content, "}") + `,"policyMode":"` + policyMode + `"}`
+	}
+	if err := os.WriteFile(os.Getenv("DNS_STATE_FILE"), []byte(content), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	initialization = initializationState{}
+	if err := loadDNSState(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHistoricalStateWithoutPolicyModeRemainsLegacy(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "", false)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "legacy")
+	if err := validatePolicyModeConsistency(); err != nil {
+		t.Fatalf("historical legacy state should remain usable: %v", err)
+	}
+	if effectivePolicyMode() != "legacy" || state.PolicyMode != "" {
+		t.Fatalf("historical state must remain legacy without being rewritten: effective=%q stored=%q", effectivePolicyMode(), state.PolicyMode)
+	}
+}
+
+func TestHistoricalStateWithoutPolicyModeRejectsGlobalOptIn(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "", false)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	if err := validatePolicyModeConsistency(); err == nil || !strings.Contains(err.Error(), "策略模式不一致") {
+		t.Fatalf("historical state must reject an implicit global opt-in, got %v", err)
+	}
+	if effectivePolicyMode() != "legacy" || len(state.Rules) != 1 {
+		t.Fatalf("historical state must remain legacy and preserve rules: effective=%q rules=%d", effectivePolicyMode(), len(state.Rules))
+	}
+}
+
+func TestLegacyStateDoesNotSilentlySwitchToGlobal(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "legacy", true)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	err := validatePolicyModeConsistency()
+	if err == nil || !strings.Contains(err.Error(), "策略模式不一致") {
+		t.Fatalf("legacy state must reject an unapproved global switch, got %v", err)
+	}
+	if effectivePolicyMode() != "legacy" || len(state.Rules) != 1 {
+		t.Fatalf("conflict must preserve legacy state and rules: effective=%q rules=%d", effectivePolicyMode(), len(state.Rules))
+	}
+}
+
+func TestGlobalStateDoesNotSilentlySwitchToLegacy(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "global", true)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "legacy")
+	err := validatePolicyModeConsistency()
+	if err == nil || !strings.Contains(err.Error(), "策略模式不一致") {
+		t.Fatalf("global state must reject an unapproved legacy switch, got %v", err)
+	}
+	if effectivePolicyMode() != "global" || len(state.Rules) != 1 {
+		t.Fatalf("conflict must preserve global state and rules: effective=%q rules=%d", effectivePolicyMode(), len(state.Rules))
+	}
+}
+
+func TestValidateGlobalDenyTriggerResponseRequiresStrictAuthoritativeRecord(t *testing.T) {
+	const owner = "*.global-deny.rpz.local."
+	valid := `;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1
+;; flags: qr aa;
+;; ANSWER SECTION:
+*.global-deny.rpz.local. 60 IN CNAME .
+;; AUTHORITY SECTION:`
+	cases := []struct {
+		name   string
+		output string
+		valid  bool
+	}{
+		{"authoritative exact CNAME root", valid, true},
+		{"non-authoritative", strings.Replace(valid, "qr aa", "qr ra", 1), false},
+		{"wrong RCODE", strings.Replace(valid, "NOERROR", "SERVFAIL", 1), false},
+		{"wrong owner", strings.Replace(valid, owner, "other.global-deny.rpz.local.", 1), false},
+		{"wrong type", strings.Replace(valid, "CNAME .", "A 192.0.2.1", 1), false},
+		{"wrong target", strings.Replace(valid, "CNAME .", "CNAME sink.example.", 1), false},
+		{"missing answer", strings.Replace(valid, "*.global-deny.rpz.local. 60 IN CNAME .\n", "", 1), false},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateGlobalDenyTriggerResponse(test.output, owner)
+			if (err == nil) != test.valid {
+				t.Fatalf("valid=%v, error=%v", test.valid, err)
+			}
+		})
+	}
+}

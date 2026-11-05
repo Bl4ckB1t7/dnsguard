@@ -38,6 +38,7 @@ type initializationState struct {
 	Primary      string `json:"primary,omitempty"`
 	SecondaryCnt int    `json:"secondaryCount,omitempty"`
 	Error        string `json:"error,omitempty"`
+	PolicyMode   string `json:"policyMode,omitempty"`
 
 	// These fields make an interrupted setup recoverable. They never contain
 	// passwords, tokens, or TSIG material.
@@ -64,17 +65,25 @@ type setupRequest struct {
 }
 
 type setupCheck struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // pass, fail, not_run
-	Detail  string `json:"detail"`
-	Impact  string `json:"impact,omitempty"`
-	Cleanup string `json:"cleanup,omitempty"`
+	Name     string `json:"name"`
+	Status   string `json:"status"` // pass, fail, not_run
+	Detail   string `json:"detail"`
+	Impact   string `json:"impact,omitempty"`
+	Cleanup  string `json:"cleanup,omitempty"`
+	Optional bool   `json:"optional,omitempty"`
 }
 
 type setupCheckResult struct {
 	Ready  bool         `json:"ready"`
 	Checks []setupCheck `json:"checks"`
 	Error  string       `json:"error,omitempty"`
+}
+
+type globalDenyBaseline struct {
+	CheckName string `json:"checkName"`
+	Recursor  string `json:"recursor"`
+	RCode     string `json:"rcode"`
+	Observed  string `json:"observedAt"`
 }
 
 var initializationMu sync.Mutex
@@ -108,6 +117,36 @@ func bootstrapKeyDir() string {
 		return filepath.Dir(path)
 	}
 	return "."
+}
+
+func globalDenyBaselinePath() string {
+	if path := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_BASELINE_FILE")); path != "" {
+		return path
+	}
+	return filepath.Join(filepath.Dir(dnsStatePath()), "global-deny-baseline.json")
+}
+
+func saveGlobalDenyBaseline(baseline globalDenyBaseline) error {
+	content, err := json.MarshalIndent(baseline, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomicSetupFile(globalDenyBaselinePath(), append(content, '\n'), 0o640)
+}
+
+func loadGlobalDenyBaseline(checkName, recursor string) error {
+	content, err := os.ReadFile(globalDenyBaselinePath())
+	if err != nil {
+		return err
+	}
+	var baseline globalDenyBaseline
+	if err := json.Unmarshal(content, &baseline); err != nil {
+		return err
+	}
+	if normalizeDNSName(baseline.CheckName) != normalizeDNSName(checkName) || strings.TrimSpace(baseline.Recursor) != strings.TrimSpace(recursor) || baseline.RCode != "NOERROR" || strings.TrimSpace(baseline.Observed) == "" {
+		return fmt.Errorf("递归基线与当前测试配置不一致")
+	}
+	return nil
 }
 
 func writeAtomicSetupFile(path string, content []byte, mode os.FileMode) error {
@@ -232,13 +271,16 @@ func setupStatus(w http.ResponseWriter, r *http.Request) {
 	current := initialization
 	initializationMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"initialized":       isInitialized(),
-		"inProgress":        current.Status == initializationPending,
-		"status":            current.Status,
-		"error":             current.Error,
-		"tsigKeyPath":       strings.TrimSpace(os.Getenv("RPZ_KEY_FILE")),
-		"keyCandidates":     protectedKeyCandidates(),
-		"writeTestRequired": true,
+		"initialized":             isInitialized(),
+		"inProgress":              current.Status == initializationPending,
+		"status":                  current.Status,
+		"error":                   current.Error,
+		"tsigKeyPath":             strings.TrimSpace(os.Getenv("RPZ_KEY_FILE")),
+		"keyCandidates":           protectedKeyCandidates(),
+		"writeTestRequired":       true,
+		"policyMode":              configuredPolicyMode(),
+		"globalDenySetupDeferred": globalDenySetupDeferred(),
+		"whitelistSeed":           inspectWhitelistSeed(),
 	})
 }
 
@@ -433,6 +475,10 @@ func setupValidate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if _, err := loadWhitelistSeedForZone(request.Zone); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "白名单初始 JSON 校验失败：" + err.Error()})
+		return
+	}
 	result := setupChecksFunc(r.Context(), request)
 	status := http.StatusOK
 	if !result.Ready {
@@ -471,12 +517,17 @@ func setupComplete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	seedRules, err := loadWhitelistSeedForZone(request.Zone)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "白名单初始 JSON 校验失败：" + err.Error()})
+		return
+	}
 	result := setupChecksFunc(r.Context(), request)
 	if !result.Ready {
 		writeJSON(w, http.StatusUnprocessableEntity, result)
 		return
 	}
-	if err := commitSetup(request, nodes, r); err != nil {
+	if err := commitSetup(request, nodes, seedRules, r); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "初始化未完成：" + err.Error()})
 		return
 	}
@@ -504,7 +555,7 @@ func issueSetupSession(w http.ResponseWriter, r *http.Request, username string) 
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrfToken, Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
 }
 
-func commitSetup(request setupRequest, nodes []DNSNode, r *http.Request) error {
+func commitSetup(request setupRequest, nodes []DNSNode, seedRules []RPZRule, r *http.Request) error {
 	backupDir, err := os.MkdirTemp(filepath.Dir(dnsStatePath()), ".dnsguard-setup-backup-")
 	if err != nil {
 		return err
@@ -521,7 +572,7 @@ func commitSetup(request setupRequest, nodes []DNSNode, r *http.Request) error {
 		}
 	}
 	initializationMu.Lock()
-	initialization = initializationState{Status: initializationPending, Version: 1, StartedAt: time.Now().UTC().Format(time.RFC3339), Username: request.Username, Zone: request.Zone, Primary: nodes[0].Address, SecondaryCnt: len(nodes) - 1, BackupDir: backupDir, AuthExisted: existed[0], NodesExisted: existed[1], DNSStateExisted: existed[2]}
+	initialization = initializationState{Status: initializationPending, Version: 1, StartedAt: time.Now().UTC().Format(time.RFC3339), Username: request.Username, Zone: request.Zone, Primary: nodes[0].Address, SecondaryCnt: len(nodes) - 1, PolicyMode: configuredPolicyMode(), BackupDir: backupDir, AuthExisted: existed[0], NodesExisted: existed[1], DNSStateExisted: existed[2]}
 	initializationMu.Unlock()
 	if err := saveInitializationState(); err != nil {
 		_ = os.RemoveAll(backupDir)
@@ -536,10 +587,11 @@ func commitSetup(request setupRequest, nodes []DNSNode, r *http.Request) error {
 	dnsMu.RLock()
 	newState := state
 	newState.Nodes = nodes
-	newState.Rules = []RPZRule{}
+	newState.Rules = append([]RPZRule(nil), seedRules...)
 	newState.Published = []RPZRule{}
 	newState.Versions = []RPZVersion{}
-	newState.RulesRevision = 0
+	newState.RulesRevision = uint64(len(seedRules))
+	newState.PolicyMode = configuredPolicyMode()
 	dnsMu.RUnlock()
 	stateContent, _ := json.MarshalIndent(newState, "", "  ")
 	stages := []struct {
@@ -563,6 +615,11 @@ func commitSetup(request setupRequest, nodes []DNSNode, r *http.Request) error {
 	dnsMu.Lock()
 	state = newState
 	dnsMu.Unlock()
+	if len(seedRules) > 0 {
+		if err := recordCriticalAudit(r, request.Username, "setup.whitelist.import", fmt.Sprintf("count=%d source=rpz-connect mode=global status=draft", len(seedRules))); err != nil {
+			return recoverSetupAndFail(fmt.Errorf("白名单导入审计记录失败: %w", err))
+		}
+	}
 	if err := recordCriticalAudit(r, request.Username, "setup.complete", "success"); err != nil {
 		return recoverSetupAndFail(fmt.Errorf("审计记录失败: %w", err))
 	}
@@ -635,7 +692,7 @@ func recoverInterruptedSetup(current initializationState) error {
 }
 
 func runSetupChecks(ctx context.Context, request setupRequest) setupCheckResult {
-	checks := make([]setupCheck, 0, 5)
+	checks := make([]setupCheck, 0, 10)
 	primarySerial, primaryCheck := querySetupSOA(ctx, "Primary SOA / Zone", request.Primary.Address, request.Zone)
 	checks = append(checks, primaryCheck)
 	for index, secondary := range request.Secondaries {
@@ -646,18 +703,227 @@ func runSetupChecks(ctx context.Context, request setupRequest) setupCheckResult 
 		}
 		checks = append(checks, check)
 	}
+	if configuredPolicyMode() == "global" {
+		checks = append(checks, runGlobalDenyChecks(ctx, request)...)
+	}
 	if !request.WriteTest {
 		checks = append(checks, setupCheck{Name: "TSIG 动态更新权限", Status: "not_run", Detail: "未执行写权限验证；只读 SOA 检查不能证明 nsupdate 权限", Impact: "完整验证会在 Primary Zone 临时写入一条 TXT 记录", Cleanup: "不执行写测试，因此没有临时记录"})
 	} else {
 		checks = append(checks, setupTSIGProbe(ctx, request))
 	}
-	ready := true
+	return setupCheckResult{Ready: setupChecksReady(checks), Checks: checks}
+}
+
+func setupChecksReady(checks []setupCheck) bool {
 	for _, check := range checks {
-		if check.Status != "pass" {
-			ready = false
+		if check.Status != "pass" && !check.Optional {
+			return false
 		}
 	}
-	return setupCheckResult{Ready: ready, Checks: checks}
+	return true
+}
+
+func globalDenyCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	dnsMu.RLock()
+	configuredNodes := append([]DNSNode(nil), state.Nodes...)
+	dnsMu.RUnlock()
+	var primary setupNode
+	secondaries := make([]setupNode, 0)
+	for _, node := range configuredNodes {
+		if strings.EqualFold(node.Role, "primary") || node.ID == "primary-1" {
+			primary = setupNode{Name: node.Name, Role: "primary", Address: node.Address}
+			continue
+		}
+		secondaries = append(secondaries, setupNode{Name: node.Name, Role: "secondary", Address: node.Address})
+	}
+	if primary.Address == "" || len(secondaries) == 0 {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"ready":  false,
+			"checks": []setupCheck{{Name: "DNS 节点配置", Status: "fail", Detail: "需要一个 Primary 和至少一个 Secondary 后才能执行全局 DENY 只读检查"}},
+		})
+		return
+	}
+	result := runGlobalDenyChecks(r.Context(), setupRequest{Primary: primary, Secondaries: secondaries})
+	ready := !globalDenySetupDeferred() && configuredPolicyMode() == "global" && setupChecksReady(result)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ready":                   ready,
+		"policyMode":              configuredPolicyMode(),
+		"globalDenySetupDeferred": globalDenySetupDeferred(),
+		"checks":                  result,
+	})
+}
+
+func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck {
+	zone := configuredGlobalDenyZone()
+	if zone == "" || !domainPattern.MatchString(zone) {
+		return []setupCheck{{Name: "全局默认拒绝 Zone", Status: "fail", Detail: "RPZ_GLOBAL_DENY_ZONE 未配置或格式无效"}}
+	}
+	checks := make([]setupCheck, 0, len(request.Secondaries)+3)
+	primarySerial, check := querySetupSOA(ctx, "全局拒绝 Primary Zone", request.Primary.Address, zone)
+	checks = append(checks, check)
+	for index, secondary := range request.Secondaries {
+		serial, secondaryCheck := querySetupSOA(ctx, fmt.Sprintf("全局拒绝 Secondary %d Zone", index+1), secondary.Address, zone)
+		if primarySerial != "" && serial != "" && primarySerial != serial {
+			secondaryCheck.Status = "fail"
+			secondaryCheck.Detail = fmt.Sprintf("SOA Serial=%s，与全局拒绝 Primary Serial=%s 不一致", serial, primarySerial)
+		}
+		checks = append(checks, secondaryCheck)
+	}
+	checks = append(checks, querySetupGlobalDenyTrigger(ctx, request.Primary.Address, zone))
+	recursor := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_RECURSOR"))
+	checkName := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_CHECK_NAME"))
+	if recursor == "" || checkName == "" {
+		checks = append(checks, setupCheck{Name: "全局拒绝递归基线", Status: "not_run", Detail: "未配置 RPZ_GLOBAL_DENY_RECURSOR 和 RPZ_GLOBAL_DENY_CHECK_NAME", Impact: "缺少已知可解析基线，不能证明启用 DENY 后的 NXDOMAIN 命中了 RPZ"})
+		return checks
+	}
+	if globalDenySetupDeferred() {
+		baseline, baselineCheck := querySetupResolvableName(ctx, recursor, checkName)
+		if baselineCheck.Status == "pass" {
+			if err := saveGlobalDenyBaseline(baseline); err != nil {
+				baselineCheck.Status = "fail"
+				baselineCheck.Detail = "测试域名基线已通过，但无法持久化；未保存的对照证据不能用于后续 DENY 验收"
+			}
+		}
+		checks = append(checks, baselineCheck)
+		checks = append(checks, setupCheck{
+			Name:     "全局拒绝递归效果",
+			Status:   "not_run",
+			Detail:   "分阶段首次部署：已记录测试域名正常解析基线；白名单发布并确认同步、启用全局 DENY 后再执行 NXDOMAIN 检查",
+			Impact:   "初始化完成前请勿将全局 deny Zone 加入 response-policy；白名单发布完成后必须由管理员启用并重新执行只读策略检查",
+			Optional: true,
+		})
+		return checks
+	}
+	if err := loadGlobalDenyBaseline(checkName, recursor); err != nil {
+		checks = append(checks, setupCheck{Name: "全局拒绝递归基线", Status: "not_run", Detail: "缺少当前测试域名的已持久化正常解析基线：" + err.Error(), Impact: "不能仅凭 NXDOMAIN 认定命中了 RPZ；请在 DENY 启用前完成基线核验"})
+		return checks
+	}
+	rcode, rcodeCheck := querySetupRcode(ctx, recursor, checkName)
+	if rcodeCheck.Status == "pass" && rcode != "NXDOMAIN" {
+		rcodeCheck.Status = "fail"
+		rcodeCheck.Detail = "递归策略返回 " + rcode + "，预期 NXDOMAIN"
+	}
+	checks = append(checks, rcodeCheck)
+	return checks
+}
+
+func querySetupResolvableName(ctx context.Context, address, name string) (globalDenyBaseline, setupCheck) {
+	host, port := splitDNSAddress(address)
+	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, "+comments", "+answer", name, "A", "+time=2", "+tries=1").CombinedOutput()
+	if err != nil {
+		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Detail: "无法查询测试域名正常解析基线"}
+	}
+	status := ""
+	inAnswer := false
+	answerFound := false
+	for _, line := range strings.Split(string(output), "\n") {
+		if marker := strings.Index(line, "status: "); marker >= 0 {
+			status = strings.TrimSpace(strings.SplitN(line[marker+len("status: "):], ",", 2)[0])
+		}
+		if strings.HasPrefix(line, ";; ANSWER SECTION:") {
+			inAnswer = true
+			continue
+		}
+		if inAnswer && strings.HasPrefix(line, ";;") {
+			break
+		}
+		if inAnswer && len(strings.Fields(line)) >= 5 {
+			answerFound = true
+		}
+	}
+	if status != "NOERROR" {
+		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Detail: "测试域名正常解析基线 RCODE=" + statusOrUnknown(status) + "，需要 NOERROR"}
+	}
+	if !answerFound {
+		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Detail: "测试域名正常解析基线没有 Answer；不能使用不存在或无数据的名称进行 DENY 验收"}
+	}
+	return globalDenyBaseline{CheckName: name, Recursor: address, RCode: status, Observed: time.Now().UTC().Format(time.RFC3339)}, setupCheck{Name: "全局拒绝递归基线", Status: "pass", Detail: "测试域名在启用 DENY 前返回 NOERROR 且存在 Answer，可用于后续对照：" + name}
+}
+
+func querySetupGlobalDenyTrigger(ctx context.Context, address, zone string) setupCheck {
+	host, port := splitDNSAddress(address)
+	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	name := "*." + strings.TrimSuffix(zone, ".") + "."
+	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, "+norecurse", "+comments", name, "CNAME", "+time=2", "+tries=1").CombinedOutput()
+	if err != nil {
+		return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Detail: "无法读取 deny Zone 的通配触发项"}
+	}
+	if err := validateGlobalDenyTriggerResponse(string(output), name); err != nil {
+		return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Detail: err.Error()}
+	}
+	return setupCheck{Name: "全局拒绝根级通配触发项", Status: "pass", Detail: "已从权威回答读取 * CNAME .，Zone=" + zone}
+}
+
+func normalizeDNSName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "." {
+		return "."
+	}
+	return strings.TrimSuffix(name, ".")
+}
+
+func validateGlobalDenyTriggerResponse(output, expectedOwner string) error {
+	status := ""
+	aa := false
+	for _, line := range strings.Split(output, "\n") {
+		if marker := strings.Index(line, "status: "); marker >= 0 {
+			status = strings.TrimSpace(strings.SplitN(line[marker+len("status: "):], ",", 2)[0])
+		}
+		if strings.HasPrefix(line, ";; flags:") {
+			for _, flag := range strings.Fields(strings.TrimPrefix(line, ";; flags:")) {
+				if strings.Trim(flag, ";") == "aa" {
+					aa = true
+				}
+			}
+		}
+	}
+	if status != "NOERROR" {
+		return fmt.Errorf("deny Zone 通配查询 RCODE=%s，预期 NOERROR", statusOrUnknown(status))
+	}
+	if !aa {
+		return fmt.Errorf("deny Zone 通配查询不是权威回答（缺少 AA 标志）")
+	}
+
+	inAnswer := false
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, ";; ANSWER SECTION:") {
+			inAnswer = true
+			continue
+		}
+		if inAnswer && strings.HasPrefix(line, ";;") {
+			break
+		}
+		if !inAnswer || strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 5 || normalizeDNSName(fields[0]) != normalizeDNSName(expectedOwner) {
+			continue
+		}
+		if !strings.EqualFold(fields[3], "CNAME") {
+			return fmt.Errorf("通配触发项 owner 正确但 RR Type=%s，预期 CNAME", fields[3])
+		}
+		if normalizeDNSName(fields[4]) != "." {
+			return fmt.Errorf("通配触发项 CNAME 目标=%s，预期根域名 .", fields[4])
+		}
+		return nil
+	}
+	return fmt.Errorf("权威 Answer 中缺少 owner=%s 的 CNAME . 记录", expectedOwner)
+}
+
+func statusOrUnknown(status string) string {
+	if status == "" {
+		return "UNKNOWN"
+	}
+	return status
 }
 
 func querySetupSOA(ctx context.Context, name, address, zone string) (string, setupCheck) {
@@ -677,6 +943,26 @@ func querySetupSOA(ctx context.Context, name, address, zone string) (string, set
 		return "", setupCheck{Name: name, Status: "fail", Detail: "SOA Serial 无效"}
 	}
 	return serial, setupCheck{Name: name, Status: "pass", Detail: "可读取 Zone SOA，Serial=" + serial}
+}
+
+func querySetupRcode(ctx context.Context, address, name string) (string, setupCheck) {
+	host, port := splitDNSAddress(address)
+	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, name, "A", "+comments", "+time=2", "+tries=1").CombinedOutput()
+	if err != nil {
+		return "", setupCheck{Name: "全局拒绝递归效果", Status: "fail", Detail: "无法读取递归策略 RCODE"}
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if marker := strings.Index(line, "status: "); marker >= 0 {
+			value := strings.TrimSpace(strings.SplitN(line[marker+len("status: "):], ",", 2)[0])
+			if value == "" {
+				break
+			}
+			return value, setupCheck{Name: "全局拒绝递归效果", Status: "pass", Detail: "递归测试返回 RCODE=" + value + "，测试名=" + name}
+		}
+	}
+	return "", setupCheck{Name: "全局拒绝递归效果", Status: "fail", Detail: "递归响应缺少有效 RCODE"}
 }
 
 func splitDNSAddress(address string) (string, string) {

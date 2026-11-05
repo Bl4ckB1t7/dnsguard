@@ -48,6 +48,30 @@ mkdir -p "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 chmod 0750 "$DATA_DIR" "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 [[ ! -e "$DATA_DIR/.restore-in-progress.json" ]] || die "an incomplete restore marker exists at $DATA_DIR/.restore-in-progress.json; inspect and recover it before starting"
 
+if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == global ]]; then
+  [[ -n "${RPZ_GLOBAL_DENY_ZONE:-}" ]] || die "RPZ_GLOBAL_DENY_ZONE is required in global default-deny mode"
+  [[ -n "${RPZ_GLOBAL_DENY_RECURSOR:-}" && -n "${RPZ_GLOBAL_DENY_CHECK_NAME:-}" && "${RPZ_GLOBAL_DENY_CHECK_NAME}" != "KNOWN_RESOLVABLE_DENY_TEST_NAME" && "${RPZ_GLOBAL_DENY_CHECK_NAME}" != "blocked.example.com" ]] || die "global default-deny mode requires a real RPZ_GLOBAL_DENY_CHECK_NAME; placeholder/default names are forbidden"
+  # Existing v1.0.1 data is not forced through the first-run seed import.
+  # A new deployment must provide the reviewed seed before initialization.
+  initialized=0
+  if [[ -f "$DATA_DIR/initialization.json" ]] && grep -Eq '"status"[[:space:]]*:[[:space:]]*"completed"' "$DATA_DIR/initialization.json"; then
+    initialized=1
+  fi
+  if ((initialized == 0)); then
+    seed_path="${RPZ_WHITELIST_SEED_FILE:-}"
+    if [[ -n "$seed_path" ]]; then
+      [[ "$seed_path" == /var/lib/dnsguard/* ]] || die "RPZ_WHITELIST_SEED_FILE must be inside /var/lib/dnsguard"
+      seed_host="$DATA_DIR/${seed_path#/var/lib/dnsguard/}"
+      [[ -f "$seed_host" && ! -L "$seed_host" ]] || die "copy the reviewed whitelist seed to $seed_host before first start"
+      [[ "$(stat -c '%a' "$seed_host")" =~ ^[0-7]*[0-6][0-6]$ ]] || die "whitelist seed must not be world-readable"
+    elif [[ "${RPZ_GLOBAL_DENY_SETUP_DEFERRED:-}" != true ]]; then
+      die "global default-deny mode requires a whitelist seed, or RPZ_GLOBAL_DENY_SETUP_DEFERRED=true for Web import"
+    else
+      echo "No seed file configured; the Web whitelist importer will create draft rules before DENY is enabled"
+    fi
+  fi
+fi
+
 KEY_FILE="$SECRET_DIR/rpz-manager.key"
 [[ -f "$KEY_FILE" ]] || die "copy the production RPZ TSIG key to $KEY_FILE; it will not be generated"
 [[ -f "$TLS_DIR/fullchain.pem" && -f "$TLS_DIR/privkey.pem" ]] || die "place HTTPS certificate and key in $TLS_DIR"
@@ -105,9 +129,16 @@ docker run --rm --user 10001:10001 \
   -v "$SECRET_DIR:/run/dnsguard-secrets:ro" \
   --entrypoint sh "$IMAGE" -c 'test -r /run/dnsguard-secrets/rpz-manager.key && { [ ! -e /run/dnsguard-secrets/bootstrap.token ] || test -r /run/dnsguard-secrets/bootstrap.token; }'
 
+docker run --rm --user 0:0 \
+  -v "$TLS_DIR:/run/tls" \
+  --entrypoint sh "$WEB_IMAGE" -c '
+    chown -R 101:101 /run/tls
+    find /run/tls -type f -name "*.pem" -exec chmod 0640 {} +
+  '
+
 docker run --rm --user 101:101 \
   -v "$TLS_DIR:/run/tls:ro" \
   --entrypoint sh "$WEB_IMAGE" -c 'test -r /run/tls/fullchain.pem && test -r /run/tls/privkey.pem'
 
 docker compose --env-file "$ENV_FILE" -f compose.yaml config >/dev/null
-echo "Docker initialization complete. Start DNSGuard with: docker compose up -d"
+echo "Docker initialization complete. Start DNSGuard with: docker compose --env-file \"$ENV_FILE\" -f compose.yaml up -d"

@@ -60,10 +60,10 @@ func main() {
 	if err := loadInitializationState(); err != nil {
 		log.Fatal(err)
 	}
-	if err := validateSecurityConfig(); err != nil {
+	if err := loadDNSState(); err != nil {
 		log.Fatal(err)
 	}
-	if err := loadDNSState(); err != nil {
+	if err := validateSecurityConfig(); err != nil {
 		log.Fatal(err)
 	}
 	if err := loadTLDState(); err != nil {
@@ -100,6 +100,7 @@ func main() {
 	mux.HandleFunc("/api/auth/logout", authLogout)
 	mux.HandleFunc("/api/auth/password", authPasswordChange)
 	mux.HandleFunc("/api/dns/overview", dnsOverview)
+	mux.HandleFunc("/api/dns/global-deny/check", globalDenyCheck)
 	mux.HandleFunc("/api/dns/tld/status", tldStatus)
 	mux.HandleFunc("/api/dns/tld/reconcile", reconcileTLDPolicy)
 	mux.HandleFunc("/api/dns/nodes", dnsNodes)
@@ -130,6 +131,9 @@ func main() {
 }
 
 func validateSecurityConfig() error {
+	if err := configuredPolicyModeError(); err != nil {
+		return err
+	}
 	if authEnabled() && strings.TrimSpace(os.Getenv("AUTH_SECRET")) == "" {
 		return fmt.Errorf("AUTH_SECRET must be configured when authentication is enabled")
 	}
@@ -161,6 +165,21 @@ func validateSecurityConfig() error {
 	}
 	if err := validateProductionRuntimeFiles(initialized); err != nil {
 		return err
+	}
+	if err := validatePolicyModeConsistency(); err != nil {
+		return err
+	}
+	if initialized && configuredPolicyMode() == "global" && globalDenySetupDeferred() {
+		return fmt.Errorf("RPZ_GLOBAL_DENY_SETUP_DEFERRED 仅用于首次初始化；请先完成白名单发布和同步，再启用 BIND 全局 DENY 后移除该配置")
+	}
+	if configuredPolicyMode() == "global" {
+		zone := configuredGlobalDenyZone()
+		if zone == "" || !domainPattern.MatchString(zone) {
+			return fmt.Errorf("RPZ_GLOBAL_DENY_ZONE must be a valid zone in global default-deny mode")
+		}
+		if strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_RECURSOR")) == "" || strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_CHECK_NAME")) == "" {
+			return fmt.Errorf("RPZ_GLOBAL_DENY_RECURSOR and RPZ_GLOBAL_DENY_CHECK_NAME are required in global default-deny mode")
+		}
 	}
 	return nil
 }

@@ -8,7 +8,11 @@ EVIDENCE_DIR="$RUNTIME_DIR/evidence"
 COMPOSE_FILE="$TEST_DIR/compose.yaml"
 PROJECT="dnsguard-bind-acceptance"
 API_BIN="$RUNTIME_DIR/dnsguard-api"
-API_PORT=18081
+API_PORT="${BIND_ACCEPTANCE_API_PORT:-18081}"
+PRIMARY_PORT="${BIND_PRIMARY_HOST_PORT:-15353}"
+SECONDARY_1_PORT="${BIND_SECONDARY_1_HOST_PORT:-15354}"
+SECONDARY_2_PORT="${BIND_SECONDARY_2_HOST_PORT:-15355}"
+BASELINE_PORT="${TLD_DENY_BASELINE_PORT:-${BIND_BASELINE_HOST_PORT:-15356}}"
 API_URL="http://127.0.0.1:${API_PORT}"
 API_PID=""
 TLD_SOURCE_PID=""
@@ -161,7 +165,7 @@ prepare_runtime() {
   # Never kill an unrelated process just because a test port is occupied. A
   # previous interrupted run can be cleaned with --clean; an unknown listener
   # makes this run NOT RUN instead of being forcefully terminated.
-  for port in 15353 15354 15355 15356 18081 18082 18083 18084 18085 18086 18087 18088 18089 18090 18091 18092; do
+  for port in "$PRIMARY_PORT" "$SECONDARY_1_PORT" "$SECONDARY_2_PORT" "$BASELINE_PORT" "$API_PORT" 18082 18083 18084 18085 18086 18087 18088 18089 18090 18091 18092; do
     if fuser "$port/tcp" >/dev/null 2>&1; then
       echo "test API port $port is already in use; refusing to stop the listener" >&2
       return 2
@@ -239,12 +243,12 @@ EOF
     chown -R 53:53 "$dir" 2>/dev/null || true
   done
 
-  cat >"$RUNTIME_DIR/dns-state.json" <<'EOF'
+  cat >"$RUNTIME_DIR/dns-state.json" <<EOF
 {
   "nodes": [
-    {"id":"primary-1","name":"bind-primary","role":"primary","address":"127.0.0.1:15353","status":"unknown"},
-    {"id":"secondary-1","name":"bind-secondary-1","role":"secondary","address":"127.0.0.1:15354","status":"unknown"},
-    {"id":"secondary-2","name":"bind-secondary-2","role":"secondary","address":"127.0.0.1:15355","status":"unknown"}
+    {"id":"primary-1","name":"bind-primary","role":"primary","address":"127.0.0.1:${PRIMARY_PORT}","status":"unknown"},
+    {"id":"secondary-1","name":"bind-secondary-1","role":"secondary","address":"127.0.0.1:${SECONDARY_1_PORT}","status":"unknown"},
+    {"id":"secondary-2","name":"bind-secondary-2","role":"secondary","address":"127.0.0.1:${SECONDARY_2_PORT}","status":"unknown"}
   ],
   "rules": [],
   "published": [],
@@ -252,11 +256,11 @@ EOF
   "rulesRevision": 0
 }
 EOF
-  cat >"$RUNTIME_DIR/dns-nodes.json" <<'EOF'
+  cat >"$RUNTIME_DIR/dns-nodes.json" <<EOF
 [
-  {"id":"primary-1","name":"bind-primary","role":"primary","address":"127.0.0.1:15353"},
-  {"id":"secondary-1","name":"bind-secondary-1","role":"secondary","address":"127.0.0.1:15354"},
-  {"id":"secondary-2","name":"bind-secondary-2","role":"secondary","address":"127.0.0.1:15355"}
+  {"id":"primary-1","name":"bind-primary","role":"primary","address":"127.0.0.1:${PRIMARY_PORT}"},
+  {"id":"secondary-1","name":"bind-secondary-1","role":"secondary","address":"127.0.0.1:${SECONDARY_1_PORT}"},
+  {"id":"secondary-2","name":"bind-secondary-2","role":"secondary","address":"127.0.0.1:${SECONDARY_2_PORT}"}
 ]
 EOF
   printf '[]\n' >"$RUNTIME_DIR/audit.json"
@@ -277,17 +281,17 @@ wait_dns() {
 
 start_bind() {
   compose up -d
-  wait_dns 15353
-  wait_dns 15354
-  wait_dns 15355
+  wait_dns ${PRIMARY_PORT}
+  wait_dns ${SECONDARY_1_PORT}
+  wait_dns ${SECONDARY_2_PORT}
   for _ in $(seq 1 60); do
-    if dig +tcp +time=1 +tries=1 @127.0.0.1 -p 15356 example.com SOA +short 2>/dev/null | grep -q '[0-9]'; then
+    if dig +tcp +time=1 +tries=1 @127.0.0.1 -p ${BASELINE_PORT} example.com SOA +short 2>/dev/null | grep -q '[0-9]'; then
       break
     fi
     sleep 0.5
   done
-  dig +tcp +time=1 +tries=1 @127.0.0.1 -p 15356 example.com SOA +short >/dev/null
-  for port in 15353 15354 15355; do
+  dig +tcp +time=1 +tries=1 @127.0.0.1 -p ${BASELINE_PORT} example.com SOA +short >/dev/null
+  for port in ${PRIMARY_PORT} ${SECONDARY_1_PORT} ${SECONDARY_2_PORT}; do
     for _ in $(seq 1 60); do
       if dig +tcp +time=1 +tries=1 @127.0.0.1 -p "$port" tld-deny.rpz.local SOA +short 2>/dev/null | grep -q '[0-9]'; then
         break
@@ -296,7 +300,7 @@ start_bind() {
     done
     dig +tcp +time=1 +tries=1 @127.0.0.1 -p "$port" tld-deny.rpz.local SOA +short >/dev/null
   done
-  dig +tcp +time=2 +tries=1 @127.0.0.1 -p 15353 rpz.local SOA +short
+  dig +tcp +time=2 +tries=1 @127.0.0.1 -p ${PRIMARY_PORT} rpz.local SOA +short
   compose ps
 }
 
@@ -330,7 +334,7 @@ start_api() {
     "RPZ_ARTIFACT_FILE=$artifact_file"
     "RPZ_PUBLISH_MODE=nsupdate"
     "RPZ_PRIMARY=127.0.0.1"
-    "RPZ_PRIMARY_PORT=15353"
+    "RPZ_PRIMARY_PORT=${PRIMARY_PORT}"
     "RPZ_ZONE=rpz.local"
     "RPZ_KEY_FILE=$key_file"
     "RPZ_PUBLISH_TIMEOUT_SECONDS=8"
@@ -471,7 +475,7 @@ wait_answer() {
 direct_add_rpz_rule() {
   local domain="$1" value="$2"
   {
-    printf 'server 127.0.0.1 15353\nzone rpz.local\n'
+    printf 'server 127.0.0.1 %s\nzone rpz.local\n' "$PRIMARY_PORT"
     printf 'update delete %s.rpz.local.\n' "$domain"
     printf 'update delete *.%s.rpz.local.\n' "$domain"
     printf 'update add %s.rpz.local. 60 A %s\n' "$domain" "$value"
@@ -483,7 +487,7 @@ direct_add_rpz_rule() {
 direct_delete_rpz_rule() {
   local domain="$1"
   {
-    printf 'server 127.0.0.1 15353\nzone rpz.local\n'
+    printf 'server 127.0.0.1 %s\nzone rpz.local\n' "$PRIMARY_PORT"
     printf 'update delete %s.rpz.local.\n' "$domain"
     printf 'update delete *.%s.rpz.local.\n' "$domain"
     printf 'send\n'
@@ -496,22 +500,22 @@ case_normal_publish() {
   create_rule wild.app.test A 192.0.2.66 'Docker wildcard redirect'
   publish_and_wait
   [[ "$JOB_STATUS" == succeeded ]] || { cat "$JOB_FILE"; return 1; }
-  [[ "$(soa_serial 15353)" == "$(soa_serial 15354)" && "$(soa_serial 15353)" == "$(soa_serial 15355)" ]]
+  [[ "$(soa_serial ${PRIMARY_PORT})" == "$(soa_serial ${SECONDARY_1_PORT})" && "$(soa_serial ${PRIMARY_PORT})" == "$(soa_serial ${SECONDARY_2_PORT})" ]]
   named-checkzone rpz.local "$RUNTIME_DIR/rpz.local.db"
   grep -q 'redirect.app.test.rpz.local' "$RUNTIME_DIR/rpz.local.db"
   # Host-side AXFR is intentionally denied; perform the transfer query from
   # an isolated Secondary container so the source address matches the
   # Primary's allow-transfer policy.
   docker exec bind-secondary-1 dig +tcp +time=2 +tries=1 @172.30.0.10 rpz.local AXFR +noall +answer | grep -q 'wild.app.test.rpz.local'
-  wait_answer 15353 passthru.app.test 192.0.2.10
-  wait_answer 15353 redirect.app.test 192.0.2.55
-  wait_answer 15353 foo.wild.app.test 192.0.2.66
-  printf 'job=%s status=%s serial=%s\n' "$JOB_ID" "$JOB_STATUS" "$(soa_serial 15353)"
+  wait_answer ${PRIMARY_PORT} passthru.app.test 192.0.2.10
+  wait_answer ${PRIMARY_PORT} redirect.app.test 192.0.2.55
+  wait_answer ${PRIMARY_PORT} foo.wild.app.test 192.0.2.66
+  printf 'job=%s status=%s serial=%s\n' "$JOB_ID" "$JOB_STATUS" "$(soa_serial ${PRIMARY_PORT})"
 }
 
 case_actual_rpz_resolution() {
   local expected port query wanted ok
-  for port in 15353 15354 15355; do
+  for port in ${PRIMARY_PORT} ${SECONDARY_1_PORT} ${SECONDARY_2_PORT}; do
     for query in passthru.app.test redirect.app.test foo.wild.app.test; do
       case "$query" in
         passthru.app.test) wanted=192.0.2.10 ;;
@@ -537,7 +541,7 @@ case_tld_default_deny() {
   local test_name="${TLD_DENY_TEST_NAME:-blocked.example.com}"
   local deny_zone="${TLD_DENY_ZONE:-tld-deny.rpz.local}"
   local deny_trigger="${TLD_DENY_TRIGGER:-com.tld-deny.rpz.local}"
-  local baseline_port="${TLD_DENY_BASELINE_PORT:-15356}"
+  local baseline_port="${TLD_DENY_BASELINE_PORT:-${BASELINE_PORT}}"
   local expected_a="${TLD_DENY_EXPECTED_A:-192.0.2.101}"
   local expected_rcode="${TLD_DENY_EXPECTED_RCODE:-NXDOMAIN}"
   local baseline_answer policy_header policy_rcode evidence_answer port
@@ -550,7 +554,7 @@ case_tld_default_deny() {
   local deep_baseline_answer
   deep_baseline_answer="$(dig +tcp +norecurse +time=2 +tries=1 @127.0.0.1 -p "$baseline_port" deep.blocked.example.com A +short | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   [[ "$deep_baseline_answer" == *192.0.2.103* ]] || { echo "deep-baseline=$deep_baseline_answer expected=192.0.2.103"; return 1; }
-  for port in 15353 15354 15355; do
+  for port in ${PRIMARY_PORT} ${SECONDARY_1_PORT} ${SECONDARY_2_PORT}; do
     for _ in $(seq 1 120); do
       policy_header="$(dig +tcp +time=2 +tries=1 +comments @127.0.0.1 -p "$port" "$test_name" A 2>&1 || true)"
       policy_rcode="$(sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' <<<"$policy_header" | head -n1)"
@@ -565,7 +569,7 @@ case_tld_default_deny() {
     wait_answer "$port" sub.redirect.example.com 192.0.2.250
     wait_answer "$port" deep.redirect.example.com 192.0.2.250
   done
-  for port in 15353 15354 15355; do
+  for port in ${PRIMARY_PORT} ${SECONDARY_1_PORT} ${SECONDARY_2_PORT}; do
     for _ in $(seq 1 120); do
       policy_header="$(dig +tcp +time=2 +tries=1 +comments @127.0.0.1 -p "$port" deep.blocked.example.com A 2>&1 || true)"
       policy_rcode="$(sed -n 's/^;; ->>HEADER<<-.*status: \([^,]*\),.*/\1/p' <<<"$policy_header" | head -n1)"
@@ -574,7 +578,7 @@ case_tld_default_deny() {
     done
     [[ "$policy_rcode" == "$expected_rcode" ]] || { echo "port=$port deep policy_rcode=$policy_rcode expected=$expected_rcode"; return 1; }
   done
-  evidence_answer="$(dig +tcp +time=2 +tries=1 +comments +norecurse @127.0.0.1 -p 15353 "$deny_trigger" CNAME 2>&1 || true)"
+  evidence_answer="$(dig +tcp +time=2 +tries=1 +comments +norecurse @127.0.0.1 -p ${PRIMARY_PORT} "$deny_trigger" CNAME 2>&1 || true)"
   grep -Eq '(^|[[:space:]])CNAME[[:space:]]+\.[[:space:]]*$' <<<"$evidence_answer" || { echo "deny_trigger=$deny_trigger did not show CNAME ."; return 1; }
   echo "tld_fixture_count=${TLD_FIXTURE_COUNT:-2} baseline=$baseline_answer deep-baseline=$deep_baseline_answer policy_rcode=$policy_rcode whitelist+subdomain+redirect+deny verified on all nodes; deny_trigger=$deny_trigger zone=$deny_zone"
 }
@@ -607,7 +611,7 @@ case_secondary_offline() {
   publish_and_wait
   local failed="$JOB_STATUS"
   compose start bind-secondary-2 >/dev/null
-  wait_dns 15355
+  wait_dns ${SECONDARY_2_PORT}
   [[ "$failed" == failed ]] || { cat "$JOB_FILE"; return 1; }
   create_rule offline-recovery.app.test A 192.0.2.80 'secondary recovery'
   publish_and_wait
@@ -621,7 +625,7 @@ case_primary_offline() {
   publish_and_wait
   local failed="$JOB_STATUS"
   compose start bind-primary >/dev/null
-  wait_dns 15353
+  wait_dns ${PRIMARY_PORT}
   [[ "$failed" == failed ]] || { cat "$JOB_FILE"; return 1; }
   delete_rule "$RULE_ID"
   echo "primary offline publish result=$failed; draft removed without BIND mutation"
@@ -629,34 +633,34 @@ case_primary_offline() {
 
 case_bind_restart_recovery() {
   local serial_before serial_after
-  serial_before="$(soa_serial 15353)"
+  serial_before="$(soa_serial ${PRIMARY_PORT})"
   compose restart bind-primary >/dev/null
-  wait_dns 15353
-  wait_answer 15353 redirect.app.test 192.0.2.55
+  wait_dns ${PRIMARY_PORT}
+  wait_answer ${PRIMARY_PORT} redirect.app.test 192.0.2.55
   compose restart bind-secondary-1 >/dev/null
-  wait_dns 15354
-  serial_after="$(soa_serial 15353)"
-  [[ -n "$serial_after" && "$serial_after" == "$(soa_serial 15354)" && "$serial_after" == "$(soa_serial 15355)" ]]
+  wait_dns ${SECONDARY_1_PORT}
+  serial_after="$(soa_serial ${PRIMARY_PORT})"
+  [[ -n "$serial_after" && "$serial_after" == "$(soa_serial ${SECONDARY_1_PORT})" && "$serial_after" == "$(soa_serial ${SECONDARY_2_PORT})" ]]
   echo "BIND restart preserved RPZ policy and SOA serial: $serial_before -> $serial_after"
 }
 
 case_axfr_recovery() {
   local before primary_after secondary_after
-  before="$(soa_serial 15353)"
+  before="$(soa_serial ${PRIMARY_PORT})"
   compose stop bind-secondary-1 >/dev/null
   direct_add_rpz_rule axfr-recovery.app.test 192.0.2.90
-  primary_after="$(soa_serial 15353)"
+  primary_after="$(soa_serial ${PRIMARY_PORT})"
   [[ "$primary_after" != "$before" ]]
   rm -f "$RUNTIME_DIR/secondary-1-data/rpz.local.zone"*
   compose start bind-secondary-1 >/dev/null
-  wait_dns 15354
+  wait_dns ${SECONDARY_1_PORT}
   for _ in $(seq 1 60); do
-    secondary_after="$(soa_serial 15354)"
+    secondary_after="$(soa_serial ${SECONDARY_1_PORT})"
     [[ "$secondary_after" == "$primary_after" ]] && break
     sleep 0.25
   done
   [[ "$secondary_after" == "$primary_after" ]]
-  [[ "$(dig +tcp +time=2 +tries=1 @127.0.0.1 -p 15354 axfr-recovery.app.test.rpz.local A +short)" == "192.0.2.90" ]]
+  [[ "$(dig +tcp +time=2 +tries=1 @127.0.0.1 -p ${SECONDARY_1_PORT} axfr-recovery.app.test.rpz.local A +short)" == "192.0.2.90" ]]
   direct_delete_rpz_rule axfr-recovery.app.test
   echo "Secondary recovered by full transfer after local RPZ data removal: serial=$secondary_after"
 }
@@ -678,7 +682,7 @@ case_tsig_error() {
   (cd "$ROOT_DIR" && env APP_ENV=development AUTH_ENABLED=false LISTEN_ADDR=127.0.0.1:18082 \
     DNS_STATE_FILE="$dir/dns-state.json" DNS_NODE_CONFIG_FILE="$dir/dns-nodes.json" AUDIT_FILE="$dir/audit.json" \
     RPZ_PUBLISH_JOBS_FILE="$dir/publish-jobs.json" RPZ_ARTIFACT_FILE="$dir/rpz.local.db" RPZ_PUBLISH_MODE=nsupdate \
-    RPZ_PRIMARY=127.0.0.1 RPZ_PRIMARY_PORT=15353 RPZ_ZONE=rpz.local RPZ_KEY_FILE="$dir/bad.key" \
+    RPZ_PRIMARY=127.0.0.1 RPZ_PRIMARY_PORT=${PRIMARY_PORT} RPZ_ZONE=rpz.local RPZ_KEY_FILE="$dir/bad.key" \
     RPZ_PUBLISH_TIMEOUT_SECONDS=8 RPZ_PUBLISH_RETRIES=0 DNS_NODE_ALLOWED_CIDRS=127.0.0.0/8 \
     "$API_BIN" >"$dir/api.log" 2>&1 & echo $! >"$dir/api.pid")
   wait_api http://127.0.0.1:18082
@@ -884,7 +888,7 @@ PY
   compose stop bind-primary >/dev/null
   code="$(curl -sS -X POST -H 'Content-Type: application/json' --data "{\"versionId\":\"$version_id\"}" -o "$dir/rollback.json" -w '%{http_code}' http://127.0.0.1:18090/api/dns/rpz/rollback)"
   compose start bind-primary >/dev/null
-  wait_dns 15353
+  wait_dns ${PRIMARY_PORT}
   [[ "$code" == 202 ]]
   job="$(json_value "$dir/rollback.json" id)"
   for _ in $(seq 1 80); do
@@ -956,8 +960,8 @@ case_bind_independent() {
   kill "$API_PID" 2>/dev/null || true
   API_PID=""
   sleep 0.5
-  [[ -n "$(soa_serial 15353)" && "$(answer 15353 redirect.app.test)" == *192.0.2.55* ]]
-  [[ -n "$(soa_serial 15354)" && "$(answer 15355 foo.wild.app.test)" == *192.0.2.66* ]]
+  [[ -n "$(soa_serial ${PRIMARY_PORT})" && "$(answer ${PRIMARY_PORT} redirect.app.test)" == *192.0.2.55* ]]
+  [[ -n "$(soa_serial ${SECONDARY_1_PORT})" && "$(answer ${SECONDARY_2_PORT} foo.wild.app.test)" == *192.0.2.66* ]]
   echo 'DNS queries and RPZ policy remained available while DNSGuard API was stopped'
 }
 
@@ -969,7 +973,7 @@ write_report() {
     echo "- 执行时间（UTC）：$RUN_ID"
     echo "- Compose 项目：$PROJECT"
     echo "- 隔离网络：dnsguard-bind-acceptance (172.30.0.0/24)"
-    echo "- 宿主机端口：15353/15354/15355（RPZ 集群）和 15356（隔离基线源，均未占用 53）"
+    echo "- 宿主机端口：${PRIMARY_PORT}/${SECONDARY_1_PORT}/${SECONDARY_2_PORT}（RPZ 集群）和 ${BASELINE_PORT}（隔离基线源，均未占用 53）"
     echo "- 生产连接：无"
     echo
     echo "## 用例结果"

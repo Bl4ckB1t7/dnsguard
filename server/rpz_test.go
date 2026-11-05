@@ -14,6 +14,29 @@ import (
 	"testing"
 )
 
+func TestPublishJobEvidenceRequiresDurableVerifiedChecksForEveryNode(t *testing.T) {
+	nodes := []DNSNode{{ID: "primary-1", Role: "primary", Address: "10.0.0.1:53"}, {ID: "secondary-1", Role: "secondary", Address: "10.0.0.2:53"}}
+	base := PublishJob{ID: "job-1", Status: "succeeded", SyncStatus: "published", NodeChecks: []RPZNodeCheck{{ID: "primary-1", Role: "primary", Address: "10.0.0.1:53", Status: "verified"}, {ID: "secondary-1", Role: "secondary", Address: "10.0.0.2:53", Status: "verified"}}}
+	if !publishJobHasVerifiedCluster(base, nodes) {
+		t.Fatal("a succeeded job with verified checks for every node should be accepted")
+	}
+	for _, mutate := range []func(*PublishJob){
+		func(job *PublishJob) { job.Status = "running" },
+		func(job *PublishJob) { job.Status = "failed" },
+		func(job *PublishJob) { job.SyncStatus = "pending_verification" },
+		func(job *PublishJob) { job.SyncStatus = "reconcile_required" },
+		func(job *PublishJob) { job.NodeChecks[1].Status = "sync_exception" },
+		func(job *PublishJob) { job.NodeChecks = job.NodeChecks[:1] },
+	} {
+		job := base
+		job.NodeChecks = append([]RPZNodeCheck(nil), base.NodeChecks...)
+		mutate(&job)
+		if publishJobHasVerifiedCluster(job, nodes) {
+			t.Fatalf("invalid publish evidence was accepted: %+v", job)
+		}
+	}
+}
+
 func TestPublishJobExecutionSlot(t *testing.T) {
 	activePublishID = ""
 	if !reservePublishJob("job-1") {
