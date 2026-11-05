@@ -128,4 +128,4 @@ docker run --rm --user 101:101 \
   --entrypoint sh "$WEB_IMAGE" -c 'test -r /run/tls/fullchain.pem && test -r /run/tls/privkey.pem'
 
 docker compose --env-file "$ENV_FILE" -f compose.yaml config >/dev/null
-echo "Docker initialization complete. Start DNSGuard with: docker compose up -d"
+echo "Docker initialization complete. Start DNSGuard with: docker compose --env-file \"$ENV_FILE\" -f compose.yaml up -d"

@@ -111,9 +111,9 @@ install -m 0600 whitelist-seed.json docker-data/bootstrap/whitelist-seed.json
 
 ```bash
 ./scripts/docker-init.sh
-docker compose up -d
-docker compose ps
-docker compose logs --tail=100 dnsguard-api
+docker compose --env-file deploy/docker/dnsguard.env up -d
+docker compose --env-file deploy/docker/dnsguard.env ps
+docker compose --env-file deploy/docker/dnsguard.env logs --tail=100 dnsguard-api
 ```
 
 打开 `https://管理地址/`，按向导完成：
@@ -125,6 +125,8 @@ docker compose logs --tail=100 dnsguard-api
 5. 执行只读 SOA、Zone、Serial、连通性和全局 deny 检查。
 
 全局模式下，白名单 JSON 会被导入为 `draft`。页面中的“导入成功”不代表已经发布；此时 `Published` 应为空。
+
+初始化完成后，后台顶部会显示三阶段引导：先确认 BIND 节点健康，再在规则页审核并发布白名单，最后由 BIND 管理员启用 deny Zone。引导只把实际已发布且所有节点健康的状态显示为“已同步”；全局 DENY 检查失败或未验证时不会显示成功。
 
 ## 第 5 步：发布白名单并确认同步
 
@@ -149,8 +151,8 @@ docker compose logs --tail=100 dnsguard-api
 2. 重建 DNSGuard Compose，使 API 以正式模式启动：
 
    ```bash
-   docker compose up -d --force-recreate
-   docker compose ps
+   docker compose --env-file deploy/docker/dnsguard.env up -d --force-recreate
+   docker compose --env-file deploy/docker/dnsguard.env ps
    ```
 
 3. 通过 BIND 递归节点验证白名单、多级子域名、A 重定向和未知域名；

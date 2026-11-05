@@ -78,13 +78,15 @@ cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
 
 ```bash
 ./scripts/docker-init.sh
-docker compose up -d
-docker compose ps
+docker compose --env-file deploy/docker/dnsguard.env up -d
+docker compose --env-file deploy/docker/dnsguard.env ps
 ```
 
 首次初始化的安全顺序必须是：
 
 **审核白名单 → 导入为 `draft` → 发布白名单 → 确认 Primary/Secondary 同步 → 启用全局 DENY → 验证业务。**
+
+登录后，顶部首次上线引导会按这三个阶段显示真实状态；导入不会自动发布，Primary/Secondary 未全部通过前不会提示进入下一步。
 
 如果首次初始化时 deny Zone 尚未加入 BIND 的 `response-policy`，临时使用：
 

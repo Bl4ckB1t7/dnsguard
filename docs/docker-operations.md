@@ -63,7 +63,7 @@ Docker 备份必须在**宿主机**执行，不能直接把 `/var/lib/dnsguard` 
 只备份可重建的 DNSGuard 状态：
 
 ```bash
-docker compose stop
+docker compose --env-file deploy/docker/dnsguard.env stop
 BACKUP_DIR=/secure/backup/dnsguard \
 DNSGUARD_BACKUP_MODE=docker \
 DNSGUARD_DATA_DIR="$PWD/docker-data" \
@@ -99,7 +99,7 @@ sha256sum /secure/backup/dnsguard-sensitive/dnsguard-*.tar.gz > /secure/backup/d
 先停止控制面并确认备份校验通过：
 
 ```bash
-docker compose down
+docker compose --env-file deploy/docker/dnsguard.env down
 sha256sum -c /secure/backup/dnsguard-sensitive/SHA256SUMS
 ```
 
@@ -141,7 +141,7 @@ Primary/Secondary 的 SOA Serial 和实际解析结果。
 恢复后：
 
 1. 检查文件权限和 JSON 完整性；
-2. `docker compose up -d`，确认容器健康；
+2. `docker compose --env-file deploy/docker/dnsguard.env up -d`，确认容器健康；
 3. 登录后台，检查规则、节点、版本、任务和审计链；
 4. 查询 Primary/Secondary 的 SOA Serial 和关键 RPZ 解析结果；
 5. 若任务显示 `reconcile_required`，先人工核对 BIND 实际状态，不要自动重放或把旧 JSON 误当作 Zone 回滚；
@@ -152,23 +152,23 @@ Primary/Secondary 的 SOA Serial 和实际解析结果。
 升级前：
 
 ```bash
-docker compose stop
+docker compose --env-file deploy/docker/dnsguard.env stop
 # 完成普通状态备份，必要时完成敏感备份
 git fetch --tags origin
 git checkout TARGET_TAG
-docker compose build --pull
-docker compose up -d
-docker compose ps
+docker compose --env-file deploy/docker/dnsguard.env build --pull
+docker compose --env-file deploy/docker/dnsguard.env up -d
+docker compose --env-file deploy/docker/dnsguard.env ps
 ```
 
 先检查健康、登录、节点状态和发布任务，再进行任何 RPZ 操作。JSON 数据文件保持
 向后兼容；升级失败时保留同一组 `docker-data/`、`secrets/` 和 `tls/`：
 
 ```bash
-docker compose down
+docker compose --env-file deploy/docker/dnsguard.env down
 git checkout PREVIOUS_TAG
-docker compose build --pull
-docker compose up -d
+docker compose --env-file deploy/docker/dnsguard.env build --pull
+docker compose --env-file deploy/docker/dnsguard.env up -d
 ```
 
 **应用版本回滚不等于 RPZ Zone 回滚。** 回到旧应用只改变控制面程序；BIND 仍保持
@@ -204,8 +204,8 @@ V1.0 生产只支持 Docker Compose。旧版本的主机进程部署不会被自
 6. 检查 `deploy/docker/dnsguard.env` 的容器内路径。宿主机备份命令必须使用
    `DNSGUARD_DATA_DIR`、`DNSGUARD_SECRET_DIR` 和 `DNSGUARD_TLS_DIR`，不能把
    `/var/lib/dnsguard` 当作宿主机路径。
-7. 执行 `./scripts/docker-init.sh` 和 `docker compose config`，确认已有认证文件和节点
-   配置没有被覆盖，再执行 `docker compose up -d`。
+7. 执行 `./scripts/docker-init.sh` 和 `docker compose --env-file deploy/docker/dnsguard.env config`，确认已有认证文件和节点
+   配置没有被覆盖，再执行 `docker compose --env-file deploy/docker/dnsguard.env up -d`。
 8. 登录后台，核对节点、RPZ 规则、版本、发布任务、审计哈希链和 Telegram 配置；逐台
    查询 BIND Primary/Secondary 的 SOA Serial，并抽查关键 RPZ 解析效果。
 9. 验证完成后再人工下线旧控制面。迁移不会修改生产 BIND 的配置、进程或当前 Zone。

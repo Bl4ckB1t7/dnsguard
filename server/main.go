@@ -100,6 +100,7 @@ func main() {
 	mux.HandleFunc("/api/auth/logout", authLogout)
 	mux.HandleFunc("/api/auth/password", authPasswordChange)
 	mux.HandleFunc("/api/dns/overview", dnsOverview)
+	mux.HandleFunc("/api/dns/global-deny/check", globalDenyCheck)
 	mux.HandleFunc("/api/dns/tld/status", tldStatus)
 	mux.HandleFunc("/api/dns/tld/reconcile", reconcileTLDPolicy)
 	mux.HandleFunc("/api/dns/nodes", dnsNodes)

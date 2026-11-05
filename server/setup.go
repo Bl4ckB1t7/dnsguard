@@ -686,6 +686,41 @@ func setupChecksReady(checks []setupCheck) bool {
 	return true
 }
 
+func globalDenyCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	dnsMu.RLock()
+	configuredNodes := append([]DNSNode(nil), state.Nodes...)
+	dnsMu.RUnlock()
+	var primary setupNode
+	secondaries := make([]setupNode, 0)
+	for _, node := range configuredNodes {
+		if strings.EqualFold(node.Role, "primary") || node.ID == "primary-1" {
+			primary = setupNode{Name: node.Name, Role: "primary", Address: node.Address}
+			continue
+		}
+		secondaries = append(secondaries, setupNode{Name: node.Name, Role: "secondary", Address: node.Address})
+	}
+	if primary.Address == "" || len(secondaries) == 0 {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"ready":  false,
+			"checks": []setupCheck{{Name: "DNS 节点配置", Status: "fail", Detail: "需要一个 Primary 和至少一个 Secondary 后才能执行全局 DENY 只读检查"}},
+		})
+		return
+	}
+	result := runGlobalDenyChecks(r.Context(), setupRequest{Primary: primary, Secondaries: secondaries})
+	ready := !globalDenySetupDeferred() && configuredPolicyMode() == "global" && setupChecksReady(result)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ready":                   ready,
+		"policyMode":              configuredPolicyMode(),
+		"globalDenySetupDeferred": globalDenySetupDeferred(),
+		"checks":                  result,
+	})
+}
+
 func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck {
 	zone := configuredGlobalDenyZone()
 	if zone == "" || !domainPattern.MatchString(zone) {

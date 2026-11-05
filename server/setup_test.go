@@ -312,6 +312,18 @@ func TestGlobalPolicyModePersistsWithImportedDrafts(t *testing.T) {
 	}
 }
 
+func TestGlobalDenyCheckFailsClosedWithoutConfiguredNodes(t *testing.T) {
+	setupTestEnvironment(t)
+	recorder := httptest.NewRecorder()
+	globalDenyCheck(recorder, httptest.NewRequest(http.MethodGet, "/api/dns/global-deny/check", nil))
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("global deny check without nodes must fail closed, got %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"ready":false`) {
+		t.Fatalf("global deny check must not claim ready without nodes: %s", recorder.Body.String())
+	}
+}
+
 func TestStagedGlobalDenySetupDoesNotTreatDeferredCheckAsPassed(t *testing.T) {
 	setupTestEnvironment(t)
 	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")

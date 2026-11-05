@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { AuditPanel, type AuditEntry } from "./AuditPanel";
 import { DnsNodePanel, type DnsNode } from "./DnsNodePanel";
+import { DeploymentGuide } from "./DeploymentGuide";
 
 type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; policyMode?: string; globalDenyZone?: string; lastPublish: string; publishMessage: string; publishJobId: string; publishJobStatus: string };
 type Rule = { id: string; domain: string; action: string; type?: string; value?: string; reason: string; status: string; updatedAt: string };
@@ -10,6 +11,9 @@ type RPZVersion = { id: string; createdAt: string; mode: string; ruleCount: numb
 type PublishJob = { id: string; status: string; message?: string; error?: string };
 type AuditResponse = { items: AuditEntry[]; total: number; page: number; pageSize: number };
 type TelegramSettings = { enabled: boolean; botTokenSet: boolean; botTokenHint?: string; chatId: string; events: string[]; cooldownSeconds: number };
+type SetupStatus = { globalDenySetupDeferred?: boolean; policyMode?: "global" | "legacy"; error?: string };
+type GlobalDenyCheck = { name: string; status: "pass" | "fail" | "not_run"; detail: string };
+type GlobalDenyCheckResponse = { ready: boolean; policyMode?: string; globalDenySetupDeferred?: boolean; checks: GlobalDenyCheck[] };
 type DashboardView = "overview" | "audit";
 
 const telegramEventOptions = [
@@ -115,6 +119,11 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [telegramChatId, setTelegramChatId] = useState("");
   const [telegramEvents, setTelegramEvents] = useState<string[]>([]);
   const [telegramCooldown, setTelegramCooldown] = useState(300);
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [checkingDeny, setCheckingDeny] = useState(false);
+  const [denyNotice, setDenyNotice] = useState("");
+  const [denyReady, setDenyReady] = useState(false);
+  const [denyChecks, setDenyChecks] = useState<GlobalDenyCheck[]>([]);
   const selectView = (view: DashboardView) => {
     setActiveView(view);
     const url = new URL(window.location.href);
@@ -127,12 +136,13 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
     setLoading(true);
     setLoadError("");
     try {
-      const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions] = await Promise.all([
+      const [nextOverview, nextNodes, nextRules, nextPreview, nextVersions, nextSetupStatus] = await Promise.all([
         readJSON<Overview>("/api/dns/overview"),
         readJSON<DnsNode[]>("/api/dns/nodes"),
         readJSON<Rule[]>("/api/dns/rpz"),
         readJSON<RPZPreview>("/api/dns/rpz/preview"),
         readJSON<RPZVersion[]>("/api/dns/rpz/versions"),
+        readJSON<SetupStatus>("/api/setup/status"),
       ]);
       setOverview(nextOverview);
       setNodes(nextNodes ?? []);
@@ -141,11 +151,28 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setSelectedRuleIds((selected) => selected.filter((id) => (nextRules ?? []).some((rule) => rule.id === id)));
       setPreview(nextPreview);
       setVersions(nextVersions ?? []);
+      setSetupStatus(nextSetupStatus);
     } catch (error) {
       setLoadError(`状态加载失败：${(error as Error).message}。`);
       throw error;
     } finally {
       setLoading(false);
+    }
+  };
+
+  const checkGlobalDeny = async () => {
+    setCheckingDeny(true);
+    setDenyNotice("");
+    try {
+      const result = await readJSON<GlobalDenyCheckResponse>("/api/dns/global-deny/check");
+      setDenyChecks(result.checks ?? []);
+      setDenyReady(result.ready === true);
+      setSetupStatus({ globalDenySetupDeferred: result.globalDenySetupDeferred, policyMode: result.policyMode === "global" ? "global" : "legacy" });
+      setDenyNotice(result.ready === true ? "全局 DENY 只读检查通过，结果来自当前配置的 Primary / Secondary 和递归检查。" : "检查未全部通过，保持“未验证”；请按失败项处理后重新检查。");
+    } catch (error) {
+      setDenyNotice(`只读状态读取失败：${(error as Error).message}`);
+    } finally {
+      setCheckingDeny(false);
     }
   };
 
@@ -478,6 +505,9 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
 
       {loadError && <div className="global-notice" role="alert"><span>{loadError}</span><button onClick={() => void load().catch(() => undefined)}>重试</button></div>}
 
+      {activeView === "overview" && <DeploymentGuide overview={overview} nodes={nodes} preview={preview ? { pending: preview.pending, changes: preview.changes?.length ?? 0 } : null} setupStatus={setupStatus} checkingDeny={checkingDeny} denyNotice={denyNotice} denyReady={denyReady} denyChecks={denyChecks} onRefresh={() => void load().catch(() => undefined)} onCheckDeny={() => void checkGlobalDeny()} />}
+
+
       {showPasswordPanel && <div className="password-overlay" role="presentation" onMouseDown={(event) => { if (!mustChangePassword && event.target === event.currentTarget && !busy) setShowPasswordPanel(false); }}><section className="password-panel" role="dialog" aria-modal="true" aria-labelledby="password-title"><div className="panel-heading"><div><h2 id="password-title">{mustChangePassword ? "首次登录请修改密码" : "修改密码"}</h2><span>{mustChangePassword ? "为保障生产安全，修改密码后才能继续使用" : "修改成功后当前会话将退出"}</span></div>{!mustChangePassword && <button className="password-close" type="button" disabled={busy} onClick={() => setShowPasswordPanel(false)} aria-label="关闭">×</button>}</div><form className="password-form" onSubmit={changePassword}><label>当前密码<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" required /></label><label>新密码<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><label>确认新密码<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label><p className="form-hint">新密码至少 8 位，修改后需要重新登录。</p><div className="password-actions">{!mustChangePassword && <button type="button" className="password-cancel" disabled={busy} onClick={() => setShowPasswordPanel(false)}>取消</button>}<button type="submit" disabled={busy}>{busy ? "保存中…" : "保存新密码"}</button></div></form></section></div>}
 
       {showTelegramPanel && <div className="password-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setShowTelegramPanel(false); }}><section className="password-panel telegram-panel" role="dialog" aria-modal="true" aria-labelledby="telegram-title"><div className="panel-heading"><div><h2 id="telegram-title">告警配置</h2><span>{telegramSettings?.enabled ? "已启用 · 配置保存在服务端" : "未启用 · 配置保存在服务端"}</span></div><button className="password-close" type="button" disabled={busy} onClick={() => setShowTelegramPanel(false)} aria-label="关闭">×</button></div><form className="password-form" onSubmit={saveTelegramSettings}><label>Bot Token<input type="password" value={telegramToken} onChange={(event) => setTelegramToken(event.target.value)} placeholder={telegramSettings?.botTokenSet ? `已保存 ${telegramSettings.botTokenHint ?? "Token"}，留空保持不变` : "请输入 BotFather 生成的 Token"} autoComplete="new-password" /></label><label>Chat ID<input value={telegramChatId} onChange={(event) => setTelegramChatId(event.target.value)} placeholder="例如 -1001234567890" /></label><fieldset className="telegram-events"><legend>告警事件</legend>{telegramEventOptions.map((event) => <label key={event.value}><input type="checkbox" checked={telegramEvents.includes(event.value)} onChange={() => setTelegramEvents((selected) => selected.includes(event.value) ? selected.filter((item) => item !== event.value) : [...selected, event.value])} />{event.label}</label>)}</fieldset><label>重复告警冷却时间（秒）<input type="number" min={0} max={86400} value={telegramCooldown} onChange={(event) => setTelegramCooldown(Number(event.target.value))} /></label><p className="form-hint">Token 只会提交到后端，页面不会回显完整 Token。</p><div className="password-actions"><button type="button" className="password-cancel" disabled={busy || !telegramSettings?.enabled} onClick={() => void clearTelegramSettings()}>停用并清除</button><button type="button" className="password-cancel" disabled={busy || !telegramSettings?.enabled} onClick={() => void sendTelegramTest()}>发送测试</button><button type="submit" disabled={busy}>{busy ? "保存中…" : "保存配置"}</button></div></form></section></div>}
@@ -512,7 +542,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
           onRemove={(node) => { void removeNode(node); }}
         />
 
-        <div className="dns-panel"><div className="panel-heading"><h2>添加 RPZ 规则</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>记录类型<select value={ruleType} onChange={(event) => setRuleType(event.target.value as "CNAME" | "A")}><option value="CNAME">白名单（CNAME / passthru）</option><option value="A">A 记录重定向</option></select></label>{ruleType === "A" && <label>目标 IPv4<input value={recordValue} onChange={(event) => setRecordValue(event.target.value)} placeholder="例如 192.0.2.10" inputMode="numeric" pattern="(?:[0-9]{1,3}\.){3}[0-9]{1,3}" required /></label>}<label>原因（可选）<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder={ruleType === "A" ? "业务流量导向指定服务" : "业务系统依赖"} /></label><button disabled={busy}>{busy ? "保存中…" : "保存 RPZ 规则"}</button></form>{notice && <p className="notice">{notice}</p>}</div>
+        <div className="dns-panel" id="rpz-rules"><div className="panel-heading"><h2>添加 RPZ 规则</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>记录类型<select value={ruleType} onChange={(event) => setRuleType(event.target.value as "CNAME" | "A")}><option value="CNAME">白名单（CNAME / passthru）</option><option value="A">A 记录重定向</option></select></label>{ruleType === "A" && <label>目标 IPv4<input value={recordValue} onChange={(event) => setRecordValue(event.target.value)} placeholder="例如 192.0.2.10" inputMode="numeric" pattern="(?:[0-9]{1,3}\.){3}[0-9]{1,3}" required /></label>}<label>原因（可选）<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder={ruleType === "A" ? "业务流量导向指定服务" : "业务系统依赖"} /></label><button disabled={busy}>{busy ? "保存中…" : "保存 RPZ 规则"}</button></form>{notice && <p className="notice">{notice}</p>}</div>
       </section>
 
       <section className="release-grid">
