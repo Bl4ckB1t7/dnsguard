@@ -357,6 +357,9 @@ func TestStagedGlobalDenySetupDoesNotTreatDeferredCheckAsPassed(t *testing.T) {
 func TestGlobalDenyBaselineRequiresMatchingTestConfiguration(t *testing.T) {
 	setupTestEnvironment(t)
 	t.Setenv("RPZ_GLOBAL_DENY_BASELINE_FILE", filepath.Join(t.TempDir(), "global-deny-baseline.json"))
+	if err := loadGlobalDenyBaseline("known.example.com", "127.0.0.1:53"); err == nil {
+		t.Fatal("missing baseline must not be accepted")
+	}
 	baseline := globalDenyBaseline{CheckName: "known.example.com", Recursor: "127.0.0.1:53", RCode: "NOERROR", Observed: "2026-11-05T00:00:00Z"}
 	if err := saveGlobalDenyBaseline(baseline); err != nil {
 		t.Fatal(err)
