@@ -49,12 +49,14 @@ type TLDStatus struct {
 	PolicyTrigger       string   `json:"policyTrigger,omitempty"`
 	TLDs                []string `json:"-"`
 	PublishedTLDs       []string `json:"-"`
+	PendingTLDs         []string `json:"-"`
 }
 
 type tldStateFile struct {
 	TLDStatus
 	TLDs          []string `json:"tlds,omitempty"`
 	PublishedTLDs []string `json:"publishedTlds,omitempty"`
+	PendingTLDs   []string `json:"pendingTlds,omitempty"`
 }
 
 var (
@@ -169,6 +171,7 @@ func loadTLDState() error {
 	loaded := persisted.TLDStatus
 	loaded.TLDs = append([]string(nil), persisted.TLDs...)
 	loaded.PublishedTLDs = append([]string(nil), persisted.PublishedTLDs...)
+	loaded.PendingTLDs = append([]string(nil), persisted.PendingTLDs...)
 	if loaded.Source == "" {
 		loaded.Source = tldSourceURL()
 	}
@@ -181,7 +184,7 @@ func saveTLDState(status TLDStatus) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	content, err := json.MarshalIndent(tldStateFile{TLDStatus: status, TLDs: status.TLDs, PublishedTLDs: status.PublishedTLDs}, "", "  ")
+	content, err := json.MarshalIndent(tldStateFile{TLDStatus: status, TLDs: status.TLDs, PublishedTLDs: status.PublishedTLDs, PendingTLDs: status.PendingTLDs}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -691,6 +694,7 @@ type tldPolicyVerification struct {
 	RecursionStatus   string
 	Representative    string
 	VerificationError string
+	UpdateSent        bool
 }
 
 var tldRCodePattern = regexp.MustCompile(`status: ([A-Z]+),`)
@@ -904,6 +908,7 @@ func publishTLDPolicy(ctx context.Context, current, previous []string, previousS
 		return tldPolicyVerification{PrimarySerial: serial, ZoneStatus: "reconcile_required"}, fmt.Errorf("TLD DENY Primary SOA Serial 未变化，发布结果需人工核对")
 	}
 	verification, verifyErr := verifyTLDPolicyFunc(ctx, current)
+	verification.UpdateSent = true
 	verification.PrimarySerial = serial
 	if verifyErr != nil {
 		return verification, verifyErr
@@ -935,6 +940,7 @@ func syncTLDNow(ctx context.Context) error {
 		return err
 	}
 	updated.PublishedTLDs = append([]string(nil), previous.PublishedTLDs...)
+	updated.PendingTLDs = append([]string(nil), previous.PendingTLDs...)
 	if !tldPolicyPublishEnabled() {
 		updated.PolicyStatus = "not_configured"
 		updated.PolicyMessage = "未启用 TLD DENY RPZ 发布；仅同步 TLD 数据"
@@ -946,6 +952,11 @@ func syncTLDNow(ctx context.Context) error {
 		updated.PolicySerial = previous.PolicySerial
 		updated.PolicyLastPublished = previous.PolicyLastPublished
 		updated.PolicyMessage = "上次 TLD DENY 发布结果需人工核对；核对完成前禁止自动重放"
+	} else if previous.PolicyStatus == "pending_verification" && len(previous.PendingTLDs) > 0 {
+		updated.PolicyStatus = "pending_verification"
+		updated.PolicySerial = previous.PolicySerial
+		updated.PolicyLastPublished = previous.PolicyLastPublished
+		updated.PolicyMessage = "上次 TLD DENY 已发送到 Primary，当前只复核待确认目标，不重复执行 nsupdate"
 	} else if previous.PolicyStatus == "pending" {
 		updated.PolicyStatus = "reconcile_required"
 		updated.PolicySerial = previous.PolicySerial
@@ -960,15 +971,31 @@ func syncTLDNow(ctx context.Context) error {
 		updated.PolicySecondary = previous.PolicySecondary
 		updated.PolicyRecursion = previous.PolicyRecursion
 		updated.PolicyTrigger = previous.PolicyTrigger
-	} else if (previous.PolicyStatus == "sync_exception" || previous.PolicyStatus == "pending_verification") && len(previous.PublishedTLDs) > 0 && tldEntriesEqual(previous.PublishedTLDs, updated.TLDs) {
+	} else if previous.PolicyStatus == "sync_exception" && len(previous.PendingTLDs) > 0 {
 		updated.PolicyStatus = "pending_verification"
 		updated.PolicySerial = previous.PolicySerial
 		updated.PolicyLastPublished = previous.PolicyLastPublished
-		updated.PolicyMessage = "TLD DENY 已有发布记录，先重新核对 Zone、Secondary 和代表性触发项，不重复执行 nsupdate"
+		updated.PolicyMessage = "TLD DENY 已发送到 Primary，先重新核对 Zone、Secondary 和代表性触发项，不重复执行 nsupdate"
 		updated.PolicyZoneStatus = previous.PolicyZoneStatus
 		updated.PolicySecondary = previous.PolicySecondary
 		updated.PolicyRecursion = previous.PolicyRecursion
 		updated.PolicyTrigger = previous.PolicyTrigger
+	} else if previous.PolicyStatus == "sync_exception" && len(previous.TLDs) > 0 {
+		// Compatibility with states written before PendingTLDs existed: the
+		// last downloaded list is treated only as a verification target, never
+		// as permission to replay an uncertain update.
+		updated.PolicyStatus = "pending_verification"
+		updated.PendingTLDs = append([]string(nil), previous.TLDs...)
+		updated.PolicySerial = previous.PolicySerial
+		updated.PolicyLastPublished = previous.PolicyLastPublished
+		updated.PolicyMessage = "检测到历史 sync_exception，使用旧待确认快照复核，禁止自动重放"
+		updated.PolicyZoneStatus = previous.PolicyZoneStatus
+		updated.PolicySecondary = previous.PolicySecondary
+		updated.PolicyRecursion = previous.PolicyRecursion
+		updated.PolicyTrigger = previous.PolicyTrigger
+	} else if previous.PolicyStatus == "pending_verification" {
+		updated.PolicyStatus = "reconcile_required"
+		updated.PolicyMessage = "pending_verification 缺少待确认快照，禁止自动重放，请先人工核对"
 	} else {
 		if previous.PolicyStatus == "published" && len(previous.PublishedTLDs) == 0 {
 			updated.PolicyStatus = "reconcile_required"
@@ -987,8 +1014,18 @@ func syncTLDNow(ctx context.Context) error {
 	}
 	setTLDStatus(updated)
 	if updated.PolicyStatus == "pending_verification" {
+		verificationTarget := append([]string(nil), updated.PendingTLDs...)
+		if len(verificationTarget) == 0 {
+			updated.PolicyStatus = "reconcile_required"
+			updated.PolicyMessage = "待验证 TLD 快照为空，禁止自动重放，请先人工核对"
+			setTLDStatus(updated)
+			if persistErr := saveTLDState(updated); persistErr != nil {
+				return persistErr
+			}
+			return fmt.Errorf("TLD DENY 待验证快照为空")
+		}
 		publishCtx, cancel := context.WithTimeout(ctx, tldPublishTimeout())
-		verification, verifyErr := verifyTLDPolicyFunc(publishCtx, updated.TLDs)
+		verification, verifyErr := verifyTLDPolicyFunc(publishCtx, verificationTarget)
 		cancel()
 		updated.PolicySerial = verification.PrimarySerial
 		updated.PolicyZoneStatus = verification.ZoneStatus
@@ -996,7 +1033,7 @@ func syncTLDNow(ctx context.Context) error {
 		updated.PolicyRecursion = verification.RecursionStatus
 		updated.PolicyTrigger = verification.Representative
 		if verifyErr != nil {
-			updated.PolicyStatus = "sync_exception"
+			updated.PolicyStatus = "pending_verification"
 			updated.PolicyMessage = verifyErr.Error()
 			setTLDStatus(updated)
 			if persistErr := saveTLDState(updated); persistErr != nil {
@@ -1005,8 +1042,10 @@ func syncTLDNow(ctx context.Context) error {
 			return verifyErr
 		}
 		updated.PolicyStatus = "published"
-		updated.PolicyMessage = "TLD DENY 已存在于 Primary，Secondary 和代表性触发项复核通过；递归检查按配置执行"
-		updated.PolicyLastPublished = previous.PolicyLastPublished
+		updated.PublishedTLDs = verificationTarget
+		updated.PendingTLDs = nil
+		updated.PolicyMessage = "TLD DENY 待确认目标已通过 Primary、Secondary 和代表性触发项复核；递归检查按配置执行"
+		updated.PolicyLastPublished = time.Now().UTC().Format(time.RFC3339)
 		if err := saveTLDState(updated); err != nil {
 			return err
 		}
@@ -1021,10 +1060,13 @@ func syncTLDNow(ctx context.Context) error {
 	cancel()
 	if publishErr != nil {
 		failed := updated
-		if verification.ZoneStatus == "reconcile_required" {
+		if verification.UpdateSent {
+			failed.PolicyStatus = "pending_verification"
+			failed.PendingTLDs = append([]string(nil), updated.TLDs...)
+		} else if verification.ZoneStatus == "reconcile_required" {
 			failed.PolicyStatus = "reconcile_required"
 		} else {
-			failed.PolicyStatus = "sync_exception"
+			failed.PolicyStatus = "error"
 		}
 		failed.PolicySerial = verification.PrimarySerial
 		failed.PolicyZoneStatus = verification.ZoneStatus
@@ -1046,10 +1088,13 @@ func syncTLDNow(ctx context.Context) error {
 	updated.PolicyRecursion = verification.RecursionStatus
 	updated.PolicyTrigger = verification.Representative
 	updated.PublishedTLDs = append([]string(nil), updated.TLDs...)
+	updated.PendingTLDs = nil
 	updated.PolicyMessage = "TLD DENY RPZ 已通过 Primary、Secondary 和代表性触发项验收；递归检查按配置执行"
 	if err := saveTLDState(updated); err != nil {
 		failed := updated
 		failed.PolicyStatus = "reconcile_required"
+		failed.PublishedTLDs = append([]string(nil), previous.PublishedTLDs...)
+		failed.PendingTLDs = append([]string(nil), updated.TLDs...)
 		failed.PolicyMessage = "TLD DENY 已可能更新，但发布状态持久化失败，需人工核对 Primary/Secondary"
 		setTLDStatus(failed)
 		return err
@@ -1110,6 +1155,7 @@ func reconcileTLDPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	current.PolicyStatus = "published"
 	current.PublishedTLDs = append([]string(nil), current.TLDs...)
+	current.PendingTLDs = nil
 	current.PolicySerial = verification.PrimarySerial
 	current.PolicyZoneStatus = verification.ZoneStatus
 	current.PolicySecondary = verification.SecondaryStatus

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,35 @@ import (
 	"testing"
 	"time"
 )
+
+func setupTLDStateMachineTest(t *testing.T, document string) (string, func()) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(document))
+	}))
+	runtime := t.TempDir()
+	binDir := filepath.Join(runtime, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "named-checkzone"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "dig"), []byte("#!/bin/sh\nprintf '%s\\n' 'deny.rpz.local. hostmaster.local. 42 3600 900 2592000 60'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("TLD_DENY_ENABLED", "true")
+	t.Setenv("TLD_DENY_PUBLISH_ENABLED", "true")
+	t.Setenv("TLD_SOURCE_URL", server.URL)
+	t.Setenv("TLD_STATE_FILE", filepath.Join(runtime, "tld-state.json"))
+	t.Setenv("TLD_DENY_ARTIFACT_FILE", filepath.Join(runtime, "deny.rpz.local.db"))
+	t.Setenv("TLD_DENY_ZONE", "deny.rpz.local")
+	t.Setenv("RPZ_PRIMARY", "127.0.0.1")
+	t.Setenv("RPZ_PRIMARY_PORT", "53")
+	return server.URL, server.Close
+}
 
 func TestCompileTLDPolicyIncludesExactAndWildcardDenyTriggers(t *testing.T) {
 	t.Setenv("TLD_DENY_ZONE", "tld-deny.rpz.local")
@@ -255,6 +285,122 @@ func TestSyncTLDNowDoesNotAutoReplayReconcileRequiredPolicy(t *testing.T) {
 	status := tldStatusSnapshot()
 	if status.PolicyStatus != "reconcile_required" || updateCalls != 0 {
 		t.Fatalf("reconcile-required policy was replayed or changed: status=%+v calls=%d", status, updateCalls)
+	}
+}
+
+func TestSyncTLDNowVerifiesPendingUpdateWithoutRepeatingNSUpdate(t *testing.T) {
+	source, closeServer := setupTLDStateMachineTest(t, "# Version 9, Last Updated test\nCOM\nNET\n")
+	defer closeServer()
+	previousState := tldStatusSnapshot()
+	previousUpdate := runTLDNSUpdateFunc
+	previousVerify := verifyTLDPolicyFunc
+	defer func() {
+		setTLDStatus(previousState)
+		runTLDNSUpdateFunc = previousUpdate
+		verifyTLDPolicyFunc = previousVerify
+	}()
+	updateCalls := 0
+	verifyCalls := 0
+	runTLDNSUpdateFunc = func(_ context.Context, _, _ []string) error {
+		updateCalls++
+		return nil
+	}
+	verifyTLDPolicyFunc = func(_ context.Context, entries []string) (tldPolicyVerification, error) {
+		verifyCalls++
+		if strings.Join(entries, ",") != "COM,NET" {
+			t.Fatalf("verification used the wrong pending snapshot: %v", entries)
+		}
+		if verifyCalls == 1 {
+			return tldPolicyVerification{PrimarySerial: "42", ZoneStatus: "primary_published", SecondaryStatus: "sync_exception", RecursionStatus: "not_configured", Representative: "com.deny.rpz.local."}, errors.New("secondary propagation pending")
+		}
+		return tldPolicyVerification{PrimarySerial: "42", ZoneStatus: "published", SecondaryStatus: "synced", RecursionStatus: "not_configured", Representative: "com.deny.rpz.local."}, nil
+	}
+	setTLDStatus(TLDStatus{Status: "pending", Source: source})
+	if err := syncTLDNow(context.Background()); err == nil {
+		t.Fatal("first sync should report the delayed secondary verification")
+	}
+	status := tldStatusSnapshot()
+	if status.PolicyStatus != "pending_verification" || !tldEntriesEqual(status.PendingTLDs, []string{"COM", "NET"}) || len(status.PublishedTLDs) != 0 {
+		t.Fatalf("unexpected pending verification state: %+v", status)
+	}
+	if err := syncTLDNow(context.Background()); err != nil {
+		t.Fatalf("verification-only retry failed: %v", err)
+	}
+	status = tldStatusSnapshot()
+	if updateCalls != 1 || status.PolicyStatus != "published" || !tldEntriesEqual(status.PublishedTLDs, []string{"COM", "NET"}) || len(status.PendingTLDs) != 0 {
+		t.Fatalf("delayed verification replayed or did not publish safely: calls=%d status=%+v", updateCalls, status)
+	}
+}
+
+func TestSyncTLDNowDoesNotReplayPartialBatchFailure(t *testing.T) {
+	source, closeServer := setupTLDStateMachineTest(t, "# Version 9, Last Updated test\nCOM\nNET\n")
+	defer closeServer()
+	previousState := tldStatusSnapshot()
+	previousUpdate := runTLDNSUpdateFunc
+	defer func() {
+		setTLDStatus(previousState)
+		runTLDNSUpdateFunc = previousUpdate
+	}()
+	updateCalls := 0
+	runTLDNSUpdateFunc = func(_ context.Context, _, _ []string) error {
+		updateCalls++
+		return errors.New("batch 2 failed after an earlier batch was sent")
+	}
+	setTLDStatus(TLDStatus{Status: "pending", Source: source})
+	if err := syncTLDNow(context.Background()); err == nil {
+		t.Fatal("partial batch failure should be returned")
+	}
+	status := tldStatusSnapshot()
+	if status.PolicyStatus != "reconcile_required" || updateCalls != 1 {
+		t.Fatalf("partial batch failure did not lock publication: calls=%d status=%+v", updateCalls, status)
+	}
+	if err := syncTLDNow(context.Background()); err != nil {
+		t.Fatalf("reconcile-required retry should be a safe no-op: %v", err)
+	}
+	if updateCalls != 1 {
+		t.Fatalf("reconcile-required state replayed nsupdate: calls=%d", updateCalls)
+	}
+}
+
+func TestSyncTLDNowKeepsPendingSnapshotAcrossRestartAndNewDownload(t *testing.T) {
+	source, closeServer := setupTLDStateMachineTest(t, "# Version 10, Last Updated test\nCOM\nNET\nORG\n")
+	defer closeServer()
+	previousState := tldStatusSnapshot()
+	previousUpdate := runTLDNSUpdateFunc
+	previousVerify := verifyTLDPolicyFunc
+	defer func() {
+		setTLDStatus(previousState)
+		runTLDNSUpdateFunc = previousUpdate
+		verifyTLDPolicyFunc = previousVerify
+	}()
+	updateCalls := 0
+	var verified []string
+	runTLDNSUpdateFunc = func(_ context.Context, _, _ []string) error {
+		updateCalls++
+		return nil
+	}
+	verifyTLDPolicyFunc = func(_ context.Context, entries []string) (tldPolicyVerification, error) {
+		verified = append([]string(nil), entries...)
+		return tldPolicyVerification{PrimarySerial: "42", ZoneStatus: "published", SecondaryStatus: "synced", RecursionStatus: "not_configured", Representative: "com.deny.rpz.local."}, nil
+	}
+	setTLDStatus(TLDStatus{
+		Status: "ready", Source: source, TLDs: []string{"COM", "NET"},
+		PublishedTLDs: []string{"COM"}, PendingTLDs: []string{"COM", "NET"},
+		PolicyStatus: "pending_verification", PolicySerial: "42",
+	})
+	if err := saveTLDState(tldStatusSnapshot()); err != nil {
+		t.Fatal(err)
+	}
+	setTLDStatus(TLDStatus{})
+	if err := loadTLDState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncTLDNow(context.Background()); err != nil {
+		t.Fatalf("restart verification failed: %v", err)
+	}
+	status := tldStatusSnapshot()
+	if updateCalls != 0 || !tldEntriesEqual(verified, []string{"COM", "NET"}) || !tldEntriesEqual(status.PublishedTLDs, []string{"COM", "NET"}) || !tldEntriesEqual(status.TLDs, []string{"COM", "NET", "ORG"}) {
+		t.Fatalf("restart did not verify the persisted target safely: calls=%d verified=%v status=%+v", updateCalls, verified, status)
 	}
 }
 
