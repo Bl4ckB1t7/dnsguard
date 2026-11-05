@@ -1,3 +1,49 @@
+# DNSGuard v1.1.1
+
+## 修复版发布说明
+
+DNSGuard v1.1.1 是 v1.1.0 的部署体验与可靠性修复版，不改变产品架构。
+DNSGuard 仍然只是 DNS 控制面，BIND Primary/Secondary 由管理员独立部署和维护。
+
+## 本次修复
+
+- **全局 DENY 发布校验**：BIND RPZ Zone 的权威 SOA/CNAME 检查使用 `+norecurse`，真实递归策略验证继续使用递归查询，避免全局 DENY 启用后误判节点或发布失败。
+- **部署完成状态**：全局 DENY 核验证据和首次部署完成事实持久化；完成后引导直接消失，后续新增 draft 或节点暂时离线不会重新打开首次部署引导。
+- **外部 BIND Docker 网络**：DNSGuard API 可通过 Compose override 加入已有 BIND Docker 网络，`./install.sh` 自动选择 override；Web 仍只连接内部网络。
+- **网络授权门禁**：安装时检查外部 BIND Docker 网络的实际子网是否包含在 `DNS_NODE_ALLOWED_CIDRS` 中，未显式授权时拒绝启动，不自动放宽 CIDR。
+- **安装安全提示**：改进 TSIG 文件校验、Bootstrap Token 读取提示以及缺失配置的错误信息；不会自动生成或替换生产 TSIG Key。
+- **Seed 状态**：初始化前继续严格检查白名单 Seed；初始化完成后不再把缺失的 onboarding Seed JSON 误报为部署问题。
+
+## 最短部署入口
+
+准备好授权的 TSIG Key、HTTPS 证书和已有 BIND 集群后：
+
+```bash
+git clone --branch v1.1.1 --single-branch \
+  https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
+cd dnsguard
+./install.sh
+```
+
+首次上线必须先审核并发布白名单，确认 Primary/Secondary 已同步，再由 BIND 管理员启用全局 DENY。DNSGuard 不自动安装、修改、reload 或 restart 生产 BIND，也不修改 `named.conf`、`response-policy` 或生产 Zone 文件。
+
+如果 BIND 位于另一套 Docker 网络，设置 `DNSGUARD_BIND_NETWORK`，并确保该网络实际子网已包含在 `DNS_NODE_ALLOWED_CIDRS` 中。DNSGuard 不会自动创建网络或放宽访问范围。
+
+## 升级注意事项
+
+- 从 v1.0.1 升级的已初始化部署不会自动切换到 `global` 模式；历史策略和数据保持不变，迁移前请先备份。
+- v1.1.1 是修复版，不引入新的 DNS 网关、数据库或 BIND 管理方式。
+- 生产 BIND 集群、TSIG、Zone Transfer 和 RPZ 优先级由管理员独立确认。
+- 客户端收到 `NXDOMAIN` 不等于完整 QNAME 没有到达上游。隔离验收已保留部分 DNSSEC `DO=1` 查询可能上游外传的风险；本版本不宣称百分之百阻断 DNS 隧道。
+
+## 验证资料
+
+- [v1.1.0 最终安全验收](docs/acceptance/v1.1.0-final-security-acceptance.md)
+- [v1.1.0 一键安装最终验收](docs/acceptance/v1.1.0-install-final-check.md)
+- [DNS 隧道重新验收](docs/acceptance/v1.1.0-dns-tunnel-retest.md)
+
+---
+
 # DNSGuard v1.1.0
 
 ## 正式发布说明
