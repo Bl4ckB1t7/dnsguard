@@ -119,6 +119,12 @@ td { color: #c9e7ec; }
 .rule-form input, .rule-form select { display: block; box-sizing: border-box; width: 100%; margin-top: 7px; padding: 10px; color: #eaffff; background: #031321; border: 1px solid #1a5c70; border-radius: 8px; outline: none; }
 .rule-form input:focus, .rule-form select:focus { border-color: #2ee6ff; box-shadow: 0 0 10px #1bbdff33; }
 .rule-form button { width: 100%; margin-top: 3px; }
+.rule-import { margin-top: 18px; padding-top: 16px; border-top: 1px solid #164b60; color: #91c2cc; font-size: 12px; }
+.rule-import > strong { display: block; margin-bottom: 9px; color: #c9f6fb; }
+.rule-import input[type="file"] { display: block; width: 100%; box-sizing: border-box; margin: 8px 0; color: #a8d8e0; font-size: 12px; }
+.import-preview { display: grid; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid #1a5c70; border-radius: 8px; background: #031522; }
+.import-preview small { color: #ffbd8b; line-height: 1.5; }
+.import-preview button { justify-self: start; }
 .notice { color: #53f0b4; font-size: 12px; }
 .global-notice { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 16px; padding: 10px 14px; border: 1px solid rgba(255, 168, 92, .45); background: rgba(72, 37, 17, .42); color: #ffd0a3; font-size: 13px; }
 .global-notice button { border: 1px solid rgba(83, 233, 255, .5); background: transparent; color: #9ff5ff; padding: 5px 12px; cursor: pointer; }

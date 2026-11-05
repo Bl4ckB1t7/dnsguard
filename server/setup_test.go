@@ -284,6 +284,18 @@ func TestGlobalPolicyModeRequiresWhitelistSeed(t *testing.T) {
 	}
 }
 
+func TestDeferredGlobalPolicyAllowsWebWhitelistImportWithoutSeed(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")
+	if rules, err := loadWhitelistSeedForZone("rpz.local"); err != nil || rules != nil {
+		t.Fatalf("deferred global setup should allow Web draft import without a seed: rules=%#v err=%v", rules, err)
+	}
+	if status := inspectWhitelistSeed(); status.Error != "" {
+		t.Fatalf("deferred global setup should not report a missing seed: %#v", status)
+	}
+}
+
 func TestGlobalPolicyModePersistsWithImportedDrafts(t *testing.T) {
 	dir, key := setupTestEnvironment(t)
 	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")

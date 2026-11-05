@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { AuditPanel, type AuditEntry } from "./AuditPanel";
 import { DnsNodePanel, type DnsNode } from "./DnsNodePanel";
 import { DeploymentGuide } from "./DeploymentGuide";
@@ -73,6 +73,67 @@ function ruleActionLabel(rule: Rule): string {
   return "白名单";
 }
 
+type WhitelistImportPreview = { fileName: string; domains: string[]; invalid: string[]; duplicates: number };
+
+const importLabelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+function normalizeImportedDomain(value: string): string {
+  const domain = value.trim().toLowerCase().replace(/\.+$/, "");
+  const labels = domain.split(".");
+  if (!domain || domain.length > 253 || labels.length < 2 || domain.includes("_") || domain.includes("*") || labels.some((label) => !importLabelPattern.test(label))) return "";
+  return domain;
+}
+
+function parseWhitelistImport(content: string, fileName: string): WhitelistImportPreview {
+  const domains: string[] = [];
+  const invalid: string[] = [];
+  const seen = new Set<string>();
+  let duplicates = 0;
+  const add = (value: unknown, label: string) => {
+    const domain = typeof value === "string" ? normalizeImportedDomain(value) : "";
+    if (!domain) {
+      invalid.push(label);
+      return;
+    }
+    if (seen.has(domain)) {
+      duplicates += 1;
+      return;
+    }
+    seen.add(domain);
+    domains.push(domain);
+  };
+  const trimmed = content.trim();
+  if (fileName.toLowerCase().endsWith(".json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      const entries = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && Array.isArray((parsed as { rules?: unknown }).rules) ? (parsed as { rules: unknown[] }).rules : null;
+      if (!entries) throw new Error("JSON 必须是域名数组或包含 rules 数组的白名单 JSON");
+      entries.forEach((entry, index) => {
+        if (typeof entry === "string") {
+          add(entry, `第 ${index + 1} 条`);
+          return;
+        }
+        if (entry && typeof entry === "object") {
+          const rule = entry as { domain?: unknown; type?: unknown; action?: unknown };
+          if (rule.type !== undefined && String(rule.type).toUpperCase() !== "CNAME") invalid.push(`第 ${index + 1} 条（仅支持 CNAME 白名单）`);
+          else if (rule.action !== undefined && String(rule.action).toLowerCase() !== "passthru") invalid.push(`第 ${index + 1} 条（仅支持 passthru 白名单）`);
+          else add(rule.domain, `第 ${index + 1} 条`);
+          return;
+        }
+        invalid.push(`第 ${index + 1} 条`);
+      });
+    } catch (error) {
+      invalid.push(`JSON 格式错误：${(error as Error).message}`);
+    }
+  } else {
+    content.split(/\r?\n/).forEach((raw, index) => {
+      const value = raw.split("#", 1)[0].trim();
+      if (value) add(value, `第 ${index + 1} 行`);
+    });
+  }
+  return { fileName, domains, invalid, duplicates };
+}
+
 export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword = false }: { onLogout: () => void; authEnabled?: boolean; mustChangePassword?: boolean }) {
   const [activeView, setActiveView] = useState<DashboardView>(dashboardViewFromURL);
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -119,6 +180,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
   const [telegramChatId, setTelegramChatId] = useState("");
   const [telegramEvents, setTelegramEvents] = useState<string[]>([]);
   const [telegramCooldown, setTelegramCooldown] = useState(300);
+  const [whitelistImport, setWhitelistImport] = useState<WhitelistImportPreview | null>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const [checkingDeny, setCheckingDeny] = useState(false);
   const [denyNotice, setDenyNotice] = useState("");
@@ -295,6 +357,56 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       await load();
     } catch (error) { setNotice(`RPZ 发布失败：${(error as Error).message}`); }
     finally { setBusy(false); }
+  };
+
+  const previewWhitelistFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      setNotice("白名单文件不能超过 4 MiB");
+      setWhitelistImport(null);
+      return;
+    }
+    try {
+      setWhitelistImport(parseWhitelistImport(await file.text(), file.name));
+      setNotice("");
+    } catch (error) {
+      setNotice(`白名单文件读取失败：${(error as Error).message}`);
+      setWhitelistImport(null);
+    }
+  };
+
+  const importWhitelistDrafts = async () => {
+    if (!whitelistImport || whitelistImport.domains.length === 0 || whitelistImport.invalid.length > 0) return;
+    const existing = new Set(rules.map((rule) => rule.domain.toLowerCase().replace(/\.+$/, "")));
+    const domains = whitelistImport.domains.filter((item) => !existing.has(item));
+    if (domains.length === 0) {
+      setNotice("文件中的域名都已存在，没有新增草稿");
+      return;
+    }
+    if (!window.confirm(`确认导入 ${domains.length} 个白名单域名？只会创建 draft，不会发布到 BIND。`)) return;
+    setBusy(true);
+    setNotice("");
+    let imported = 0;
+    try {
+      for (const importedDomain of domains) {
+        await readJSON<Rule>("/api/dns/rpz", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...csrfHeaders() },
+          body: JSON.stringify({ domain: importedDomain, type: "CNAME", value: "", reason: "白名单文件导入" }),
+        });
+        imported += 1;
+      }
+      setWhitelistImport(null);
+      setNotice(`已导入 ${imported} 个白名单 draft；请审核后手动发布`);
+      await load();
+    } catch (error) {
+      setNotice(`已导入 ${imported}/${domains.length} 个 draft，后续未继续：${(error as Error).message}`);
+      await load().catch(() => undefined);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const saveNode = async (node: DnsNode) => {
@@ -542,7 +654,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
           onRemove={(node) => { void removeNode(node); }}
         />
 
-        <div className="dns-panel" id="rpz-rules"><div className="panel-heading"><h2>添加 RPZ 规则</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>记录类型<select value={ruleType} onChange={(event) => setRuleType(event.target.value as "CNAME" | "A")}><option value="CNAME">白名单（CNAME / passthru）</option><option value="A">A 记录重定向</option></select></label>{ruleType === "A" && <label>目标 IPv4<input value={recordValue} onChange={(event) => setRecordValue(event.target.value)} placeholder="例如 192.0.2.10" inputMode="numeric" pattern="(?:[0-9]{1,3}\.){3}[0-9]{1,3}" required /></label>}<label>原因（可选）<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder={ruleType === "A" ? "业务流量导向指定服务" : "业务系统依赖"} /></label><button disabled={busy}>{busy ? "保存中…" : "保存 RPZ 规则"}</button></form>{notice && <p className="notice">{notice}</p>}</div>
+        <div className="dns-panel" id="rpz-rules"><div className="panel-heading"><h2>添加 RPZ 规则</h2><span>FILE-BACKED</span></div><form className="rule-form" onSubmit={addRule}><label>域名<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="例如 baidu.com" required /></label><p className="form-hint">输入 baidu.com 将同时覆盖 baidu.com 和 *.baidu.com。</p><label>记录类型<select value={ruleType} onChange={(event) => setRuleType(event.target.value as "CNAME" | "A")}><option value="CNAME">白名单（CNAME / passthru）</option><option value="A">A 记录重定向</option></select></label>{ruleType === "A" && <label>目标 IPv4<input value={recordValue} onChange={(event) => setRecordValue(event.target.value)} placeholder="例如 192.0.2.10" inputMode="numeric" pattern="(?:[0-9]{1,3}\.){3}[0-9]{1,3}" required /></label>}<label>原因（可选）<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder={ruleType === "A" ? "业务流量导向指定服务" : "业务系统依赖"} /></label><button disabled={busy}>{busy ? "保存中…" : "保存 RPZ 规则"}</button></form><div className="rule-import"><strong>批量导入白名单</strong><input type="file" accept=".txt,.json,text/plain,application/json" onChange={(event) => void previewWhitelistFile(event)} disabled={busy} /><p className="form-hint">TXT 每行一个域名；JSON 支持域名数组或现有白名单 JSON。导入只创建 draft，不会自动发布。</p>{whitelistImport && <div className="import-preview"><span>{whitelistImport.fileName}：{whitelistImport.domains.length} 个有效域名，{whitelistImport.duplicates} 个重复项</span>{whitelistImport.invalid.length > 0 && <small>有 {whitelistImport.invalid.length} 项格式错误，请修正后重新选择文件。</small>}<button type="button" className="publish-button" disabled={busy || whitelistImport.domains.length === 0 || whitelistImport.invalid.length > 0} onClick={() => void importWhitelistDrafts()}>导入为 draft</button></div>}</div>{notice && <p className="notice">{notice}</p>}</div>
       </section>
 
       <section className="release-grid">

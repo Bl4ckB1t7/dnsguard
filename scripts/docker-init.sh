@@ -59,10 +59,16 @@ if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == global ]]; then
   fi
   if ((initialized == 0)); then
     seed_path="${RPZ_WHITELIST_SEED_FILE:-}"
-    [[ "$seed_path" == /var/lib/dnsguard/* ]] || die "RPZ_WHITELIST_SEED_FILE must be inside /var/lib/dnsguard"
-    seed_host="$DATA_DIR/${seed_path#/var/lib/dnsguard/}"
-    [[ -f "$seed_host" && ! -L "$seed_host" ]] || die "copy the reviewed whitelist seed to $seed_host before first start"
-    [[ "$(stat -c '%a' "$seed_host")" =~ ^[0-7]*[0-6][0-6]$ ]] || die "whitelist seed must not be world-readable"
+    if [[ -n "$seed_path" ]]; then
+      [[ "$seed_path" == /var/lib/dnsguard/* ]] || die "RPZ_WHITELIST_SEED_FILE must be inside /var/lib/dnsguard"
+      seed_host="$DATA_DIR/${seed_path#/var/lib/dnsguard/}"
+      [[ -f "$seed_host" && ! -L "$seed_host" ]] || die "copy the reviewed whitelist seed to $seed_host before first start"
+      [[ "$(stat -c '%a' "$seed_host")" =~ ^[0-7]*[0-6][0-6]$ ]] || die "whitelist seed must not be world-readable"
+    elif [[ "${RPZ_GLOBAL_DENY_SETUP_DEFERRED:-}" != true ]]; then
+      die "global default-deny mode requires a whitelist seed, or RPZ_GLOBAL_DENY_SETUP_DEFERRED=true for Web import"
+    else
+      echo "No seed file configured; the Web whitelist importer will create draft rules before DENY is enabled"
+    fi
   fi
 fi
 
@@ -122,6 +128,13 @@ docker run --rm --user 0:0 \
 docker run --rm --user 10001:10001 \
   -v "$SECRET_DIR:/run/dnsguard-secrets:ro" \
   --entrypoint sh "$IMAGE" -c 'test -r /run/dnsguard-secrets/rpz-manager.key && { [ ! -e /run/dnsguard-secrets/bootstrap.token ] || test -r /run/dnsguard-secrets/bootstrap.token; }'
+
+docker run --rm --user 0:0 \
+  -v "$TLS_DIR:/run/tls" \
+  --entrypoint sh "$WEB_IMAGE" -c '
+    chown -R 101:101 /run/tls
+    find /run/tls -type f -name "*.pem" -exec chmod 0640 {} +
+  '
 
 docker run --rm --user 101:101 \
   -v "$TLS_DIR:/run/tls:ro" \

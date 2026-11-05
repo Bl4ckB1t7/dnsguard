@@ -33,7 +33,7 @@ DNSGuard 生产环境只支持 Docker Compose。Compose 只运行 DNSGuard 控�
 DNSGuard 不会自动编辑 `named.conf`、`response-policy` 或 Zone 文件。详细 BIND 配置见
 [BIND RPZ 对接文档](../../docs/bind-rpz-deployment.md)。
 
-## 第 2 步：获取代码并准备配置
+## 第 2 步：获取代码并一键准备
 
 正式部署使用已批准的版本 Tag。v1.1.0 尚在当前分支验收时，可使用：
 
@@ -41,22 +41,22 @@ DNSGuard 不会自动编辑 `named.conf`、`response-policy` 或 Zone 文件。�
 git clone --branch feat/v1.1.0-global-default-deny --single-branch \
   https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
-cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
-install -d -m 0750 docker-data secrets tls bind-logs
-chmod 0640 deploy/docker/dnsguard.env
+chmod 0750 install.sh
 ```
 
-编辑 `deploy/docker/dnsguard.env`，首次部署至少填写：
+执行：
 
-- `AUTH_SECRET`、`MONITORING_TOKEN`：每个环境独立的随机值，至少 32 字符；
-- `DNS_NODE_ADDRESSES`、`DNS_NODE_ALLOWED_CIDRS`；
-- `RPZ_PRIMARY`、`RPZ_PRIMARY_PORT`、`RPZ_ZONE`；
-- `RPZ_DEFAULT_DENY_MODE=global`、`RPZ_GLOBAL_DENY_ZONE`；
-- `RPZ_GLOBAL_DENY_RECURSOR`、`RPZ_GLOBAL_DENY_CHECK_NAME`；
-- `RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key`；
-- `RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json`。
+```bash
+./install.sh
+```
 
-不要把真实密钥写入 env、镜像或 Git：
+首次执行只需要按提示提供 BIND Primary、递归 DNS、TSIG Key 和 HTTPS 证书/私钥。脚本会自动生成安全的 `AUTH_SECRET`、`MONITORING_TOKEN` 和 Bootstrap Token，并创建目录、校验权限、构建镜像、启动 API/Web。它不会生成不可信的自签名证书。
+
+如需无人值守，可在执行前提供 `DNSGUARD_PRIMARY`、`DNSGUARD_RECURSOR`、`RPZ_TSIG_SOURCE`、`TLS_CERT_SOURCE` 和 `TLS_KEY_SOURCE`。已有 `deploy/docker/dnsguard.env`、密钥、证书和数据不会覆盖。
+
+Bootstrap Token 不会打印到日志；按脚本最后输出的受保护路径读取。之后打开 HTTPS 页面，在初始化向导中填写 Secondary 和确认 BIND 连接。
+
+高级方式仍可手动准备文件，但不建议新安装使用：
 
 ```bash
 install -m 0640 PATH_TO_RPZ_TSIG_KEY secrets/rpz-manager.key
@@ -87,7 +87,7 @@ cp deploy/docker/rpz-connect.env.example /path/to/rpz-connect.env
 
 默认只检查工具、TSIG 文件权限、Primary/Secondary 连通性、SOA Serial 和同步一致性，不修改 BIND。
 
-准备人工审核的白名单时，文件每行一个域名：
+登录后的 RPZ 规则页面可以直接导入人工审核的 TXT 或 JSON。TXT 每行一个域名：
 
 ```text
 baidu.com
@@ -95,24 +95,21 @@ qq.com
 example.org
 ```
 
-导出并挂载 JSON：
+也可以继续使用对接脚本导出 JSON：
 
 ```bash
 ./scripts/rpz-connect.sh --env-file /path/to/rpz-connect.env \
   --whitelist-file approved-domains.txt \
   --export-whitelist-json whitelist-seed.json
-install -d -m 0750 docker-data/bootstrap
-install -m 0600 whitelist-seed.json docker-data/bootstrap/whitelist-seed.json
 ```
 
-导入 JSON 不等于发布。对接脚本只生成并校验 JSON，不执行 DNS UPDATE；已有部署也不会重新导入覆盖规则。
+导入文件只生成 `draft`，不会自动写入 BIND；请审核后点击发布。
+
+`RPZ_GLOBAL_DENY_SETUP_DEFERRED=true` 由一键安装首次写入，允许先完成初始化和白名单导入；白名单发布、同步及业务验证完成后，再由 BIND 管理员启用 deny Zone 并移除该临时配置。
 
 ## 第 4 步：启动和完成初始化
 
 ```bash
-./scripts/docker-init.sh
-docker compose --env-file deploy/docker/dnsguard.env up -d
-docker compose --env-file deploy/docker/dnsguard.env ps
 docker compose --env-file deploy/docker/dnsguard.env logs --tail=100 dnsguard-api
 ```
 

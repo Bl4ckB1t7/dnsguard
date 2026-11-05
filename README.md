@@ -74,19 +74,19 @@ cd dnsguard
 cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
 ```
 
-编辑配置，准备 TSIG、Bootstrap Token 和 HTTPS 证书，然后执行：
+准备现有 BIND 的 TSIG Key 和企业 HTTPS 证书后，使用一键入口：
 
 ```bash
-./scripts/docker-init.sh
-docker compose --env-file deploy/docker/dnsguard.env up -d
-docker compose --env-file deploy/docker/dnsguard.env ps
+./install.sh
 ```
+
+脚本只生成随机运行密钥和一次性 Bootstrap Token，不显示 Token，也不会覆盖已有数据、证书或配置。它不会生成自签名证书；缺少 TSIG 或证书时会安全停止。重复执行只补齐缺失文件，已有文件不会覆盖。
 
 首次初始化的安全顺序必须是：
 
 **审核白名单 → 导入为 `draft` → 发布白名单 → 确认 Primary/Secondary 同步 → 启用全局 DENY → 验证业务。**
 
-登录后，顶部首次上线引导会按这三个阶段显示真实状态；导入不会自动发布，Primary/Secondary 未全部通过前不会提示进入下一步。
+登录后，顶部首次上线引导会按这三个阶段显示真实状态。可以在“RPZ 规则”页面直接导入 TXT（每行一个域名）或现有白名单 JSON；导入只创建 `draft`，必须人工审核、发布并确认 Primary/Secondary 同步后，才会进入下一步。
 
 如果首次初始化时 deny Zone 尚未加入 BIND 的 `response-policy`，临时使用：
 
