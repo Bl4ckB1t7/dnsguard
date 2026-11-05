@@ -809,22 +809,33 @@ func dnsOverview(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	rpzRuntime := rpzStatusSnapshot()
+	latestJob, hasLatestJob := latestPublishJob()
+	publishEvidenceReady := hasLatestJob && publishJobHasVerifiedCluster(latestJob, nodes)
+	var publishEvidence any
+	if hasLatestJob {
+		publishEvidence = map[string]any{
+			"id": latestJob.ID, "status": latestJob.Status, "syncStatus": latestJob.SyncStatus,
+			"finishedAt": latestJob.FinishedAt, "nodeChecks": latestJob.NodeChecks,
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"nodes":            len(nodes),
-		"healthyNodes":     healthy,
-		"rules":            rules,
-		"publishedRules":   published,
-		"pendingPublish":   pendingPublish,
-		"rpzHits":          rpzHitsValue,
-		"rpzHitStatus":     map[bool]string{true: "ready", false: "not_configured"}[rpzHitsReady],
-		"lastSync":         time.Now().UTC().Format("15:04:05"),
-		"publisherMode":    rpzRuntime.Mode,
-		"policyMode":       policyMode,
-		"globalDenyZone":   configuredGlobalDenyZone(),
-		"lastPublish":      rpzRuntime.LastPublish,
-		"publishMessage":   rpzRuntime.Message,
-		"publishJobId":     rpzRuntime.JobID,
-		"publishJobStatus": rpzRuntime.JobStatus,
+		"nodes":                len(nodes),
+		"healthyNodes":         healthy,
+		"rules":                rules,
+		"publishedRules":       published,
+		"pendingPublish":       pendingPublish,
+		"rpzHits":              rpzHitsValue,
+		"rpzHitStatus":         map[bool]string{true: "ready", false: "not_configured"}[rpzHitsReady],
+		"lastSync":             time.Now().UTC().Format("15:04:05"),
+		"publisherMode":        rpzRuntime.Mode,
+		"policyMode":           policyMode,
+		"globalDenyZone":       configuredGlobalDenyZone(),
+		"lastPublish":          rpzRuntime.LastPublish,
+		"publishMessage":       rpzRuntime.Message,
+		"publishJobId":         rpzRuntime.JobID,
+		"publishJobStatus":     rpzRuntime.JobStatus,
+		"publishEvidenceReady": publishEvidenceReady,
+		"publishEvidence":      publishEvidence,
 	})
 }
 

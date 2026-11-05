@@ -165,3 +165,6 @@ td { color: #c9e7ec; }
 .guide-checks span.pass { border-color: #36db9d; color: #a1f2d0; }
 .guide-checks span.fail { border-color: #ff6377; color: #ffb0bb; }
 .guide-checks b { margin-right: 5px; }
+.guide-callout-info { border-left-color: #2dd8eb; background: #07364b; color: #c9f7ff; }
+.guide-callout-info strong { color: #e4fdff; }
+.deployment-guide-legacy { border-color: #27657a; }

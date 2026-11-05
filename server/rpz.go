@@ -203,6 +203,41 @@ func updatePublishJob(id string, update func(*PublishJob)) (PublishJob, error) {
 	}
 }
 
+func latestPublishJob() (PublishJob, bool) {
+	publishJobMu.RLock()
+	defer publishJobMu.RUnlock()
+	var latest PublishJob
+	for _, job := range publishJobs {
+		if latest.ID == "" || job.CreatedAt > latest.CreatedAt || (job.CreatedAt == latest.CreatedAt && job.ID > latest.ID) {
+			latest = job
+		}
+	}
+	return latest, latest.ID != ""
+}
+
+func publishJobHasVerifiedCluster(job PublishJob, nodes []DNSNode) bool {
+	if job.Status != "succeeded" || job.SyncStatus != "published" || len(nodes) == 0 || len(job.NodeChecks) != len(nodes) {
+		return false
+	}
+	checks := make(map[string]RPZNodeCheck, len(job.NodeChecks))
+	for _, check := range job.NodeChecks {
+		if check.ID == "" || check.Status != "verified" {
+			return false
+		}
+		if _, exists := checks[check.ID]; exists {
+			return false
+		}
+		checks[check.ID] = check
+	}
+	for _, node := range nodes {
+		check, ok := checks[node.ID]
+		if !ok || check.Address != node.Address || check.Role != node.Role {
+			return false
+		}
+	}
+	return true
+}
+
 func getPublishJob(id string) (PublishJob, bool) {
 	publishJobMu.RLock()
 	job, ok := publishJobs[id]

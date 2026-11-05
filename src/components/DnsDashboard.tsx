@@ -3,7 +3,7 @@ import { AuditPanel, type AuditEntry } from "./AuditPanel";
 import { DnsNodePanel, type DnsNode } from "./DnsNodePanel";
 import { DeploymentGuide } from "./DeploymentGuide";
 
-type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; policyMode?: string; globalDenyZone?: string; lastPublish: string; publishMessage: string; publishJobId: string; publishJobStatus: string };
+type Overview = { nodes: number; healthyNodes: number; rules: number; publishedRules: number; pendingPublish: boolean; publishEvidenceReady?: boolean; publishEvidence?: { id: string; status: string; syncStatus?: string; finishedAt?: string; nodeChecks?: Array<{ id: string; name: string; role: string; address: string; status: string; error?: string }> }; rpzHits: number | null; rpzHitStatus: string; lastSync: string; publisherMode: string; policyMode?: string; globalDenyZone?: string; lastPublish: string; publishMessage: string; publishJobId: string; publishJobStatus: string };
 type Rule = { id: string; domain: string; action: string; type?: string; value?: string; reason: string; status: string; updatedAt: string };
 type RPZChange = { type: string; domain: string; before: string; after: string };
 type RPZPreview = { pending: boolean; currentCount: number; publishedCount: number; changes: RPZChange[] };
