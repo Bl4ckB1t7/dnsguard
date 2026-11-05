@@ -12,9 +12,11 @@ FAILURES=0
 QNAME_WAIT_RECURSE="${QNAME_WAIT_RECURSE:-no}"
 TEST_DNSSEC="${TEST_DNSSEC:-0}"
 STAGED_FIRST_DEPLOYMENT="${STAGED_FIRST_DEPLOYMENT:-0}"
+STAGED_INJECT_SYNC_FAILURE="${STAGED_INJECT_SYNC_FAILURE:-0}"
 
 [[ "$TEST_DNSSEC" == 0 || "$TEST_DNSSEC" == 1 ]] || { echo 'TEST_DNSSEC must be 0 or 1' >&2; exit 2; }
 [[ "$STAGED_FIRST_DEPLOYMENT" == 0 || "$STAGED_FIRST_DEPLOYMENT" == 1 ]] || { echo 'STAGED_FIRST_DEPLOYMENT must be 0 or 1' >&2; exit 2; }
+[[ "$STAGED_INJECT_SYNC_FAILURE" == 0 || "$STAGED_INJECT_SYNC_FAILURE" == 1 ]] || { echo 'STAGED_INJECT_SYNC_FAILURE must be 0 or 1' >&2; exit 2; }
 
 case "$QNAME_WAIT_RECURSE" in
   default) qname_wait_recurse_suffix='' ;;
@@ -315,6 +317,7 @@ if [[ "$STAGED_FIRST_DEPLOYMENT" == 1 ]]; then
     pass "staged deployment starts without global DENY; business name resolves: $initial_allow"
   else
     fail "staged deployment initial business query failed before whitelist publication: $initial_allow"
+    exit 1
   fi
 
   compose exec -T primary nsupdate -k /etc/bind/keys/acceptance-rpz.key <<'UPDATE'
@@ -327,8 +330,14 @@ update add *.redirect.example.com.rpz.local. 60 A 192.0.2.250
 send
 UPDATE
 
+  if [[ "$STAGED_INJECT_SYNC_FAILURE" == 1 ]]; then
+    compose stop secondary-1 >/dev/null
+  fi
+
   synced=0
-  for _ in $(seq 1 60); do
+  sync_attempts=60
+  if [[ "$STAGED_INJECT_SYNC_FAILURE" == 1 ]]; then sync_attempts=1; fi
+  for _ in $(seq 1 "$sync_attempts"); do
     allow_primary="$(node_dig 15453 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
     allow_secondary_1="$(node_dig 15454 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
     allow_secondary_2="$(node_dig 15455 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
@@ -345,6 +354,7 @@ UPDATE
     pass "reviewed whitelist published and synchronized before global DENY"
   else
     fail "whitelist did not synchronize before global DENY: allow=$allow_primary/$allow_secondary_1/$allow_secondary_2 redirect=$redirect_primary/$redirect_secondary_1/$redirect_secondary_2"
+    exit 1
   fi
 
   redirect_before_deny="$(node_dig 15453 +tcp +time=2 +tries=1 redirect.example.com A +short 2>/dev/null || true)"
@@ -352,6 +362,7 @@ UPDATE
     pass "A redirect is valid before global DENY activation: $redirect_before_deny"
   else
     fail "A redirect was not valid before global DENY activation: $redirect_before_deny"
+    exit 1
   fi
 
   python3 - "$RUNTIME_DIR" <<'PY'
@@ -366,15 +377,30 @@ for path in (root / "primary" / "named.conf", root / "secondary-1" / "named.conf
     ))
 PY
   compose up -d --force-recreate >/dev/null
+  deny_ready=1
   for port in 15453 15454 15455; do
-    wait_soa "$port" global-deny.rpz.local || fail "staged global DENY did not reload on port $port"
+    if ! wait_soa "$port" global-deny.rpz.local; then
+      fail "staged global DENY did not reload on port $port"
+      deny_ready=0
+    fi
   done
+  ((deny_ready)) || exit 1
   for _ in $(seq 1 60); do
     final_allow_1="$(node_dig 15454 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
     final_allow_2="$(node_dig 15455 +tcp +time=1 +tries=1 allow.example.com A +short 2>/dev/null || true)"
     if [[ "$final_allow_1" == *192.0.2.10* && "$final_allow_2" == *192.0.2.10* ]]; then break; fi
     sleep 0.5
   done
+  if [[ "$final_allow_1" != *192.0.2.10* || "$final_allow_2" != *192.0.2.10* ]]; then
+    fail "whitelist was not still effective after global DENY activation: secondary1=$final_allow_1 secondary2=$final_allow_2"
+    exit 1
+  fi
+  final_redirect_1="$(node_dig 15454 +tcp +time=1 +tries=1 redirect.example.com A +short 2>/dev/null || true)"
+  final_redirect_2="$(node_dig 15455 +tcp +time=1 +tries=1 redirect.example.com A +short 2>/dev/null || true)"
+  if [[ "$final_redirect_1" != *192.0.2.250* || "$final_redirect_2" != *192.0.2.250* ]]; then
+    fail "A redirect was not still effective after global DENY activation: secondary1=$final_redirect_1 secondary2=$final_redirect_2"
+    exit 1
+  fi
   pass "global DENY activated only after whitelist publication and synchronization"
 fi
 
