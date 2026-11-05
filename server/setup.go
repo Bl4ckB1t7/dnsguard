@@ -292,6 +292,11 @@ func markDeploymentCompleted() error {
 	if _, ok := currentGlobalDenyVerification(); !ok {
 		return fmt.Errorf("缺少有效的全局 DENY 只读核验证据")
 	}
+	// Keep the file lock and state lock in the same order as
+	// saveInitializationState. This prevents another initialization update from
+	// interleaving between the in-memory transition and its durable write.
+	initializationFileMu.Lock()
+	defer initializationFileMu.Unlock()
 	initializationMu.Lock()
 	previous := initialization
 	if previous.DeploymentCompleted {
@@ -300,15 +305,13 @@ func markDeploymentCompleted() error {
 	}
 	initialization.DeploymentCompleted = true
 	initialization.DeploymentCompletedAt = time.Now().UTC().Format(time.RFC3339)
-	initializationMu.Unlock()
-	if err := saveInitializationState(); err != nil {
-		initializationMu.Lock()
-		if initialization.DeploymentCompletedAt == previous.DeploymentCompletedAt {
-			initialization = previous
-		}
+	candidate := initialization
+	if err := writeInitializationState(candidate); err != nil {
+		initialization = previous
 		initializationMu.Unlock()
 		return fmt.Errorf("首次部署完成状态持久化失败: %w", err)
 	}
+	initializationMu.Unlock()
 	return nil
 }
 
@@ -363,7 +366,15 @@ func saveInitializationState() error {
 	defer initializationFileMu.Unlock()
 	initializationMu.Lock()
 	copyState := initialization
+	// Keep the state lock through the atomic write. Otherwise another
+	// initialization transition could occur after the snapshot and be
+	// overwritten by this stale snapshot on disk.
+	err := writeInitializationState(copyState)
 	initializationMu.Unlock()
+	return err
+}
+
+func writeInitializationState(copyState initializationState) error {
 	content, err := json.MarshalIndent(copyState, "", "  ")
 	if err != nil {
 		return err

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -477,6 +478,22 @@ func TestDeploymentCompletionRequiresEvidenceAndSurvivesLaterChanges(t *testing.
 			{ID: "secondary-1", Role: "secondary", Address: "127.0.0.1:5354", Status: "verified"},
 		},
 	}}
+	initialization = initializationState{Status: initializationCompleted, Version: 1, PolicyMode: "global", Username: "existing-admin"}
+	originalInitialization := initialization
+	initializationPath := os.Getenv("INITIALIZATION_FILE")
+	t.Setenv("INITIALIZATION_FILE", "/dev/null/dnsguard-initialization.json")
+	if err := markDeploymentCompleted(); err == nil {
+		t.Fatal("initialization write failure must fail deployment completion")
+	}
+	if !reflect.DeepEqual(initialization, originalInitialization) {
+		t.Fatalf("initialization state was not restored after write failure: got=%+v want=%+v", initialization, originalInitialization)
+	}
+	failedStatus := httptest.NewRecorder()
+	setupStatus(failedStatus, httptest.NewRequest(http.MethodGet, "/api/setup/status", nil))
+	if !strings.Contains(failedStatus.Body.String(), `"deploymentCompleted":false`) {
+		t.Fatalf("setup status must remain incomplete after write failure: %s", failedStatus.Body.String())
+	}
+	t.Setenv("INITIALIZATION_FILE", initializationPath)
 	if err := markDeploymentCompleted(); err != nil {
 		t.Fatalf("complete deployment should be recorded: %v", err)
 	}
