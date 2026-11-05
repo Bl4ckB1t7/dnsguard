@@ -239,6 +239,7 @@ func setupStatus(w http.ResponseWriter, r *http.Request) {
 		"tsigKeyPath":       strings.TrimSpace(os.Getenv("RPZ_KEY_FILE")),
 		"keyCandidates":     protectedKeyCandidates(),
 		"writeTestRequired": true,
+		"whitelistSeed":     inspectWhitelistSeed(),
 	})
 }
 
@@ -433,6 +434,10 @@ func setupValidate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if _, err := loadWhitelistSeedForZone(request.Zone); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "白名单初始 JSON 校验失败：" + err.Error()})
+		return
+	}
 	result := setupChecksFunc(r.Context(), request)
 	status := http.StatusOK
 	if !result.Ready {
@@ -471,12 +476,17 @@ func setupComplete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	seedRules, err := loadWhitelistSeedForZone(request.Zone)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "白名单初始 JSON 校验失败：" + err.Error()})
+		return
+	}
 	result := setupChecksFunc(r.Context(), request)
 	if !result.Ready {
 		writeJSON(w, http.StatusUnprocessableEntity, result)
 		return
 	}
-	if err := commitSetup(request, nodes, r); err != nil {
+	if err := commitSetup(request, nodes, seedRules, r); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "初始化未完成：" + err.Error()})
 		return
 	}
@@ -504,7 +514,7 @@ func issueSetupSession(w http.ResponseWriter, r *http.Request, username string) 
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrfToken, Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
 }
 
-func commitSetup(request setupRequest, nodes []DNSNode, r *http.Request) error {
+func commitSetup(request setupRequest, nodes []DNSNode, seedRules []RPZRule, r *http.Request) error {
 	backupDir, err := os.MkdirTemp(filepath.Dir(dnsStatePath()), ".dnsguard-setup-backup-")
 	if err != nil {
 		return err
@@ -536,10 +546,10 @@ func commitSetup(request setupRequest, nodes []DNSNode, r *http.Request) error {
 	dnsMu.RLock()
 	newState := state
 	newState.Nodes = nodes
-	newState.Rules = []RPZRule{}
+	newState.Rules = append([]RPZRule(nil), seedRules...)
 	newState.Published = []RPZRule{}
 	newState.Versions = []RPZVersion{}
-	newState.RulesRevision = 0
+	newState.RulesRevision = uint64(len(seedRules))
 	dnsMu.RUnlock()
 	stateContent, _ := json.MarshalIndent(newState, "", "  ")
 	stages := []struct {
@@ -563,6 +573,11 @@ func commitSetup(request setupRequest, nodes []DNSNode, r *http.Request) error {
 	dnsMu.Lock()
 	state = newState
 	dnsMu.Unlock()
+	if len(seedRules) > 0 {
+		if err := recordCriticalAudit(r, request.Username, "setup.whitelist.import", fmt.Sprintf("count=%d source=rpz-connect mode=global status=draft", len(seedRules))); err != nil {
+			return recoverSetupAndFail(fmt.Errorf("白名单导入审计记录失败: %w", err))
+		}
+	}
 	if err := recordCriticalAudit(r, request.Username, "setup.complete", "success"); err != nil {
 		return recoverSetupAndFail(fmt.Errorf("审计记录失败: %w", err))
 	}

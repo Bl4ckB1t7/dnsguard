@@ -291,6 +291,17 @@ cp deploy/docker/rpz-connect.env.example /tmp/rpz-connect.env
 
 如果设置 `RPZ_RECURSOR`、`RPZ_CHECK_NAME` 和 `RPZ_EXPECTED_A`，脚本还会通过递归 DNS 查询指定测试域名并核对预期 A 记录；未同时设置这三个值时，实际策略验证会明确显示为 `NOT RUN`。还可以按管理员提供的隔离测试数据配置 `RPZ_ALLOW_CHECK_NAME`/`RPZ_ALLOW_EXPECTED_A` 验证白名单，及 `RPZ_DENY_ZONE`、`RPZ_DENY_CHECK_NAME`、`RPZ_DENY_TRIGGER`、`RPZ_DENY_BASELINE_RECURSOR`、`RPZ_DENY_BASELINE_EXPECTED_A` 验证默认拒绝。默认拒绝验证会先用基线解析器确认测试域名确实可解析，再检查策略解析器的 RCODE，并查询 deny Zone 触发项的实际动作证据；参数不完整时输出 `NOT RUN`，不会假设 TLD 拒绝已经启用。
 
+对接检查还可以把人工审核的域名清单转换为 DNSGuard 初始化用的白名单草稿。该操作只生成本地 JSON，不写入 BIND：
+
+```bash
+./scripts/rpz-connect.sh \
+  --env-file /tmp/rpz-connect.env \
+  --whitelist-file /path/to/approved-domains.txt \
+  --export-whitelist-json /path/to/whitelist-seed.json
+```
+
+每行一个域名，空行和 `#` 注释会忽略；脚本会小写化、去除末尾点并去重，拒绝通配符、下划线、重复输出覆盖和无效域名。将结果放入 Docker 的 `docker-data/bootstrap/whitelist-seed.json`，并设置 `RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json` 后，首次初始化会将规则以 `draft` 导入。它们不会自动发布，已有部署也不会重新导入。
+
 脚本输出使用 `PASS`、`FAIL`、`WARN`，适合安装验收和故障排查。`--write-test` 不应在未经审批的生产变更窗口外执行。
 
 ## 7. 发布前检查

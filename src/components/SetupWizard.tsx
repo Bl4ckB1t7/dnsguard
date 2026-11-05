@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
 type SetupCheck = { name: string; status: "pass" | "fail" | "not_run"; detail: string; impact?: string; cleanup?: string };
-type SetupStatus = { tsigKeyPath?: string; keyCandidates?: string[]; writeTestRequired?: boolean; error?: string };
+type SetupStatus = { tsigKeyPath?: string; keyCandidates?: string[]; writeTestRequired?: boolean; whitelistSeed?: { available?: boolean; count?: number; mode?: string; error?: string }; error?: string };
 type SetupPayload = { ready?: boolean; checks?: SetupCheck[]; error?: string };
 
 export function SetupWizard({ onComplete }: { onComplete: () => void }) {
@@ -17,12 +17,14 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [complete, setComplete] = useState(false);
+  const [whitelistSeed, setWhitelistSeed] = useState<SetupStatus["whitelistSeed"]>();
 
   useEffect(() => {
     fetch("/api/setup/status", { cache: "no-store" })
       .then((response) => response.json() as Promise<SetupStatus>)
       .then((value) => {
         setTsigKeyPath(value.tsigKeyPath ?? value.keyCandidates?.[0] ?? "");
+        setWhitelistSeed(value.whitelistSeed);
         if (value.error) setError(value.error);
       })
       .catch(() => setError("无法读取初始化状态，请检查 API 服务"));
@@ -73,6 +75,8 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
         <p className="setup-eyebrow">DNSGuard · FIRST RUN</p>
         <h1>首次初始化向导</h1>
         <p className="setup-intro">初始化完成前不会开放登录和 RPZ 发布。Bootstrap Token 只从部署终端获取，不会显示在页面、日志或 API 响应中。</p>
+        {whitelistSeed?.available && <div className="setup-warning">已发现 {whitelistSeed.count ?? 0} 条部署前白名单。完成初始化后将以草稿导入，不会自动写入 BIND；请先在页面核对，再通过正常发布流程提交。</div>}
+        {whitelistSeed?.error && <div className="setup-warning">部署前白名单不可用：{whitelistSeed.error}。请修正挂载文件后重新加载页面。</div>}
         <form onSubmit={(event) => void submit(event, "validate")}>
           <label>Bootstrap Token<input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} autoComplete="off" /></label>
           <div className="setup-grid">
