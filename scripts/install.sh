@@ -178,10 +178,14 @@ copy_once() {
     read -r -p "$label 源文件路径: " source_path
   fi
   [[ -n "$source_path" && -f "$source_path" && ! -L "$source_path" ]] || die "请提供有效的 $label 普通文件"
+  if [[ "$label" == "RPZ TSIG Key" ]]; then
+    dnsguard_validate_tsig_key_file "$source_path" "$label" || die "TSIG Key 无法使用；请修复后重试，不会自动修改 BIND"
+  fi
   install -D -m "$mode" "$source_path" "$destination"
 }
 
 copy_once "${RPZ_TSIG_SOURCE:-${DNSGUARD_TSIG_SOURCE:-}}" "$DNSGUARD_SECRET_DIR/rpz-manager.key" "RPZ TSIG Key" 0640
+dnsguard_validate_tsig_key_file "$DNSGUARD_SECRET_DIR/rpz-manager.key" "RPZ TSIG Key" || die "目标 TSIG Key 校验失败；请提供现有且已授权的 BIND Key"
 copy_once "${TLS_CERT_SOURCE:-${DNSGUARD_TLS_CERT_SOURCE:-}}" "$DNSGUARD_TLS_DIR/fullchain.pem" "HTTPS 证书" 0644
 copy_once "${TLS_KEY_SOURCE:-${DNSGUARD_TLS_KEY_SOURCE:-}}" "$DNSGUARD_TLS_DIR/privkey.pem" "HTTPS 私钥" 0640
 

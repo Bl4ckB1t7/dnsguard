@@ -47,14 +47,16 @@ flowchart LR
 先执行只读对接检查：
 
 ```bash
-cp deploy/docker/rpz-connect.env.example /path/to/rpz-connect.env
-./scripts/rpz-connect.sh --env-file /path/to/rpz-connect.env
+RPZ_CONNECT_ENV="$PWD/.local/rpz-connect.env"
+mkdir -p "$(dirname "$RPZ_CONNECT_ENV")"
+cp deploy/docker/rpz-connect.env.example "$RPZ_CONNECT_ENV"
+./scripts/rpz-connect.sh --env-file "$RPZ_CONNECT_ENV"
 ```
 
 需要准备初始白名单时，输入文件每行一个域名：
 
 ```bash
-./scripts/rpz-connect.sh --env-file /path/to/rpz-connect.env \
+./scripts/rpz-connect.sh --env-file "$RPZ_CONNECT_ENV" \
   --whitelist-file approved-domains.txt \
   --export-whitelist-json whitelist-seed.json
 install -d -m 0750 docker-data/bootstrap
@@ -74,6 +76,9 @@ cd dnsguard
 ```
 
 准备现有 BIND 的 TSIG Key 和企业 HTTPS 证书后，使用一键入口：
+
+已有 Primary 默认使用现有已授权 Key；新建 Primary 时先由 BIND 管理员生成并配置同一份 Key，
+DNSGuard 不会生成、替换或修改 BIND Key。
 
 ```bash
 ./install.sh
