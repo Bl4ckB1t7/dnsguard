@@ -87,6 +87,21 @@ cp deploy/docker/rpz-connect.env.example /path/to/rpz-connect.env
 
 检查失败时，应先排查 BIND 配置、TSIG 权限和网络连通性，不要绕过安全检查。
 
+如需在启用严格策略前准备初始白名单，可在对接检查时额外导出 JSON。输入文件每行一个域名，脚本只做规范化、去重和格式校验，不执行 DNS UPDATE：
+
+```bash
+./scripts/rpz-connect.sh \
+  --env-file /path/to/rpz-connect.env \
+  --whitelist-file /path/to/approved-domains.txt \
+  --export-whitelist-json /path/to/whitelist-seed.json
+
+install -d -m 0750 docker-data/bootstrap
+install -m 0600 /path/to/whitelist-seed.json docker-data/bootstrap/whitelist-seed.json
+printf '\nRPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json\n' >> deploy/docker/dnsguard.env
+```
+
+启动后初始化向导会显示发现的条目数量，并将其导入为未发布草稿；不会自动修改 BIND。管理员应在页面核对后，再使用正常发布流程提交白名单。已有 DNSGuard 数据时不会重新导入或覆盖现有规则。
+
 ### 可选：受控临时 TXT 写入测试
 
 脚本支持显式授权的临时 TXT 测试，但默认不开启。只有在隔离环境或已批准的维护窗口中，才执行：

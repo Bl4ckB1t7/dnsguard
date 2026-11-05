@@ -1,4 +1,4 @@
-# DNSGuard v1.0.0 Docker Compose 交付手册
+# DNSGuard v1.0.1 Docker Compose 交付手册
 
 Docker Compose 是 DNSGuard 的推荐生产部署方式。Compose 只运行 DNSGuard
 控制面：`dnsguard-api` 和 `dnsguard-web`。生产 BIND Primary/Secondary 必须继续
@@ -20,6 +20,25 @@ DNSGuard 不会安装或管理生产 BIND。启动 Compose 前，请先准备 RP
 准备完成后，确认 DNSGuard 所在主机能够访问 Primary 和全部 Secondary 的 TCP/UDP 53 端口。不要把生产 BIND 放进本 Compose，也不要把生产 TSIG 写入 Git 或环境变量模板。
 
 可使用仓库提供的一键只读检查脚本：`scripts/rpz-connect.sh`。配置模板为 `deploy/docker/rpz-connect.env.example`；脚本默认只检查连通性、SOA、Serial 和密钥权限，不会修改 BIND。TSIG 写权限测试必须显式使用 `--write-test --confirm WRITE-TEST`。
+
+如果严格策略启用前需要准备初始白名单，可用对接脚本生成未发布 JSON（输入文件每行一个域名）：
+
+```bash
+./scripts/rpz-connect.sh \
+  --env-file /path/to/rpz-connect.env \
+  --whitelist-file /path/to/approved-domains.txt \
+  --export-whitelist-json /path/to/whitelist-seed.json
+install -d -m 0750 docker-data/bootstrap
+install -m 0600 /path/to/whitelist-seed.json docker-data/bootstrap/whitelist-seed.json
+```
+
+在 `deploy/docker/dnsguard.env` 中加入：
+
+```dotenv
+RPZ_WHITELIST_SEED_FILE=/var/lib/dnsguard/bootstrap/whitelist-seed.json
+```
+
+这是初始化输入，不是 BIND Zone 文件。脚本不会执行 DNS UPDATE；初始化向导只会把它导入为草稿，管理员核对后仍需通过正常发布流程提交。初始 JSON 必须位于 `docker-data/` 对应的数据挂载内，权限不得对 other 开放；已有部署不会重新导入。
 
 ## 3. 获取正式版本
 

@@ -4,6 +4,7 @@ set -Eeuo pipefail
 shopt -s extglob
 
 SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RPZ_ZONE="${RPZ_ZONE-}"
 RPZ_PRIMARY="${RPZ_PRIMARY-}"
 RPZ_PRIMARY_PORT="${RPZ_PRIMARY_PORT-}"
@@ -22,6 +23,8 @@ RPZ_DENY_TRIGGER="${RPZ_DENY_TRIGGER-}"
 RPZ_DENY_EXPECTED_RCODE="${RPZ_DENY_EXPECTED_RCODE-NXDOMAIN}"
 RPZ_DENY_BASELINE_RECURSOR="${RPZ_DENY_BASELINE_RECURSOR-}"
 RPZ_DENY_BASELINE_EXPECTED_A="${RPZ_DENY_BASELINE_EXPECTED_A-}"
+RPZ_WHITELIST_FILE="${RPZ_WHITELIST_FILE-}"
+RPZ_WHITELIST_JSON="${RPZ_WHITELIST_JSON-}"
 ENV_FILE="${RPZ_CONNECT_ENV_FILE-}"
 OUTPUT_DIR=""
 WRITE_TEST=0
@@ -61,6 +64,8 @@ Options:
   --deny-rcode RCODE  Expected recursive RCODE for --deny-name (default NXDOMAIN).
   --deny-baseline HOST[:P]  Resolver proving --deny-name is normally resolvable.
   --deny-baseline-a IPv4  Expected baseline A value for --deny-baseline.
+  --whitelist-file FILE  One domain per line; comments and blank lines are ignored.
+  --export-whitelist-json FILE  Export a validated draft seed; never writes BIND.
   --confirm VALUE     Non-interactive confirmation; VALUE must be WRITE-TEST.
   -h, --help          Show this help.
 
@@ -101,7 +106,7 @@ load_env_file() {
       value="${value#\"}"
       value="${value%\"}"
       case "$key" in
-        RPZ_ZONE|RPZ_PRIMARY|RPZ_PRIMARY_PORT|RPZ_SECONDARIES|RPZ_KEY_FILE|RPZ_RECURSOR|RPZ_TEST_DOMAIN|RPZ_TEST_NAMESPACE|RPZ_WRITE_TIMEOUT_SECONDS|RPZ_CHECK_NAME|RPZ_EXPECTED_A|RPZ_ALLOW_CHECK_NAME|RPZ_ALLOW_EXPECTED_A|RPZ_DENY_ZONE|RPZ_DENY_CHECK_NAME|RPZ_DENY_TRIGGER|RPZ_DENY_EXPECTED_RCODE|RPZ_DENY_BASELINE_RECURSOR|RPZ_DENY_BASELINE_EXPECTED_A)
+        RPZ_ZONE|RPZ_PRIMARY|RPZ_PRIMARY_PORT|RPZ_SECONDARIES|RPZ_KEY_FILE|RPZ_RECURSOR|RPZ_TEST_DOMAIN|RPZ_TEST_NAMESPACE|RPZ_WRITE_TIMEOUT_SECONDS|RPZ_CHECK_NAME|RPZ_EXPECTED_A|RPZ_ALLOW_CHECK_NAME|RPZ_ALLOW_EXPECTED_A|RPZ_DENY_ZONE|RPZ_DENY_CHECK_NAME|RPZ_DENY_TRIGGER|RPZ_DENY_EXPECTED_RCODE|RPZ_DENY_BASELINE_RECURSOR|RPZ_DENY_BASELINE_EXPECTED_A|RPZ_WHITELIST_FILE|RPZ_WHITELIST_JSON)
           # Explicit environment variables take precedence over the file.
           if [[ -z "${!key+x}" || -z "${!key}" ]]; then
             printf -v "$key" '%s' "$value"
@@ -297,6 +302,19 @@ valid_dns_name() {
   done
 }
 
+export_whitelist_seed() {
+  [[ -n "$RPZ_WHITELIST_FILE" && -n "$RPZ_WHITELIST_JSON" ]] || {
+    fail '--whitelist-file 和 --export-whitelist-json 必须同时提供'
+    return
+  }
+  if ! python3 "$SCRIPT_DIR/export-whitelist-json.py" \
+    --input "$RPZ_WHITELIST_FILE" \
+    --output "$RPZ_WHITELIST_JSON" \
+    --zone "${RPZ_ZONE:-rpz.local}"; then
+    fail '白名单 JSON 导出失败'
+  fi
+}
+
 query_record_state() {
   local host="$1" port="$2" name="$3" type="$4" output rcode flags answer
   DNS_QUERY_STATE="UNKNOWN"
@@ -490,6 +508,8 @@ while (($#)); do
     --deny-rcode) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_DENY_EXPECTED_RCODE="$2"; shift 2 ;;
     --deny-baseline) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_DENY_BASELINE_RECURSOR="$2"; shift 2 ;;
     --deny-baseline-a) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_DENY_BASELINE_EXPECTED_A="$2"; shift 2 ;;
+    --whitelist-file) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_WHITELIST_FILE="$2"; shift 2 ;;
+    --export-whitelist-json) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; RPZ_WHITELIST_JSON="$2"; shift 2 ;;
     --render) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; OUTPUT_DIR="$2"; shift 2 ;;
     --write-test) WRITE_TEST=1; shift ;;
     --confirm) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; CONFIRM_WRITE="$2"; shift 2 ;;
@@ -507,6 +527,7 @@ RPZ_SECONDARIES="${RPZ_SECONDARIES:-}"
 require_command dig || true
 require_command awk || true
 require_command stat || true
+if [[ -n "$RPZ_WHITELIST_FILE" || -n "$RPZ_WHITELIST_JSON" ]]; then require_command python3 || true; fi
 if ((WRITE_TEST)); then require_command nsupdate || true; require_command timeout || true; fi
 if ((FAILURES)); then exit 2; fi
 
@@ -577,6 +598,13 @@ else
 fi
 
 render_templates
+if [[ -n "$RPZ_WHITELIST_FILE" || -n "$RPZ_WHITELIST_JSON" ]]; then
+  export_whitelist_seed
+  if ((FAILURES)); then
+    printf '结果: FAIL（白名单导出未通过，未执行写入；%d 个失败，%d 个警告）\n' "$FAILURES" "$WARNINGS" >&2
+    exit 1
+  fi
+fi
 if ((WRITE_TEST)); then
   test_domain_scope
   if ((FAILURES)); then

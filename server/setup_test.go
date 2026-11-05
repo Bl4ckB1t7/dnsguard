@@ -219,3 +219,59 @@ func TestInitializationMiddlewareLocksRPZPublish(t *testing.T) {
 		t.Fatalf("uninitialized RPZ publish must be locked, got %d", recorder.Code)
 	}
 }
+
+func TestSetupImportsWhitelistSeedAsDraftOnly(t *testing.T) {
+	dir, key := setupTestEnvironment(t)
+	seedPath := filepath.Join(dir, "bootstrap", "whitelist.json")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"version":1,"source":"rpz-connect","mode":"global","generatedAt":"2026-11-05T00:00:00Z","zone":"rpz.local.","rules":[{"domain":"Example.COM.","action":"passthru","type":"CNAME","value":"rpz-passthru.","reason":"seed"},{"domain":"child.example.net","action":"passthru","type":"CNAME","value":"rpz-passthru.","reason":"seed"}]}`
+	if err := os.WriteFile(seedPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RPZ_WHITELIST_SEED_FILE", seedPath)
+	originalChecks := setupChecksFunc
+	setupChecksFunc = readySetupChecks
+	t.Cleanup(func() { setupChecksFunc = originalChecks })
+	request := validSetupRequest(key)
+	httpRequest := httptest.NewRequest(http.MethodPost, "/api/setup/complete", setupRequestBody(t, request))
+	httpRequest.Header.Set("X-DNSGuard-Bootstrap", "setup-bootstrap-token-012345678901234567890")
+	recorder := httptest.NewRecorder()
+	setupComplete(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("setup with whitelist seed failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if len(state.Rules) != 2 || len(state.Published) != 0 {
+		t.Fatalf("seed rules must be imported as unpublished drafts: rules=%d published=%d", len(state.Rules), len(state.Published))
+	}
+	if state.Rules[0].Domain != "example.com" || state.Rules[0].Status != "draft" || state.Rules[0].Type != "CNAME" {
+		t.Fatalf("seed rule was not normalized as a draft: %#v", state.Rules[0])
+	}
+}
+
+func TestSetupRejectsInvalidWhitelistSeedBeforeWritingState(t *testing.T) {
+	dir, key := setupTestEnvironment(t)
+	seedPath := filepath.Join(dir, "bootstrap", "whitelist.json")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(seedPath, []byte(`{"version":1,"source":"rpz-connect","mode":"global","zone":"rpz.local.","rules":[{"domain":"bad_domain.example","action":"passthru","type":"CNAME"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RPZ_WHITELIST_SEED_FILE", seedPath)
+	originalChecks := setupChecksFunc
+	setupChecksFunc = readySetupChecks
+	t.Cleanup(func() { setupChecksFunc = originalChecks })
+	request := validSetupRequest(key)
+	httpRequest := httptest.NewRequest(http.MethodPost, "/api/setup/complete", setupRequestBody(t, request))
+	httpRequest.Header.Set("X-DNSGuard-Bootstrap", "setup-bootstrap-token-012345678901234567890")
+	recorder := httptest.NewRecorder()
+	setupComplete(recorder, httpRequest)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid seed must be rejected, got %d %s", recorder.Code, recorder.Body.String())
+	}
+	if regularFileExists(os.Getenv("AUTH_FILE")) || regularFileExists(os.Getenv("DNS_STATE_FILE")) {
+		t.Fatal("invalid seed must not create authentication or DNS state")
+	}
+}
