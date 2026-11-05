@@ -42,6 +42,64 @@ dnsguard_validate_tsig_key_file() {
   fi
 }
 
+dnsguard_validate_bind_network_cidrs() {
+  local network="${1:-}" allowed="${2:-}" config_json
+  [[ -n "$network" ]] || { echo "DNSGUARD_BIND_NETWORK 为空" >&2; return 1; }
+  [[ -n "$allowed" ]] || {
+    echo "已配置 DNSGUARD_BIND_NETWORK，但 DNS_NODE_ALLOWED_CIDRS 未配置；请显式授权 BIND Docker 网络子网" >&2
+    return 1
+  }
+  config_json="$(docker network inspect "$network" --format '{{json .IPAM.Config}}' 2>/dev/null)" || {
+    echo "无法读取 Docker 网络子网：$network" >&2
+    return 1
+  }
+  python3 - "$network" "$allowed" "$config_json" <<'PY'
+import ipaddress
+import json
+import sys
+
+network = sys.argv[1]
+allowed_raw = sys.argv[2]
+try:
+    configs = json.loads(sys.argv[3])
+except (json.JSONDecodeError, TypeError) as exc:
+    print(f"无法解析 Docker 网络 {network} 的子网信息：{exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    allowed = [ipaddress.ip_network(item.strip(), strict=False) for item in allowed_raw.split(",") if item.strip()]
+except ValueError as exc:
+    print(f"DNS_NODE_ALLOWED_CIDRS 包含无效网段：{exc}", file=sys.stderr)
+    raise SystemExit(1)
+if not allowed:
+    print("DNS_NODE_ALLOWED_CIDRS 未包含有效网段，请显式授权 BIND Docker 网络子网", file=sys.stderr)
+    raise SystemExit(1)
+
+subnets = []
+for item in configs or []:
+    value = str(item.get("Subnet", "")).strip()
+    if not value:
+        continue
+    try:
+        subnets.append(ipaddress.ip_network(value, strict=False))
+    except ValueError as exc:
+        print(f"Docker 网络 {network} 返回了无效子网：{value}（{exc}）", file=sys.stderr)
+        raise SystemExit(1)
+if not subnets:
+    print(f"无法读取 Docker 网络 {network} 的实际子网；请先配置网络，再显式授权 DNS_NODE_ALLOWED_CIDRS", file=sys.stderr)
+    raise SystemExit(1)
+
+for subnet in subnets:
+    if not any(subnet.subnet_of(candidate) for candidate in allowed):
+        print(
+            f"BIND Docker 网络 {network} 的实际子网 {subnet} 不在 DNS_NODE_ALLOWED_CIDRS 中；"
+            "请检查并显式授权该网段，DNSGuard 不会自动放宽 CIDR",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+PY
+}
+
 dnsguard_validate_host_path() {
   local path="$1" label="$2" current
   case "$path" in

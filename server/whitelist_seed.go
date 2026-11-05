@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -108,13 +109,16 @@ func whitelistSeedPath() string {
 func inspectWhitelistSeed() whitelistSeedStatus {
 	path := whitelistSeedPath()
 	if path == "" {
-		if configuredPolicyMode() == "global" && !globalDenySetupDeferred() {
+		if !isInitialized() && configuredPolicyMode() == "global" && !globalDenySetupDeferred() {
 			return whitelistSeedStatus{Error: "全局默认拒绝模式尚未配置白名单初始 JSON"}
 		}
 		return whitelistSeedStatus{}
 	}
 	seed, err := readWhitelistSeed(path, "")
 	if err != nil {
+		if isInitialized() && errors.Is(err, os.ErrNotExist) {
+			return whitelistSeedStatus{}
+		}
 		return whitelistSeedStatus{Error: "白名单初始 JSON 不可用，请检查部署目录和格式"}
 	}
 	return whitelistSeedStatus{Available: true, Count: len(seed.Rules), Source: seed.Source, Mode: seed.Mode}
@@ -201,7 +205,7 @@ func readWhitelistSeed(path, expectedZone string) (whitelistSeed, error) {
 func loadWhitelistSeedForZone(zone string) ([]RPZRule, error) {
 	path := whitelistSeedPath()
 	if path == "" {
-		if configuredPolicyMode() == "global" && !globalDenySetupDeferred() {
+		if !isInitialized() && configuredPolicyMode() == "global" && !globalDenySetupDeferred() {
 			return nil, fmt.Errorf("全局默认拒绝模式必须配置白名单初始 JSON")
 		}
 		return nil, nil

@@ -155,6 +155,7 @@ COMPOSE_FILES=(-f compose.yaml)
 if [[ -n "${DNSGUARD_BIND_NETWORK:-}" ]]; then
   [[ -f "$ROOT/compose.bind-network.yaml" ]] || die "缺少可选 Compose 文件：$ROOT/compose.bind-network.yaml"
   docker network inspect "$DNSGUARD_BIND_NETWORK" >/dev/null 2>&1 || die "指定的 BIND Docker 网络不存在：$DNSGUARD_BIND_NETWORK；DNSGuard 不会自动创建该网络"
+  dnsguard_validate_bind_network_cidrs "$DNSGUARD_BIND_NETWORK" "${DNS_NODE_ALLOWED_CIDRS:-}" || die "BIND Docker 网络未获得 DNS 节点访问范围的显式授权"
   COMPOSE_FILES+=(-f compose.bind-network.yaml)
 fi
 if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == "global" ]]; then

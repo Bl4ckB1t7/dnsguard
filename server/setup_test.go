@@ -297,6 +297,38 @@ func TestDeferredGlobalPolicyAllowsWebWhitelistImportWithoutSeed(t *testing.T) {
 	}
 }
 
+func TestInitializedGlobalDeploymentDoesNotReportMissingWhitelistSeed(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "global", true)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "false")
+	t.Setenv("RPZ_WHITELIST_SEED_FILE", "")
+
+	if rules, err := loadWhitelistSeedForZone("rpz.local"); err != nil || rules != nil {
+		t.Fatalf("initialized deployment should not require the onboarding seed: rules=%#v err=%v", rules, err)
+	}
+	if status := inspectWhitelistSeed(); status.Error != "" {
+		t.Fatalf("initialized deployment should not report a missing onboarding seed: %#v", status)
+	}
+	recorder := httptest.NewRecorder()
+	setupStatus(recorder, httptest.NewRequest(http.MethodGet, "/api/setup/status", nil))
+	if strings.Contains(recorder.Body.String(), "白名单初始 JSON") {
+		t.Fatalf("setup status must not expose an onboarding seed warning after initialization: %s", recorder.Body.String())
+	}
+}
+
+func TestInitializedDeploymentIgnoresRemovedWhitelistSeedFile(t *testing.T) {
+	dir, _ := setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "global", true)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "false")
+	t.Setenv("RPZ_WHITELIST_SEED_FILE", filepath.Join(dir, "bootstrap", "removed-whitelist.json"))
+
+	if status := inspectWhitelistSeed(); status.Error != "" {
+		t.Fatalf("removed onboarding seed should not block an initialized deployment: %#v", status)
+	}
+}
+
 func TestGlobalPolicyModePersistsWithImportedDrafts(t *testing.T) {
 	dir, key := setupTestEnvironment(t)
 	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
