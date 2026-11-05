@@ -387,6 +387,49 @@ func TestStagedGlobalDenySetupDoesNotTreatDeferredCheckAsPassed(t *testing.T) {
 	}
 }
 
+func TestDeferredGlobalDenyChecksSkipUnavailableZone(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")
+	t.Setenv("RPZ_GLOBAL_DENY_ZONE", "global-deny.rpz.local")
+	t.Setenv("RPZ_GLOBAL_DENY_RECURSOR", "127.0.0.1:5353")
+	t.Setenv("RPZ_GLOBAL_DENY_CHECK_NAME", "baseline.example.com")
+	t.Setenv("RPZ_GLOBAL_DENY_BASELINE_FILE", filepath.Join(t.TempDir(), "baseline.json"))
+
+	digDir := t.TempDir()
+	digPath := filepath.Join(digDir, "dig")
+	digScript := `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    SOA|CNAME) echo "unavailable deny zone must not be queried" >&2; exit 9 ;;
+  esac
+done
+cat <<'EOF'
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1
+;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+;; ANSWER SECTION:
+baseline.example.com. 60 IN A 192.0.2.10
+EOF
+`
+	if err := os.WriteFile(digPath, []byte(digScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", digDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	checks := runGlobalDenyChecks(context.Background(), setupRequest{
+		Primary:     setupNode{Address: "127.0.0.1:5353"},
+		Secondaries: []setupNode{{Address: "127.0.0.1:5354"}},
+	})
+	if len(checks) != 2 || checks[0].Status != "pass" || checks[1].Status != "not_run" || !checks[1].Optional {
+		t.Fatalf("deferred setup should only record baseline and defer deny effect: %#v", checks)
+	}
+	for _, check := range checks {
+		if check.Status == "fail" {
+			t.Fatalf("deferred setup must not fail on an unavailable deny zone: %#v", checks)
+		}
+	}
+}
+
 func TestGlobalDenyBaselineRequiresMatchingTestConfiguration(t *testing.T) {
 	setupTestEnvironment(t)
 	t.Setenv("RPZ_GLOBAL_DENY_BASELINE_FILE", filepath.Join(t.TempDir(), "global-deny-baseline.json"))

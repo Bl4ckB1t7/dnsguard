@@ -89,7 +89,7 @@ docker compose --env-file deploy/docker/dnsguard.env \
 默认安装完成后，在仓库根目录的受保护终端读取：
 
 ```bash
-cat ./secrets/bootstrap.token
+sudo cat ./secrets/bootstrap.token
 ```
 
 如果设置了 `DNSGUARD_SECRET_DIR`，改为读取该自定义目录下的 `bootstrap.token`；安装脚本最后输出的实际路径是最终依据。Token 不会打印到普通日志，重复安装不会重新生成或覆盖它。
@@ -150,9 +150,15 @@ cp deploy/docker/rpz-connect.env.example .local-rpz-connect.env
 2. 导入、审核并发布白名单和 A 重定向；
 3. 确认 Primary 及所有 Secondary 的 Serial、关键规则和实际递归结果；
 4. 由 BIND 管理员把 `global-deny.rpz.local` 加入 `response-policy`；
-5. 从 `deploy/docker/dnsguard.env` 删除 `RPZ_GLOBAL_DENY_SETUP_DEFERRED=true`；
-6. 使用与安装时相同的 Compose 文件重建 DNSGuard；
-7. 回到 Web 执行全局 DENY 只读核验。
+5. 由 BIND 管理员完成配置并 reload 后，运行收尾脚本：
+
+   ```bash
+   ./scripts/finalize-global-deny.sh
+   ```
+
+   脚本会在 API 容器内执行只读核验，确认白名单发布、Primary/Secondary 同步、Global Deny Zone、`* CNAME .` 和基线对应的递归 NXDOMAIN；通过后原子关闭 `RPZ_GLOBAL_DENY_SETUP_DEFERRED`，保留权限一致的 env 备份，并使用 `--no-build` 只重建 API。
+
+6. 回到 Web 执行全局 DENY 只读核验；
 
 普通 BIND 使用：
 
@@ -169,7 +175,7 @@ docker compose --env-file deploy/docker/dnsguard.env \
   -f compose.yaml -f compose.bind-network.yaml up -d --force-recreate
 ```
 
-首次安装在需要分阶段上线时会使用 `RPZ_GLOBAL_DENY_SETUP_DEFERRED=true`，它只允许先完成初始化和白名单发布。已初始化部署保留该变量会被拒绝启动；DNSGuard 不会代替管理员修改或 reload BIND。
+首次安装在需要分阶段上线时会使用 `RPZ_GLOBAL_DENY_SETUP_DEFERRED=true`，它只允许先完成初始化和白名单发布。已初始化部署保留该变量会被拒绝启动；DNSGuard 不会代替管理员修改或 reload BIND。若收尾脚本失败，不会伪造完成状态；请按输出的日志和 env 备份提示排障后重复执行。
 
 只有发布和所有节点同步证据完整、全局 DENY 只读核验通过后，首次部署引导才会完全消失。之后新增草稿或节点暂时离线不会重新打开引导，相关异常会在规则和节点页面显示。
 
