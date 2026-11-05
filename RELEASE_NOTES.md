@@ -16,6 +16,7 @@ DNS 数据面，DNSGuard 不参与客户端 DNS 查询；即使控制面停止�
 - Bootstrap Token 保护的 Web 首次初始化向导；
 - CSRF、Session、Cookie 安全属性、登录限速和管理操作审计；
 - Docker Compose 非 root、只读根文件系统、内部 API 网络和 HTTPS 入口。
+- 控制台 TLD DENY 数据状态：每日校验 IANA TLD 列表并显示数量、版本和同步状态；不自动修改 BIND 配置。
 
 ## 部署方式
 

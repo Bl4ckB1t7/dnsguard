@@ -24,6 +24,7 @@ DNSGuard 不替代 BIND，不参与客户端 DNS 查询，也不要求改造现�
 | 发布任务追踪 | 发布状态、异常诊断、中断恢复与人工核对 |
 | 版本管理 | 策略版本记录和受控回滚 |
 | 操作审计 | 操作记录、审计哈希链和异常保护 |
+| TLD 数据状态 | 每日校验 IANA TLD 列表，在控制台显示当前数量和版本 |
 | 安全认证 | 管理员登录、会话保护、CSRF 和访问限制 |
 | Docker 部署 | Docker Compose、一体化 Web 初始化向导 |
 | 数据持久化 | 使用 JSON 文件，无需独立数据库 |
@@ -68,7 +69,7 @@ DNSGuard V1.0 采用 **Docker Compose Only** 部署。
 环境要求：Docker Engine、Docker Compose Plugin、现有 BIND RPZ 集群、TSIG Key 和 HTTPS 证书。
 
 ```bash
-git clone --branch v1.0.0 --single-branch https://github.com/Bl4ckB1t7/dnsguard-public.git
+git clone --branch v1.0.0 --single-branch https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
 
 cp deploy/docker/dnsguard.env.example deploy/docker/dnsguard.env
@@ -94,6 +95,8 @@ docker compose ps
 ## 安全与部署边界
 
 DNSGuard 仅管理经过授权的 BIND RPZ 集群，不会自动安装、修改或重启生产 BIND。生产环境必须使用 HTTPS，并妥善保护 TSIG 密钥和持久化数据。
+
+控制台的 **TLD 数据状态**卡片显示 IANA TLD 数据的数量、版本和同步状态。默认每 24 小时检查一次；下载失败时保留上一份有效状态。默认不发布 deny RPZ；管理员在隔离环境配置并验证第二个 RPZ Zone 后，可显式启用 `TLD_DENY_PUBLISH_ENABLED=true`，由 DNSGuard 通过现有 `nsupdate + TSIG` 更新该 Zone。DNSGuard 不会自动修改 `named.conf`、重启 BIND 或改变递归配置。
 
 正式部署前，应在隔离环境完成 RPZ 发布、同步、备份和恢复测试。
 

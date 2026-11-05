@@ -15,7 +15,11 @@ BIND cluster.
 - `docker-production-deployment.sh`: Docker image, permissions, persistence
   and safety checks.
 - `backup-restore.sh`: isolated Docker host-path backup, checksum and restore
-  rehearsal, including explicit sensitive-file opt-in.
+  rehearsal, including explicit sensitive-file opt-in, restore markers and
+  mid-transaction rollback.
+- `docker-paths.sh`: host-path resolution, overlap and symlink safety checks.
+- `rpz-connect-security.sh`: isolated RPZ preflight and temporary-write safety
+  checks using fake DNS tools; it never writes to a real BIND server.
 
 The scripts generate TSIG keys, state, logs and reports in ignored runtime
 directories. Nothing under those runtime directories should be committed.

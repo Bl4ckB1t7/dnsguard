@@ -245,6 +245,19 @@ func releasePublishJob(id string) {
 	publishExecutionMu.Unlock()
 }
 
+// handoffPublishJob atomically transfers a reservation held by a rollback
+// operation to the publish job created from that rollback. This closes the
+// check/mutate/enqueue gap without holding a lock during dig or nsupdate.
+func handoffPublishJob(from, to string) bool {
+	publishExecutionMu.Lock()
+	defer publishExecutionMu.Unlock()
+	if activePublishID != from {
+		return false
+	}
+	activePublishID = to
+	return true
+}
+
 func rpzZoneName() string {
 	return rpzConfig("RPZ_ZONE", "rpz.local")
 }
@@ -802,30 +815,45 @@ func runPublishJob(id, actor, remoteAddr string) {
 }
 
 func publishRPZ(w http.ResponseWriter, r *http.Request) {
+	publishRPZInternal(w, r, "")
+}
+
+// publishRPZInternal optionally consumes a reservation held by rollbackRPZ.
+// The reservation is retained from the rollback state mutation through job
+// creation, then atomically handed to runPublishJob.
+func publishRPZInternal(w http.ResponseWriter, r *http.Request, reservationID string) bool {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
+		return false
 	}
 	if job, ok := pendingReconciliationJob(); ok {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error":        "存在待人工核对的 RPZ 发布任务，确认 Primary/Secondary 实际状态后再发布",
 			"reconcileJob": job.ID,
 		})
-		return
+		return false
+	}
+	if reservationID != "" && activePublishJob() != reservationID {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "回滚发布预留已失效，请重试"})
+		return false
 	}
 	dnsMu.RLock()
 	pending := !rpzRulesEqual(state.Rules, state.Published)
 	dnsMu.RUnlock()
 	if !pending {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "没有待发布的 RPZ 变更"})
-		return
+		return false
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	job := PublishJob{ID: "publish-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10), Status: "queued", CreatedAt: now}
-	if !reservePublishJob(job.ID) {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "已有 RPZ 发布任务正在执行", "activeJobId": activePublishJob()})
-		return
+	reservedID := reservationID
+	if reservedID == "" {
+		reservedID = job.ID
+		if !reservePublishJob(job.ID) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "已有 RPZ 发布任务正在执行", "activeJobId": activePublishJob()})
+			return false
+		}
 	}
 	publishJobMu.Lock()
 	publishJobs[job.ID] = job
@@ -839,7 +867,7 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 	}
 	publishJobMu.Unlock()
 	if err := persistPublishJobs(); err != nil {
-		releasePublishJob(job.ID)
+		releasePublishJob(reservedID)
 		_, recoveryErr := updatePublishJob(job.ID, func(job *PublishJob) {
 			job.Status = "reconcile_required"
 			job.SyncStatus = "reconcile_required"
@@ -851,7 +879,18 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 			message += "；人工核对状态写入也失败: " + recoveryErr.Error()
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": message, "jobId": job.ID})
-		return
+		return false
+	}
+	if reservationID != "" && !handoffPublishJob(reservationID, job.ID) {
+		releasePublishJob(reservedID)
+		_, _ = updatePublishJob(job.ID, func(job *PublishJob) {
+			job.Status = "reconcile_required"
+			job.SyncStatus = "reconcile_required"
+			job.Error = "回滚与发布任务交接失败，禁止执行 BIND 更新"
+			job.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "回滚发布任务交接失败，需人工核对", "jobId": job.ID})
+		return false
 	}
 	rpzRuntimeMu.Lock()
 	rpzRuntimeState.JobID = job.ID
@@ -859,6 +898,7 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 	rpzRuntimeMu.Unlock()
 	go runPublishJob(job.ID, authUsername(), requestIP(r))
 	writeJSON(w, http.StatusAccepted, job)
+	return true
 }
 
 func publishJobByID(w http.ResponseWriter, r *http.Request) {
@@ -889,10 +929,6 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if active := activePublishJob(); active != "" {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "已有 RPZ 发布任务正在执行", "activeJobId": active})
-		return
-	}
 	var request struct {
 		VersionID string `json:"versionId"`
 	}
@@ -900,7 +936,24 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "versionId required"})
 		return
 	}
-	dnsMu.RLock()
+	// Keep the execution slot from the rollback decision through durable state
+	// mutation and publish-job creation. A competing publish/rollback therefore
+	// cannot enter between the old active check and publishRPZ.
+	reservationID := "rollback-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+	if !reservePublishJob(reservationID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "已有 RPZ 发布任务正在执行", "activeJobId": activePublishJob()})
+		return
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			releasePublishJob(reservationID)
+		}
+	}()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	dnsStateMutationMu.Lock()
+	dnsMu.Lock()
 	var target *RPZVersion
 	for index := range state.Versions {
 		if state.Versions[index].ID == request.VersionID {
@@ -910,14 +963,18 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	dnsMu.RUnlock()
 	if target == nil {
+		dnsMu.Unlock()
+		dnsStateMutationMu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "version not found"})
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	dnsStateMutationMu.Lock()
-	dnsMu.Lock()
+	if rpzRulesEqual(target.Rules, state.Published) {
+		dnsMu.Unlock()
+		dnsStateMutationMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "目标版本已经是当前已发布版本，无需回滚"})
+		return
+	}
 	previousRules := copyRPZRules(state.Rules)
 	previousRevision := state.RulesRevision
 	state.Rules = copyRPZRules(target.Rules)
@@ -939,5 +996,7 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 	dnsStateMutationMu.Unlock()
 	recordCriticalAudit(r, authUsername(), "rpz.rollback", target.ID)
 	queueTelegramAlert("rpz_rollback", fmt.Sprintf("↩️ 域盾 DNSGuard RPZ 回滚\n版本：%s\n规则数：%d", target.ID, len(target.Rules)))
-	publishRPZ(w, r)
+	if publishRPZInternal(w, r, reservationID) {
+		handedOff = true
+	}
 }

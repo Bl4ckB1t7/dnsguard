@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-ENV_FILE="${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}"
+source "$ROOT/scripts/docker-paths.sh"
+ENV_FILE="$(dnsguard_resolve_path "${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}" "$ROOT")"
 IMAGE="${DNSGUARD_API_IMAGE:-dnsguard-api:1.0.0}"
 WEB_IMAGE="${DNSGUARD_WEB_IMAGE:-dnsguard-web:1.0.0}"
 export DNSGUARD_ENV_FILE="$ENV_FILE"
@@ -25,6 +26,11 @@ set -a
 source "$ENV_FILE"
 set +a
 
+# Compose interpolation and every host-side script use the same absolute
+# paths. Relative values are anchored at the repository root.
+DNSGUARD_ENV_FILE="$ENV_FILE"
+dnsguard_prepare_paths "$ROOT"
+
 for value_name in AUTH_SECRET MONITORING_TOKEN RPZ_PRIMARY; do
   value="${!value_name:-}"
   [[ -n "$value" && "$value" != REPLACE_* && "$value" != *DNS_PRIMARY* && "$value" != *DNS_SECONDARY_* ]] || die "$value_name is not configured in $ENV_FILE"
@@ -34,14 +40,15 @@ done
 [[ "${#AUTH_SECRET}" -ge 32 ]] || die "AUTH_SECRET must contain at least 32 characters"
 [[ "${#MONITORING_TOKEN}" -ge 32 ]] || die "MONITORING_TOKEN must contain at least 32 characters"
 
-DATA_DIR="$ROOT/docker-data"
-SECRET_DIR="$ROOT/secrets"
-TLS_DIR="$ROOT/tls"
-LOG_DIR="$ROOT/bind-logs"
+DATA_DIR="$DNSGUARD_DATA_DIR"
+SECRET_DIR="$DNSGUARD_SECRET_DIR"
+TLS_DIR="$DNSGUARD_TLS_DIR"
+LOG_DIR="$DNSGUARD_BIND_LOG_DIR"
 mkdir -p "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 chmod 0750 "$DATA_DIR" "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
+[[ ! -e "$DATA_DIR/.restore-in-progress.json" ]] || die "an incomplete restore marker exists at $DATA_DIR/.restore-in-progress.json; inspect and recover it before starting"
 
-KEY_FILE="$ROOT/secrets/rpz-manager.key"
+KEY_FILE="$SECRET_DIR/rpz-manager.key"
 [[ -f "$KEY_FILE" ]] || die "copy the production RPZ TSIG key to $KEY_FILE; it will not be generated"
 [[ -f "$TLS_DIR/fullchain.pem" && -f "$TLS_DIR/privkey.pem" ]] || die "place HTTPS certificate and key in $TLS_DIR"
 BOOTSTRAP_FILE="$SECRET_DIR/bootstrap.token"

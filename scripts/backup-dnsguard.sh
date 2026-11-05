@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -n "${DNSGUARD_ENV_FILE:-}" && -f "$DNSGUARD_ENV_FILE" ]]; then
+source "$ROOT/scripts/docker-paths.sh"
+DNSGUARD_ENV_FILE="$(dnsguard_resolve_path "${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}" "$ROOT")"
+if [[ -f "$DNSGUARD_ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
   source "$DNSGUARD_ENV_FILE"
@@ -13,10 +15,8 @@ BACKUP_MODE="${DNSGUARD_BACKUP_MODE:-docker}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/dnsguard}"
 BACKUP_INCLUDE_SENSITIVE="${BACKUP_INCLUDE_SENSITIVE:-false}"
 BACKUP_RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-14}"
-DNSGUARD_DATA_DIR="${DNSGUARD_DATA_DIR:-$ROOT/docker-data}"
-DNSGUARD_SECRET_DIR="${DNSGUARD_SECRET_DIR:-$ROOT/secrets}"
-DNSGUARD_TLS_DIR="${DNSGUARD_TLS_DIR:-$ROOT/tls}"
-DNSGUARD_ENV_FILE="${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}"
+dnsguard_prepare_paths "$ROOT"
+BACKUP_DIR="$(dnsguard_resolve_path "${BACKUP_DIR:-/var/backups/dnsguard}" "$ROOT")"
 
 [[ "$BACKUP_MODE" == docker ]] || {
   echo "DNSGUARD_BACKUP_MODE must be docker; DNSGuard V1.0 production backups are Docker Compose only" >&2
@@ -70,7 +70,7 @@ def add_tree(stage: Path, source_root: Path, prefix: str, sensitive: bool = Fals
     if not source_root.is_dir():
         return
     for source in sorted(source_root.rglob("*")):
-        if not source.is_file() or source.is_symlink() or source.suffix in {".lock", ".tmp", ".pid"}:
+        if source.name == ".restore-in-progress.json" or not source.is_file() or source.is_symlink() or source.suffix in {".lock", ".tmp", ".pid"}:
             continue
         add_file(stage, source, source_root, prefix, sensitive)
 
@@ -79,6 +79,9 @@ with tempfile.TemporaryDirectory(prefix="dnsguard-backup-") as temp:
     if mode == "docker":
         # These are host paths. The application paths /var/lib/dnsguard and
         # /run/dnsguard-secrets must not be used by a host-side backup.
+        restore_marker = Path(os.environ["DNSGUARD_DATA_DIR"]) / ".restore-in-progress.json"
+        if restore_marker.exists() or restore_marker.is_symlink():
+            raise SystemExit(f"an incomplete restore marker exists; inspect before backing up: {restore_marker}")
         add_tree(stage, Path(os.environ["DNSGUARD_DATA_DIR"]), "docker-data", False)
         if os.environ.get("BACKUP_INCLUDE_SENSITIVE", "false").lower() == "true":
             add_tree(stage, Path(os.environ["DNSGUARD_SECRET_DIR"]), "secrets", True)

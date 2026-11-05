@@ -26,7 +26,7 @@ DNSGuard 不会安装或管理生产 BIND。启动 Compose 前，请先准备 RP
 发布后固定使用 Git Tag，不要直接跟随 `main`：
 
 ```bash
-git clone https://github.com/Bl4ckB1t7/dnsguard-public.git
+git clone --branch v1.0.0 --single-branch https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
 git checkout v1.0.0
 ```
@@ -41,12 +41,30 @@ install -d -m 0750 docker-data secrets tls bind-logs
 chmod 0640 deploy/docker/dnsguard.env
 ```
 
+默认目录位于仓库根目录。也可以在 `deploy/docker/dnsguard.env` 中设置宿主机路径：
+
+```dotenv
+DNSGUARD_DATA_DIR=/srv/dnsguard/data
+DNSGUARD_SECRET_DIR=/srv/dnsguard/secrets
+DNSGUARD_TLS_DIR=/srv/dnsguard/tls
+DNSGUARD_BIND_LOG_DIR=/srv/dnsguard/bind-logs
+```
+
+相对路径统一以仓库根目录为基准，而不是以 `deploy/docker/` 或当前 shell 目录为基准。
+`docker-init.sh`、Compose、备份和恢复脚本会使用同一组解析结果；脚本会拒绝根目录、
+仓库 `.git` 目录、目录重叠和符号链接路径。绝对路径必须由部署人员预先创建并明确授权，
+脚本不会递归修改未配置的目录。
+
 编辑 `deploy/docker/dnsguard.env`，至少设置：
 
 - `AUTH_SECRET`、`MONITORING_TOKEN`：每个环境独立的随机值，至少 32 字符；
 - `DNS_NODE_ADDRESSES`、`DNS_NODE_ALLOWED_CIDRS`；
 - `RPZ_ZONE`、`RPZ_PRIMARY`、`RPZ_PRIMARY_PORT`；
 - `RPZ_KEY_FILE=/run/dnsguard-secrets/rpz-manager.key`；
+- `TLD_DENY_ENABLED=true`、`TLD_SOURCE_URL`、`TLD_SYNC_INTERVAL_SECONDS=86400`；
+- 隔离验收后才可启用 `TLD_DENY_PUBLISH_ENABLED=true`，并设置 `TLD_DENY_ZONE`、`TLD_DENY_TTL_SECONDS` 和 `TLD_DENY_ARTIFACT_FILE`；
+- `TLD_SYNC_TIMEOUT_SECONDS` 只控制 TLD 下载，`TLD_PUBLISH_TIMEOUT_SECONDS=120` 单独控制 deny RPZ 发布及 Primary/Secondary 验收；
+- `TLD_PUBLISH_BATCH_TLDS=100`、`TLD_PUBLISH_BATCH_BYTES=32768` 控制单个 DNS UPDATE 批次的 TLD 数量和文本大小；
 - `TRUSTED_PROXY_CIDRS` 和 HTTPS 反向代理选项（如使用企业入口）。
 
 不要把真实值写入 Git：
@@ -116,6 +134,17 @@ Primary，页面必须明确展示影响；如果写入成功但清理失败，�
 认证、CSRF 校验并留下审计记录。
 
 ## 7. 持久化数据和权限
+
+### TLD 数据状态
+
+DNSGuard 默认每天检查一次 IANA TLD 列表，并将版本、数量、校验摘要和最后成功时间保存到
+`docker-data/tld-state.json`。下载、格式或持久化校验失败时不会清空上一份状态，也不会触碰
+BIND。默认 `TLD_DENY_PUBLISH_ENABLED=false`，此时只展示 TLD 数据。管理员在隔离 BIND 环境
+完成第二个 deny Zone、response-policy 顺序和解析效果验证后，才可设置为 `true`。启用后
+DNSGuard 通过现有 `nsupdate + TSIG` 更新该 Zone，但不会自动修改 `named.conf`、重启 BIND
+或替管理员启用递归策略。发布成功状态会分别核对 Primary、已配置 Secondary 和代表性 TLD
+触发项；可选的递归验证通过 `TLD_DENY_RECURSOR`、`TLD_DENY_CHECK_NAME` 配置，未配置时明确显示未验证。
+新列表相对上一份有效列表减少超过 10% 时不会自动替换或发布。
 
 | 宿主机目录 | 容器路径 | 内容 |
 |---|---|---|
@@ -199,6 +228,19 @@ DNSGUARD_TLS_DIR="$PWD/tls" \
 DNSGUARD_ENV_FILE="$PWD/deploy/docker/dnsguard.env" \
 ./scripts/restore-dnsguard.sh /secure/backup/dnsguard-sensitive/dnsguard-YYYYMMDDTHHMMSSZ.tar.gz
 ```
+
+恢复脚本会先完整校验 manifest、成员路径、哈希、重复成员、符号链接、文件数量和解压
+大小，再写入目标。默认不会覆盖已有文件；确实要覆盖时必须停止 Compose、确认备份并
+显式设置 `RESTORE_ALLOW_OVERWRITE=true`。覆盖过程中会先保存临时回退副本，写入失败会
+尝试恢复原文件。`config/dnsguard.env` 始终按敏感文件处理，修改 manifest 的
+`sensitive` 标记不能绕过 `RESTORE_INCLUDE_SENSITIVE=true`。
+
+恢复开始后会在 `docker-data/.restore-in-progress.json` 写入事务标记，并在每个文件和
+目录完成必要的同步后删除。该标记存在时，备份会拒绝继续，API 健康检查保持失败，
+初始化脚本也会拒绝启动；这不是跨文件完全原子事务，进程或主机突然断电后必须保持
+Compose 停止，检查回退结果和备份内容，必要时重新执行恢复。确认人工核对完成后才能
+删除该标记并启动服务。恢复的 JSON 状态也不代表 BIND Zone 已经回滚，必须重新核对
+Primary/Secondary 的 SOA Serial 和实际解析结果。
 
 恢复后：
 
