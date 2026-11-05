@@ -30,6 +30,7 @@ COMPOSE_FILES=(-f compose.yaml)
 if [[ -n "${DNSGUARD_BIND_NETWORK:-}" ]]; then
   [[ -f "$ROOT/compose.bind-network.yaml" ]] || die "missing optional Compose file: $ROOT/compose.bind-network.yaml"
   docker network inspect "$DNSGUARD_BIND_NETWORK" >/dev/null 2>&1 || die "configured BIND Docker network does not exist: $DNSGUARD_BIND_NETWORK; DNSGuard will not create it"
+  dnsguard_validate_bind_network_cidrs "$DNSGUARD_BIND_NETWORK" "${DNS_NODE_ALLOWED_CIDRS:-}" || die "BIND Docker network is not explicitly authorized by DNS_NODE_ALLOWED_CIDRS"
   COMPOSE_FILES+=(-f compose.bind-network.yaml)
 fi
 

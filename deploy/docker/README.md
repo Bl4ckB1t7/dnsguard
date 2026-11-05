@@ -50,6 +50,9 @@ DNS 地址即可，不需要使用下面的 override。
 export DNSGUARD_BIND_NETWORK=existing-bind-network
 docker network inspect "$DNSGUARD_BIND_NETWORK" >/dev/null
 
+# DNS_NODE_ALLOWED_CIDRS 必须显式包含上面网络的实际 Subnet；安装脚本会检查，
+# 不匹配时拒绝启动，不会自动放宽访问范围。
+
 docker compose --env-file deploy/docker/dnsguard.env \
   -f compose.yaml -f compose.bind-network.yaml config
 docker compose --env-file deploy/docker/dnsguard.env \
