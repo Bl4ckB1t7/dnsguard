@@ -92,12 +92,12 @@ curl -fsS "$API_URL/api/dns/rpz/jobs/$PUBLISH_JOB_ID" | python3 -c 'import json,
 for node in "$PRIMARY" "${SECONDARIES[@]}"; do
   for trigger in "$TEST_DOMAIN" "*.$TEST_DOMAIN"; do
     for _ in $(seq 1 90); do
-      if [[ "$(dig +short +time=2 +tries=1 @"$node" -p "$DNS_PORT" "$trigger.$ZONE" CNAME 2>/dev/null)" == "rpz-passthru." ]]; then
+      if [[ "$(dig +norecurse +short +time=2 +tries=1 @"$node" -p "$DNS_PORT" "$trigger.$ZONE" CNAME 2>/dev/null)" == "rpz-passthru." ]]; then
         break
       fi
       sleep 1
     done
-    [[ "$(dig +short +time=2 +tries=1 @"$node" -p "$DNS_PORT" "$trigger.$ZONE" CNAME 2>/dev/null)" == "rpz-passthru." ]]
+    [[ "$(dig +norecurse +short +time=2 +tries=1 @"$node" -p "$DNS_PORT" "$trigger.$ZONE" CNAME 2>/dev/null)" == "rpz-passthru." ]]
   done
 done
 curl -fsS "$API_URL/api/dns/overview" | python3 -c 'import json,sys; assert json.load(sys.stdin)["pendingPublish"] is False'

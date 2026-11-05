@@ -1,6 +1,7 @@
 type GuideOverview = {
   rules: number;
   publishedRules: number;
+  healthyNodes?: number;
   pendingPublish: boolean;
   publishEvidenceReady?: boolean;
   publishEvidence?: { status: string; syncStatus?: string };
@@ -11,7 +12,11 @@ type GuideOverview = {
 type GuideNode = { status: string };
 type GuidePreview = { pending: boolean; changes: number };
 type GuideCheck = { name: string; status: "pass" | "fail" | "not_run"; detail: string };
-type SetupStatus = { globalDenySetupDeferred?: boolean; policyMode?: "global" | "legacy" };
+type SetupStatus = {
+  globalDenySetupDeferred?: boolean;
+  policyMode?: "global" | "legacy";
+  globalDenyVerification?: { status?: string; verifiedAt?: string; nodeCount?: number };
+};
 
 type DeploymentGuideProps = {
   overview: GuideOverview | null;
@@ -40,11 +45,14 @@ export function DeploymentGuide({ overview, nodes, preview, setupStatus, checkin
   const evidenceStatus = overview?.publishEvidence?.status;
   const evidenceSyncStatus = overview?.publishEvidence?.syncStatus;
   const whitelistPublished = Boolean(overview?.publishEvidenceReady === true && overview.rules > 0 && overview.rules === overview.publishedRules && !overview.pendingPublish && bindReady);
-  const denyVerified = denyReady && !deferred;
+  const persistedDenyVerified = setupStatus?.globalDenyVerification?.status === "verified";
+  const denyVerified = (denyReady || persistedDenyVerified) && !deferred;
   const currentStep = !bindReady ? 1 : !whitelistPublished ? 2 : 3;
 
   if (!configuredMode) return null;
   if (!globalMode) return <section className="deployment-guide deployment-guide-legacy" aria-labelledby="deployment-guide-title"><div className="deployment-guide-heading"><div><p className="guide-eyebrow">DEPLOYMENT MODE</p><h2 id="deployment-guide-title">普通 RPZ 兼容模式</h2><p>当前部署为 legacy 模式，不需要执行全局 DENY 上线步骤。</p></div><button className="refresh-button" type="button" onClick={onRefresh} disabled={checkingDeny}>刷新状态</button></div><div className="guide-callout guide-callout-info"><strong>保持现有管理流程</strong><span>历史策略、发布和审计数据保持不变。DNSGuard 不会自动迁移到 global，也不会要求创建或启用 deny Zone。</span></div></section>;
+
+  if (whitelistPublished && denyVerified) return <section className="deployment-guide deployment-guide-complete" aria-labelledby="deployment-guide-title"><div className="deployment-guide-heading"><div><p className="guide-eyebrow">DEPLOYMENT COMPLETE</p><h2 id="deployment-guide-title">部署已完成</h2><p>白名单已发布并完成节点同步，全局 DENY 已通过 DNSGuard 只读核验。</p></div><button className="refresh-button" type="button" onClick={onRefresh} disabled={checkingDeny}>刷新状态</button></div><div className="guide-callout guide-callout-success"><strong>BIND 节点：{overview?.healthyNodes ?? nodes.filter((node) => node.status === "healthy").length}/{nodes.length} 健康</strong><span>白名单：{overview?.publishedRules ?? 0}/{overview?.rules ?? 0} 已发布；最近发布任务已完成节点验证。</span><span>全局 DENY：已通过只读核验{setupStatus?.globalDenyVerification?.verifiedAt ? `（${setupStatus.globalDenyVerification.verifiedAt.replace(/Z$/, "")}）` : ""}。BIND 已启用与 DNSGuard 已验证是两个不同状态，DNSGuard 不会修改 BIND。</span><button type="button" onClick={onCheckDeny} disabled={checkingDeny}>{checkingDeny ? "检查中…" : "重新执行只读核验"}</button>{denyNotice && <small>{denyNotice}</small>}</div></section>;
 
   return <section className="deployment-guide" aria-labelledby="deployment-guide-title">
     <div className="deployment-guide-heading">

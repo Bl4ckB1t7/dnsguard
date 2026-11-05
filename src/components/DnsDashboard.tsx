@@ -11,7 +11,7 @@ type RPZVersion = { id: string; createdAt: string; mode: string; ruleCount: numb
 type PublishJob = { id: string; status: string; message?: string; error?: string };
 type AuditResponse = { items: AuditEntry[]; total: number; page: number; pageSize: number };
 type TelegramSettings = { enabled: boolean; botTokenSet: boolean; botTokenHint?: string; chatId: string; events: string[]; cooldownSeconds: number };
-type SetupStatus = { globalDenySetupDeferred?: boolean; policyMode?: "global" | "legacy"; error?: string };
+type SetupStatus = { globalDenySetupDeferred?: boolean; policyMode?: "global" | "legacy"; error?: string; globalDenyVerification?: { status?: string; verifiedAt?: string; nodeCount?: number } };
 type GlobalDenyCheck = { name: string; status: "pass" | "fail" | "not_run"; detail: string };
 type GlobalDenyCheckResponse = { ready: boolean; policyMode?: string; globalDenySetupDeferred?: boolean; checks: GlobalDenyCheck[] };
 type DashboardView = "overview" | "audit";
@@ -214,6 +214,7 @@ export function DnsDashboard({ onLogout, authEnabled = true, mustChangePassword 
       setPreview(nextPreview);
       setVersions(nextVersions ?? []);
       setSetupStatus(nextSetupStatus);
+      setDenyReady(nextSetupStatus.globalDenyVerification?.status === "verified" && nextSetupStatus.globalDenySetupDeferred !== true);
     } catch (error) {
       setLoadError(`状态加载失败：${(error as Error).message}。`);
       throw error;

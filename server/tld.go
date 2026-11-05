@@ -601,7 +601,7 @@ func queryTLDPolicySerial(ctx context.Context) (string, error) {
 	if server == "" {
 		return "", fmt.Errorf("RPZ_PRIMARY 未配置")
 	}
-	command := exec.CommandContext(ctx, "dig", "@"+server, "-p", port, tldPolicyZone(), "SOA", "+short", "+time=2", "+tries=1")
+	command := exec.CommandContext(ctx, "dig", "@"+server, "-p", port, "+norecurse", tldPolicyZone(), "SOA", "+short", "+time=2", "+tries=1")
 	output, err := command.Output()
 	if err != nil {
 		return "", fmt.Errorf("TLD DENY SOA 查询失败")

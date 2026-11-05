@@ -80,10 +80,23 @@ type setupCheckResult struct {
 }
 
 type globalDenyBaseline struct {
-	CheckName string `json:"checkName"`
-	Recursor  string `json:"recursor"`
-	RCode     string `json:"rcode"`
-	Observed  string `json:"observedAt"`
+	CheckName          string                   `json:"checkName"`
+	Recursor           string                   `json:"recursor"`
+	RCode              string                   `json:"rcode"`
+	Observed           string                   `json:"observedAt"`
+	Zone               string                   `json:"zone,omitempty"`
+	VerificationStatus string                   `json:"verificationStatus,omitempty"`
+	VerifiedAt         string                   `json:"verifiedAt,omitempty"`
+	VerificationRCode  string                   `json:"verificationRcode,omitempty"`
+	NodeEvidence       []globalDenyNodeEvidence `json:"nodeEvidence,omitempty"`
+	Checks             []string                 `json:"checks,omitempty"`
+}
+
+type globalDenyNodeEvidence struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Role    string `json:"role"`
+	Address string `json:"address"`
 }
 
 var initializationMu sync.Mutex
@@ -132,6 +145,118 @@ func saveGlobalDenyBaseline(baseline globalDenyBaseline) error {
 		return err
 	}
 	return writeAtomicSetupFile(globalDenyBaselinePath(), append(content, '\n'), 0o640)
+}
+
+func readGlobalDenyBaseline() (globalDenyBaseline, error) {
+	content, err := os.ReadFile(globalDenyBaselinePath())
+	if err != nil {
+		return globalDenyBaseline{}, err
+	}
+	var baseline globalDenyBaseline
+	if err := json.Unmarshal(content, &baseline); err != nil {
+		return globalDenyBaseline{}, err
+	}
+	return baseline, nil
+}
+
+func saveGlobalDenyVerification(request setupRequest, checks []setupCheck, verificationRCode string) error {
+	baseline, err := readGlobalDenyBaseline()
+	if err != nil {
+		return fmt.Errorf("读取全局 DENY 基线失败: %w", err)
+	}
+	nodes := make([]globalDenyNodeEvidence, 0, 1+len(request.Secondaries))
+	primaryRole, _ := dnsNodeRoleKind(request.Primary.Role)
+	if primaryRole == "" {
+		primaryRole = strings.ToLower(strings.TrimSpace(request.Primary.Role))
+	}
+	primaryKey := primaryRole + "|" + strings.TrimSpace(request.Primary.Address)
+	nodes = append(nodes, globalDenyNodeEvidence{ID: primaryKey, Name: request.Primary.Name, Role: primaryRole, Address: request.Primary.Address})
+	for _, node := range request.Secondaries {
+		role, _ := dnsNodeRoleKind(node.Role)
+		if role == "" {
+			role = strings.ToLower(strings.TrimSpace(node.Role))
+		}
+		key := role + "|" + strings.TrimSpace(node.Address)
+		nodes = append(nodes, globalDenyNodeEvidence{ID: key, Name: node.Name, Role: role, Address: node.Address})
+	}
+	checkNames := make([]string, 0, len(checks))
+	for _, check := range checks {
+		checkNames = append(checkNames, check.Name)
+	}
+	baseline.Zone = strings.TrimSuffix(strings.TrimSpace(configuredGlobalDenyZone()), ".")
+	baseline.VerificationStatus = "verified"
+	baseline.VerifiedAt = time.Now().UTC().Format(time.RFC3339)
+	baseline.VerificationRCode = strings.TrimSpace(verificationRCode)
+	baseline.NodeEvidence = nodes
+	baseline.Checks = checkNames
+	return saveGlobalDenyBaseline(baseline)
+}
+
+func invalidateGlobalDenyVerification() error {
+	baseline, err := readGlobalDenyBaseline()
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if baseline.VerificationStatus == "" && baseline.VerifiedAt == "" && len(baseline.NodeEvidence) == 0 {
+		return nil
+	}
+	baseline.VerificationStatus = ""
+	baseline.VerifiedAt = ""
+	baseline.VerificationRCode = ""
+	baseline.Zone = ""
+	baseline.NodeEvidence = nil
+	baseline.Checks = nil
+	return saveGlobalDenyBaseline(baseline)
+}
+
+func currentGlobalDenyVerification() (globalDenyBaseline, bool) {
+	if configuredPolicyMode() != "global" || globalDenySetupDeferred() {
+		return globalDenyBaseline{}, false
+	}
+	baseline, err := readGlobalDenyBaseline()
+	if err != nil || baseline.VerificationStatus != "verified" || strings.TrimSpace(baseline.VerifiedAt) == "" || baseline.RCode != "NOERROR" || baseline.VerificationRCode != "NXDOMAIN" {
+		return globalDenyBaseline{}, false
+	}
+	if normalizeDNSName(baseline.CheckName) != normalizeDNSName(os.Getenv("RPZ_GLOBAL_DENY_CHECK_NAME")) || strings.TrimSpace(baseline.Recursor) != strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_RECURSOR")) || normalizeDNSName(baseline.Zone) != normalizeDNSName(configuredGlobalDenyZone()) {
+		return globalDenyBaseline{}, false
+	}
+	dnsMu.RLock()
+	configuredNodes := append([]DNSNode(nil), state.Nodes...)
+	dnsMu.RUnlock()
+	if len(baseline.NodeEvidence) != len(configuredNodes) || len(baseline.Checks) == 0 {
+		return globalDenyBaseline{}, false
+	}
+	byID := make(map[string]globalDenyNodeEvidence, len(baseline.NodeEvidence))
+	for _, evidence := range baseline.NodeEvidence {
+		byID[evidence.ID] = evidence
+	}
+	for _, node := range configuredNodes {
+		role, _ := dnsNodeRoleKind(node.Role)
+		key := role + "|" + strings.TrimSpace(node.Address)
+		evidence, ok := byID[key]
+		if !ok || evidence.Name != node.Name || evidence.Role != role || evidence.Address != node.Address {
+			return globalDenyBaseline{}, false
+		}
+	}
+	return baseline, true
+}
+
+func globalDenyVerificationStatus() map[string]any {
+	baseline, ok := currentGlobalDenyVerification()
+	if !ok {
+		return map[string]any{"status": "not_verified"}
+	}
+	return map[string]any{
+		"status":     baseline.VerificationStatus,
+		"verifiedAt": baseline.VerifiedAt,
+		"zone":       baseline.Zone,
+		"recursor":   baseline.Recursor,
+		"checkName":  baseline.CheckName,
+		"nodeCount":  len(baseline.NodeEvidence),
+	}
 }
 
 func loadGlobalDenyBaseline(checkName, recursor string) error {
@@ -280,6 +405,7 @@ func setupStatus(w http.ResponseWriter, r *http.Request) {
 		"writeTestRequired":       true,
 		"policyMode":              configuredPolicyMode(),
 		"globalDenySetupDeferred": globalDenySetupDeferred(),
+		"globalDenyVerification":  globalDenyVerificationStatus(),
 		"whitelistSeed":           inspectWhitelistSeed(),
 	})
 }
@@ -729,6 +855,16 @@ func globalDenyCheck(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	// A new check supersedes any previous success. This prevents a stale
+	// in-memory or JSON success from surviving a failed re-check.
+	if err := invalidateGlobalDenyVerification(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"ready":  false,
+			"error":  "无法使旧的全局 DENY 核验证据失效",
+			"checks": []setupCheck{{Name: "全局 DENY 验证证据", Status: "fail", Detail: "无法安全更新持久化核验证据"}},
+		})
+		return
+	}
 	dnsMu.RLock()
 	configuredNodes := append([]DNSNode(nil), state.Nodes...)
 	dnsMu.RUnlock()
@@ -809,6 +945,11 @@ func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck
 		rcodeCheck.Detail = "递归策略返回 " + rcode + "，预期 NXDOMAIN"
 	}
 	checks = append(checks, rcodeCheck)
+	if setupChecksReady(checks) {
+		if err := saveGlobalDenyVerification(request, checks, rcode); err != nil {
+			checks = append(checks, setupCheck{Name: "全局 DENY 验证证据", Status: "fail", Detail: "只读检查通过，但验证证据持久化失败；不能显示部署完成"})
+		}
+	}
 	return checks
 }
 
@@ -930,7 +1071,7 @@ func querySetupSOA(ctx context.Context, name, address, zone string) (string, set
 	host, port := splitDNSAddress(address)
 	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, zone, "SOA", "+short", "+time=2", "+tries=1").Output()
+	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, "+norecurse", zone, "SOA", "+short", "+time=2", "+tries=1").Output()
 	if err != nil {
 		return "", setupCheck{Name: name, Status: "fail", Detail: "无法读取 SOA：网络不可达或 Zone 不存在"}
 	}

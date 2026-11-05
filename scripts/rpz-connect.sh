@@ -194,7 +194,9 @@ check_rpz_deny_evidence() {
 
 soa_serial() {
   local host="$1" port="$2" proto="$3" output
-  local -a args=(+short +time=2 +tries=1 "@$host" -p "$port" "$RPZ_ZONE" SOA)
+  # SOA is control-plane evidence from the authoritative RPZ zone. Recursive
+  # policy checks remain in query_recursive and intentionally stay recursive.
+  local -a args=(+norecurse +short +time=2 +tries=1 "@$host" -p "$port" "$RPZ_ZONE" SOA)
   [[ "$proto" == tcp ]] && args=(+tcp "${args[@]}")
   output="$(dig "${args[@]}" 2>/dev/null || true)"
   awk 'NF >= 3 && $3 ~ /^[0-9]+$/ { print $3; exit }' <<<"$output"

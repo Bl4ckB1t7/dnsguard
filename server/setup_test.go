@@ -372,6 +372,70 @@ func TestGlobalDenyBaselineRequiresMatchingTestConfiguration(t *testing.T) {
 	}
 }
 
+func TestSetupSOAQueryUsesNoRecurse(t *testing.T) {
+	setupTestEnvironment(t)
+	writeDigRequiringNoRecurse(t, t.TempDir())
+	serial, check := querySetupSOA(context.Background(), "Primary SOA / Zone", "127.0.0.1:53", "rpz.local")
+	if serial != "42" || check.Status != "pass" {
+		t.Fatalf("setup SOA query was not authoritative: serial=%q check=%+v", serial, check)
+	}
+}
+
+func TestGlobalDenyVerificationPersistsEvidenceAndInvalidatesOnConfigChange(t *testing.T) {
+	setupTestEnvironment(t)
+	baselinePath := filepath.Join(t.TempDir(), "global-deny-baseline.json")
+	t.Setenv("RPZ_GLOBAL_DENY_BASELINE_FILE", baselinePath)
+	t.Setenv("RPZ_GLOBAL_DENY_ZONE", "global-deny.rpz.local")
+	t.Setenv("RPZ_GLOBAL_DENY_RECURSOR", "127.0.0.1:5353")
+	t.Setenv("RPZ_GLOBAL_DENY_CHECK_NAME", "known.example.com")
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	state = dnsState{Nodes: []DNSNode{
+		{ID: "primary-1", Name: "BIND-PRIMARY", Role: "primary", Address: "127.0.0.1:5353"},
+		{ID: "secondary-1", Name: "BIND-SECONDARY-1", Role: "secondary", Address: "127.0.0.1:5354"},
+	}}
+	if err := saveGlobalDenyBaseline(globalDenyBaseline{
+		CheckName: "known.example.com",
+		Recursor:  "127.0.0.1:5353",
+		RCode:     "NOERROR",
+		Observed:  "2026-11-05T00:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := setupRequest{
+		Primary:     setupNode{Name: "BIND-PRIMARY", Role: "primary", Address: "127.0.0.1:5353"},
+		Secondaries: []setupNode{{Name: "BIND-SECONDARY-1", Role: "secondary", Address: "127.0.0.1:5354"}},
+	}
+	if err := saveGlobalDenyVerification(request, []setupCheck{{Name: "SOA", Status: "pass"}, {Name: "递归", Status: "pass"}}, "NXDOMAIN"); err != nil {
+		t.Fatal(err)
+	}
+	verification, ok := currentGlobalDenyVerification()
+	if !ok || verification.VerificationStatus != "verified" || len(verification.NodeEvidence) != 2 {
+		t.Fatalf("persisted verification evidence was not accepted: ok=%v evidence=%+v", ok, verification)
+	}
+	if status := globalDenyVerificationStatus(); status["status"] != "verified" {
+		t.Fatalf("setup status should expose persisted verification: %+v", status)
+	}
+
+	t.Setenv("RPZ_GLOBAL_DENY_CHECK_NAME", "changed.example.com")
+	if _, ok := currentGlobalDenyVerification(); ok {
+		t.Fatal("changing the recursive test name must invalidate old verification evidence")
+	}
+	t.Setenv("RPZ_GLOBAL_DENY_CHECK_NAME", "known.example.com")
+	if err := invalidateGlobalDenyVerification(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := currentGlobalDenyVerification(); ok {
+		t.Fatal("explicit invalidation must remove the verified status")
+	}
+	if err := saveGlobalDenyVerification(request, []setupCheck{{Name: "SOA", Status: "pass"}, {Name: "递归", Status: "pass"}}, "NXDOMAIN"); err != nil {
+		t.Fatal(err)
+	}
+	state.Nodes[1].Address = "127.0.0.1:5355"
+	if _, ok := currentGlobalDenyVerification(); ok {
+		t.Fatal("changing a configured node address must invalidate old verification evidence")
+	}
+}
+
 func writeInitializedPolicyState(t *testing.T, policyMode string, includePolicyMode bool) {
 	t.Helper()
 	hash, err := bcrypt.GenerateFromPassword([]byte("existing-password"), bcrypt.MinCost)
