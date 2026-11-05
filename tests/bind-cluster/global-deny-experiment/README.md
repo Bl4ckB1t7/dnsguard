@@ -34,6 +34,9 @@ Docker Bridge 网络中的 1 台 Primary、2 台 Secondary 和模拟上游，并
 实际结果写入同目录的 `REPORT.md`；运行时配置、TSIG、Zone 和日志位于被 Git
 忽略的 `runtime/` 下，不应提交。
 
+1,436 个 IANA TLD、2,872 个三级/四级查询的补充结果见
+[`FULL-SCALE-RESULTS.md`](FULL-SCALE-RESULTS.md)。
+
 ## 解释边界
 
 客户端收到 NXDOMAIN 不能单独证明不存在 DNS 数据外传。上游观测只对本次隔离

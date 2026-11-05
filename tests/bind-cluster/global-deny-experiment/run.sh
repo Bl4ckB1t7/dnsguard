@@ -291,10 +291,17 @@ done
 
 upstream_seen=0
 tested_names=()
+tested_name_observations=()
+upstream_query_seen() {
+  local name="$1"
+  # The ISC image is started with -g, so its configured file logging is
+  # intentionally bypassed.  Inspect the isolated upstream container's
+  # stdout instead of an empty/unused log file.
+  compose logs --no-color upstream 2>/dev/null | grep -F "($name)" >/dev/null 2>&1
+}
 for suffix in com net xyz; do
   name="global-deny-$(openssl rand -hex 8).deep.branch.example.$suffix"
   tested_names+=("$name")
-  compose exec -T upstream sh -c ': > /var/log/bind/queries.log'
   rcode="$(query_rcode 15453 "$name")"
   sleep 0.5
   if [[ "$rcode" == NXDOMAIN ]]; then
@@ -302,11 +309,13 @@ for suffix in com net xyz; do
   else
     fail "unknown multi-level $name returned $rcode instead of NXDOMAIN"
   fi
-  if compose exec -T upstream sh -c "grep -F '$name' /var/log/bind/queries.log" >/dev/null 2>&1; then
+  if upstream_query_seen "$name"; then
     upstream_seen=1
     fail "denied query reached simulated upstream: $name"
+    tested_name_observations+=("$name → NXDOMAIN, 上游观察到完整 QNAME")
   else
     pass "denied query did not reach simulated upstream: $name"
+    tested_name_observations+=("$name → NXDOMAIN, 上游未观察到同名查询")
   fi
 done
 
@@ -321,7 +330,7 @@ else
   upstream_observation='QUERY_OBSERVED'
 fi
 bind_version="$(compose exec -T primary named -v 2>/dev/null | head -1)"
-tested_name_list="$(printf '\n- `%s` → NXDOMAIN, 上游无同名查询' "${tested_names[@]}")"
+tested_name_list="$(printf '\n- %s' "${tested_name_observations[@]}")"
 
 cat >"$REPORT" <<EOF_REPORT
 # RPZ Global Default-Deny 实验报告
@@ -347,7 +356,7 @@ cat >"$REPORT" <<EOF_REPORT
 - A 重定向：\`redirect.example.com\`、\`sub.redirect.example.com\` 在三台节点均返回 \`192.0.2.250\`。
 - 多级未知名称测试：$tested_name_list
 - 根级通配 \`.com\`：三台节点均返回 NXDOMAIN。
-- 模拟上游观测：\`$upstream_observation\`。
+- 模拟上游观测：\`$upstream_observation\`（通过容器 stdout 核对完整 QNAME）。
 - 总体：\`$([[ "$FAILURES" -eq 0 ]] && echo PASS || echo FAIL)\`（FAILURES=$FAILURES）
 
 ## 解释边界
@@ -356,7 +365,7 @@ cat >"$REPORT" <<EOF_REPORT
 
 ## 与 TLD deny 的对比
 
-根级通配方案规则数量少、更新简单，但其 RPZ 匹配范围、PASSTHRU 优先级、DNSSEC、缓存和递归行为必须按 BIND 版本实测；如果白名单或 A 重定向未优先命中，可能造成业务中断。现有 TLD deny 方案规则数量更多、更新成本更高，但匹配边界和逐项完整性更容易审计。两种方案均不能替代生产递归链路和查询外传评估。
+根级通配方案规则数量少、更新简单，但本次默认递归配置下，客户端虽收到 NXDOMAIN，受控上游仍可观察到完整 QNAME；这说明 NXDOMAIN 不能等同于查询未外传。其 RPZ 匹配范围、PASSTHRU 优先级、DNSSEC、缓存和递归行为必须按 BIND 版本实测；如果白名单或 A 重定向未优先命中，可能造成业务中断。现有 TLD deny 方案规则数量更多、更新成本更高，但匹配边界和逐项完整性更容易审计。两种方案均不能替代生产递归链路和查询外传评估。
 EOF_REPORT
 
 if ((FAILURES)); then
