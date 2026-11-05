@@ -181,7 +181,7 @@ DNSGuard 仅管理经过授权的 BIND RPZ 集群，不会自动安装、修改�
 
 ## v1.1.0 全局 DENY 验收边界
 
-v1.1.0 的正式功能验收使用独立 BIND Primary、两台 Secondary 和受控上游，覆盖全局 deny Zone、白名单 / 多级子域名、A 重定向、SOA 同步和递归结果。DO=1、AAAA、TXT 及上游是否观察到被拒绝 QNAME，必须按目标 BIND 版本和递归配置分别记录；任何未执行项都不会写成通过。验收证据在功能完成后补充到 `docs/acceptance/`。
+v1.1.0 的功能验收使用独立 BIND Primary、两台 Secondary 和受控上游，覆盖全局 deny Zone、白名单 / 多级子域名、A 重定向、SOA 同步和递归结果。DO=1、AAAA、TXT 及上游是否观察到被拒绝 QNAME，均按隔离配置单独记录；详见[全局 DENY 隔离验收报告](docs/acceptance/v1.1.0-global-deny-acceptance.md)。
 
 ## 文档
 
