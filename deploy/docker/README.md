@@ -105,10 +105,12 @@ chmod 0750 install.sh
 Bootstrap Token 不会打印到普通日志或聊天输出；按脚本最后输出的受保护路径在部署主机上读取，例如：
 
 ```bash
-cat /opt/dnsguard/secrets/bootstrap.token
+cat ./secrets/bootstrap.token
 ```
 
-不要把 Token 放进截图、工单或聊天。重复执行安装不会重新生成或覆盖已有 Token。
+如果设置了自定义 `DNSGUARD_SECRET_DIR`，请改为读取该目录下的
+`bootstrap.token`；安装脚本最后输出的受保护路径始终是最终依据。不要把 Token
+放进截图、工单或聊天。重复执行安装不会重新生成或覆盖已有 Token。
 
 ### TSIG Key：已有 Primary 与新建 Primary
 
