@@ -415,6 +415,16 @@ prepare_data_dir() {
   fi
   install -d -o "$BIND_USER" -g "$BIND_GROUP" -m 0750 -- "$DATA_DIR"
 }
+prepare_generated_files() {
+  # The package is normally extracted by an administrator, so its files may
+  # otherwise be unreadable by named.  Restrict ownership and permissions to
+  # the generated package only; never recurse into an existing BIND tree.
+  chown "$BIND_USER:$BIND_GROUP" "$TARGET" "$TARGET/config" "$TARGET/zones"
+  chmod 0750 "$TARGET" "$TARGET/config" "$TARGET/zones"
+  find "$TARGET/config" "$TARGET/zones" -type f -exec chown "$BIND_USER:$BIND_GROUP" {} + -exec chmod 0640 {} +
+  chown "$BIND_USER:$BIND_GROUP" "$TARGET/manifest.json" "$TARGET/applied-role"
+  chmod 0640 "$TARGET/manifest.json" "$TARGET/applied-role"
+}
 same_package() {
   [[ -d "$TARGET/config" && -d "$TARGET/zones" ]] || return 1
   [[ -f "$TARGET/manifest.json" && -f "$TARGET/applied-role" ]] || return 1
@@ -443,6 +453,7 @@ fi
 if [[ -e "$TARGET" ]]; then
   [[ -d "$TARGET" ]] || { echo "refusing to replace non-directory $TARGET" >&2; exit 1; }
   if same_package; then
+    prepare_generated_files
     prepare_data_dir
     if [[ "$ROLE" == primary ]]; then
       copy_new_zone "$PACKAGE_DIR/zones/db.$BUSINESS_ZONE" "$DATA_DIR/db.$BUSINESS_ZONE"
@@ -476,6 +487,7 @@ cp -a -- "$PACKAGE_DIR/config" "$PACKAGE_DIR/zones" "$STAGE/"
 cp -p -- "$PACKAGE_DIR/manifest.json" "$STAGE/manifest.json"
 printf '%%s\n' "$ROLE" > "$STAGE/applied-role"
 mv -- "$STAGE" "$TARGET"
+prepare_generated_files
 prepare_data_dir
 if [[ "$ROLE" == primary ]]; then
   copy_new_zone "$PACKAGE_DIR/zones/db.$BUSINESS_ZONE" "$DATA_DIR/db.$BUSINESS_ZONE"
