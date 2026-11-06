@@ -71,9 +71,15 @@ sudo cat ./secrets/bootstrap.token
 配置包不包含 TSIG Secret，也不会通过 SSH、Docker Socket 或 API 修改 BIND。BIND 管理员必须在 BIND 主机审核并执行包内脚本：
 
 ```bash
-./apply-rpz-config.sh --check
-./apply-rpz-config.sh --apply
-./verify-rpz-config.sh
+# Primary 主机
+BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --check primary
+BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --apply primary
+BIND_CONFIG_ROOT=/etc/bind ./verify-rpz-config.sh primary
+
+# 每台 Secondary 主机
+BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --check secondary
+BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --apply secondary
+BIND_CONFIG_ROOT=/etc/bind ./verify-rpz-config.sh secondary
 ```
 
 脚本默认只检查；`--apply` 也只在 `BIND_CONFIG_ROOT` 下创建不存在的 DNSGuard 管理目录，发现已有目录会拒绝覆盖。管理员仍需手工审核并将片段纳入 `named.conf`，再按正常变更流程执行 `named-checkconf` 和 BIND reload。Global Deny Zone 可以先创建，但在白名单发布、Primary/Secondary 同步确认前不得加入 `response-policy`。
