@@ -21,7 +21,7 @@ DNSGuard 不自动修改 `named.conf`、`response-policy` 或生产 Zone 文件�
 先克隆，再运行仓库内脚本：
 
 ```bash
-git clone --branch v1.1.1 --single-branch \
+git clone --branch v1.2.0 --single-branch \
   https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
 ./install.sh

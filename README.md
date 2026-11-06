@@ -48,12 +48,12 @@ HTTPS 证书和私钥必须由管理员提供；安装器不会生成不可信�
 
 ## 快速开始
 
-### 1. 获取 v1.1.1 并先启动控制面
+### 1. 获取 v1.2.0 并先启动控制面
 
 先克隆仓库，再运行仓库内安装入口：
 
 ```bash
-git clone --branch v1.1.1 --single-branch \
+git clone --branch v1.2.0 --single-branch \
   https://github.com/Bl4ckB1t7/dnsguard.git dnsguard
 cd dnsguard
 ./install.sh
@@ -123,7 +123,7 @@ docker compose --env-file deploy/docker/dnsguard.env \
 ## 两套 Zone 的名称
 
 - `global-deny.rpz.local`：v1.1.0+ 的全局默认 DENY Zone，不依赖 IANA TLD 列表。
-- `tld-deny.rpz.local`：v1.0.1 的旧 TLD 兼容路径，升级时保留历史数据，但不是 v1.1.1 全局 DENY 的必要依赖。
+- `tld-deny.rpz.local`：v1.0.1 的旧 TLD 兼容路径，升级时保留历史数据，但不是 v1.1.0+ 全局 DENY 的必要依赖。
 
 ## 界面预览
 
@@ -136,6 +136,8 @@ docker compose --env-file deploy/docker/dnsguard.env \
 - [Docker 安装与初始化](deploy/docker/README.md)
 - [高级运维：备份、恢复、升级和迁移](docs/docker-operations.md)
 - [BIND RPZ 部署与对接](docs/bind-rpz-deployment.md)
+- [v1.2.0 升级与回滚验收](docs/acceptance/v1.2.0-upgrade-acceptance.md)
+- [v1.2.0 发布说明](docs/release-notes/v1.2.0-rc.md)
 - [v1.1.0 隔离验收](docs/acceptance/v1.1.0-first-deployment-acceptance.md)
 - [DNS 隧道重新验收](docs/acceptance/v1.1.0-dns-tunnel-retest.md)
 - [v1.0.1 正式验收](docs/acceptance/v1.0.1-bind-acceptance.md)
