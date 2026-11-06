@@ -24,10 +24,10 @@ export function App() {
   }, []);
 
   if (authenticated === null || authEnabled === null || initialized === null || bindReady === null) return <div className="login-viewport" />;
-  if (!initialized) return <SetupWizard platformOnly onComplete={() => { setInitialized(true); setAuthenticated(true); setAuthEnabled(true); setBindReady(false); }} />;
+  if (!initialized) return <SetupWizard key="platform-setup" platformOnly onComplete={() => { setInitialized(true); setAuthenticated(true); setAuthEnabled(true); setBindReady(false); }} />;
   if (!authEnabled) return <DnsDashboard authEnabled={false} onLogout={() => undefined} />;
   if (!authenticated) return <LoginPage onLogin={(required) => { setAuthenticated(true); setMustChangePassword(required); }} />;
-  if (!bindReady) return <SetupWizard onComplete={() => setBindReady(true)} />;
+  if (!bindReady) return <SetupWizard key="bind-setup" onComplete={() => setBindReady(true)} />;
 
   return <DnsDashboard authEnabled mustChangePassword={mustChangePassword} onLogout={() => { setAuthenticated(false); setMustChangePassword(false); }} />;
 }

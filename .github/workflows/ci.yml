@@ -1,0 +1,64 @@
+name: DNSGuard CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: true
+      - run: go test ./...
+        working-directory: server
+      - run: go test -race ./...
+        working-directory: server
+      - run: go vet ./...
+        working-directory: server
+
+  shell-and-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck -x install.sh scripts/*.sh tests/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
+      - run: bash -n install.sh scripts/*.sh tests/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
+      - run: docker compose --env-file deploy/docker/dnsguard.env.example -f compose.yaml config
+
+  bind-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils bind9-utils
+      - run: TLD_FIXTURE_COUNT=2 TEST_RUN_USER="$USER" ./tests/bind-cluster/run-acceptance.sh
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:setup-wizard
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            playwright-report/
+            test-results/
