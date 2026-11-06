@@ -184,12 +184,13 @@ func rpzPackageFiles(request rpzPackageRequest) rpzPackagePreview {
 		secondaryHosts = append(secondaryHosts, packageNodeHost(node.Address))
 	}
 	keyPath := "/etc/bind/keys/" + request.TSIGKeyPath
-	zoneDir := "/etc/bind/dnsguard-rpz/zones"
+	primaryDataDir := "/var/lib/bind/dnsguard-rpz-primary"
+	secondaryDataDir := "/var/cache/bind/dnsguard-rpz-secondary"
 	files := []rpzPackageFile{
 		{Path: "README.md", Content: renderPackageReadme(request, keyPath)},
 		{Path: "config/tsig.conf", Content: fmt.Sprintf("// Include the protected key on the BIND host. DNSGuard never receives the secret in this package.\ninclude %q;\n", keyPath)},
-		{Path: "config/rpz-primary.conf", Content: renderPrimaryConfig(zone, globalDeny, primaryHost, secondaryHosts, zoneDir)},
-		{Path: "config/rpz-secondary.conf", Content: renderSecondaryConfig(zone, globalDeny, primaryHost, zoneDir)},
+		{Path: "config/rpz-primary.conf", Content: renderPrimaryConfig(zone, globalDeny, primaryHost, secondaryHosts, primaryDataDir)},
+		{Path: "config/rpz-secondary.conf", Content: renderSecondaryConfig(zone, globalDeny, primaryHost, secondaryDataDir)},
 		{Path: "config/response-policy.conf", Content: renderResponsePolicyConfig(zone, globalDeny)},
 		{Path: "zones/db." + zone, Content: renderRPZZone(zone)},
 		{Path: "zones/db." + globalDeny, Content: renderGlobalDenyZone(globalDeny)},
@@ -229,22 +230,35 @@ func renderPackageReadme(request rpzPackageRequest, keyPath string) string {
 
 1. 由 BIND 管理员在对应 Primary/Secondary 主机审核所有片段和路径。
 2. %s
-3. 在包目录先运行：
+3. 在 Primary 包目录先运行：
 
-   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --check
+   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --check primary
 
 4. 确认不会覆盖已有 dnsguard-rpz 目录后，再由管理员明确执行：
 
-   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --apply
+   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --apply primary
+
+Secondary 主机使用同一个包但只应用对应片段：
+
+   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --check secondary
+   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --apply secondary
 
 脚本只在 BIND 主机的 BIND_CONFIG_ROOT 下创建不存在的生成目录，并备份现有
 named.conf/named.conf.local 到时间戳目录；发现冲突会停止，不会追加重复配置。
+Primary 动态 Zone 和 journal 使用 /var/lib/bind/dnsguard-rpz-primary；Secondary 的
+AXFR/IXFR 传区文件使用 /var/cache/bind/dnsguard-rpz-secondary。脚本只为这些目录设置
+0750 和 BIND_USER:BIND_GROUP（默认 bind:bind），不会递归修改其中已有文件。
 
 ## 审核与验证
 
 将 config/tsig.conf、config/rpz-primary.conf 和 config/rpz-secondary.conf 按
-管理员的现有布局纳入配置，确认 named-checkzone 和 named-checkconf 通过，再按现有
-变更流程 reload BIND。运行 ./verify-rpz-config.sh 验证两个 Zone 文件。
+管理员的现有布局纳入配置；先 include config/tsig.conf，再 include 对应的
+Primary/Secondary 片段，确保 rpz-manager Key 已定义。验证脚本需要 BIND_NAMED_CONF 指向实际已加载的
+named.conf；未提供时只验证 Zone 文件，并明确显示最终配置检查未执行。确认
+named-checkzone 和 named-checkconf 针对实际 named.conf 通过，再按现有变更流程
+reload BIND。Primary 运行
+./verify-rpz-config.sh primary；Secondary 在传区文件出现后运行
+./verify-rpz-config.sh secondary。
 
 config/response-policy.conf 只启用业务 RPZ；其中 Global Deny 行保持注释。只有白名单
 发布成功、Primary 和全部 Secondary 完成同步后，管理员才可以将 Global Deny 加入
@@ -255,8 +269,12 @@ response-policy，随后返回 DNSGuard 执行只读 SOA、TSIG、NOTIFY/IXFR/AX
 `, strings.TrimSuffix(request.Zone, "."), strings.TrimSuffix(request.GlobalDeny, "."), keyInstructions)
 }
 
-func renderPrimaryConfig(zone, globalDeny, primary string, secondaries []string, zoneDir string) string {
-	notify := strings.Join(secondaries, ";\n    ")
+func renderPrimaryConfig(zone, globalDeny, primary string, secondaries []string, dataDir string) string {
+	notifyEntries := make([]string, 0, len(secondaries))
+	for _, secondary := range secondaries {
+		notifyEntries = append(notifyEntries, secondary+" key rpz-manager")
+	}
+	notify := strings.Join(notifyEntries, ";\n        ")
 	return fmt.Sprintf(`// Review and include this fragment from the Primary named.conf.
 // It does not enable Global Deny in response-policy.
 zone %q {
@@ -274,23 +292,23 @@ zone %q {
     allow-transfer { key rpz-manager; };
     also-notify { %s; };
 };
-`, zone, zoneDir+"/db."+zone, notify, globalDeny, zoneDir+"/db."+globalDeny, notify)
+`, zone, dataDir+"/db."+zone, notify, globalDeny, dataDir+"/db."+globalDeny, notify)
 }
 
-func renderSecondaryConfig(zone, globalDeny, primary, zoneDir string) string {
+func renderSecondaryConfig(zone, globalDeny, primary, dataDir string) string {
 	return fmt.Sprintf(`// Include this fragment on each Secondary after reviewing the paths.
 zone %q {
     type slave;
-    masters { %s; };
+    masters { %s key rpz-manager; };
     file %q;
 };
 
 zone %q {
     type slave;
-    masters { %s; };
+    masters { %s key rpz-manager; };
     file %q;
 };
-`, zone, primary, zoneDir+"/db."+zone, globalDeny, primary, zoneDir+"/db."+globalDeny)
+`, zone, primary, dataDir+"/db."+zone, globalDeny, primary, dataDir+"/db."+globalDeny)
 }
 
 func renderResponsePolicyConfig(zone, globalDeny string) string {
@@ -323,51 +341,104 @@ $TTL 60
 func renderVerifyScript(zone, globalDeny string) string {
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
-ROOT=${BIND_CONFIG_ROOT:-/etc/bind}
-PACKAGE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ZONE_DIR="$PACKAGE_DIR/zones"
-if [[ -d "$ROOT/dnsguard-rpz/zones" ]]; then
-  ZONE_DIR="$ROOT/dnsguard-rpz/zones"
+PACKAGE_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+ROLE=${1:-}
+PRIMARY_DATA_DIR=${PRIMARY_DATA_DIR:-/var/lib/bind/dnsguard-rpz-primary}
+SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-/var/cache/bind/dnsguard-rpz-secondary}
+if [[ "$ROLE" != primary && "$ROLE" != secondary ]]; then
+  echo "usage: BIND_CONFIG_ROOT=/etc/bind BIND_NAMED_CONF=/etc/bind/named.conf $0 primary|secondary" >&2
+  exit 2
 fi
 command -v named-checkzone >/dev/null || { echo "named-checkzone is required" >&2; exit 1; }
-named-checkzone %q "$ZONE_DIR/db.%s"
-named-checkzone %q "$ZONE_DIR/db.%s"
-if command -v named-checkconf >/dev/null && [[ -f "$ROOT/named.conf" ]]; then
-  named-checkconf "$ROOT/named.conf"
+check_zone() {
+  local zone="$1" actual="$2" package="$3"
+  if [[ -f "$actual" ]]; then
+    named-checkzone "$zone" "$actual"
+    return
+  fi
+  [[ -f "$package" ]] || { echo "zone file is missing: $actual" >&2; exit 1; }
+  named-checkzone "$zone" "$package"
+  echo "NOT RUN: actual loaded zone file is not present yet: $actual" >&2
+}
+if [[ "$ROLE" == primary ]]; then
+  check_zone %q "$PRIMARY_DATA_DIR/db.%s" "$PACKAGE_DIR/zones/db.%s"
+  check_zone %q "$PRIMARY_DATA_DIR/db.%s" "$PACKAGE_DIR/zones/db.%s"
 else
-  echo "WARN: include the generated fragments, then run named-checkconf manually" >&2
+  check_zone %q "$SECONDARY_DATA_DIR/db.%s" "$PACKAGE_DIR/zones/db.%s"
+  check_zone %q "$SECONDARY_DATA_DIR/db.%s" "$PACKAGE_DIR/zones/db.%s"
 fi
-`, zone, zone, globalDeny, globalDeny)
+if [[ -n ${BIND_NAMED_CONF:-} ]]; then
+  [[ -f "$BIND_NAMED_CONF" ]] || { echo "BIND_NAMED_CONF does not exist: $BIND_NAMED_CONF" >&2; exit 1; }
+  command -v named-checkconf >/dev/null || { echo "named-checkconf is required" >&2; exit 1; }
+  named-checkconf -z "$BIND_NAMED_CONF"
+else
+  echo "NOT RUN: set BIND_NAMED_CONF to the final loaded named.conf for named-checkconf -z" >&2
+fi
+`, zone, zone, zone, globalDeny, globalDeny, globalDeny, zone, zone, zone, globalDeny, globalDeny, globalDeny)
 }
 
 func renderApplyScript(zone, globalDeny string) string {
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 ROOT=${BIND_CONFIG_ROOT:-/etc/bind}
-PACKAGE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PACKAGE_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 TARGET="$ROOT/dnsguard-rpz"
 BACKUP="$ROOT/dnsguard-rpz-backups/$(date -u +%%Y%%m%%dT%%H%%M%%SZ)"
 STAGE="$ROOT/.dnsguard-rpz-stage.$$"
+ROLE=${2:-}
+PRIMARY_DATA_DIR=${PRIMARY_DATA_DIR:-/var/lib/bind/dnsguard-rpz-primary}
+SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-/var/cache/bind/dnsguard-rpz-secondary}
+BIND_USER=${BIND_USER:-bind}
+BIND_GROUP=${BIND_GROUP:-bind}
 BUSINESS_ZONE=%q
 GLOBAL_DENY_ZONE=%q
 cleanup() { rm -rf -- "$STAGE"; }
 trap cleanup EXIT
-if [[ ${1:-} != "--check" && ${1:-} != "--apply" ]]; then
-  echo "usage: BIND_CONFIG_ROOT=/etc/bind $0 --check|--apply" >&2
+if [[ ${1:-} != "--check" && ${1:-} != "--apply" ]] || [[ "$ROLE" != primary && "$ROLE" != secondary ]]; then
+  echo "usage: BIND_CONFIG_ROOT=/etc/bind $0 --check|--apply primary|secondary" >&2
   exit 2
 fi
 [[ "$ROOT" = /* && "$ROOT" != "/" ]] || { echo "BIND_CONFIG_ROOT must be an absolute non-root path" >&2; exit 1; }
 [[ -d "$ROOT" ]] || { echo "BIND_CONFIG_ROOT does not exist: $ROOT" >&2; exit 1; }
+command -v install >/dev/null || { echo "install is required" >&2; exit 1; }
+id "$BIND_USER" >/dev/null 2>&1 || { echo "BIND_USER does not exist: $BIND_USER" >&2; exit 1; }
+getent group "$BIND_GROUP" >/dev/null 2>&1 || { echo "BIND_GROUP does not exist: $BIND_GROUP" >&2; exit 1; }
 for required in config zones; do
   [[ -d "$PACKAGE_DIR/$required" ]] || { echo "package is incomplete: $required" >&2; exit 1; }
 done
+DATA_DIR="$PRIMARY_DATA_DIR"
+[[ "$ROLE" == primary ]] || DATA_DIR="$SECONDARY_DATA_DIR"
+same_package() {
+  [[ -d "$TARGET/config" && -d "$TARGET/zones" ]] || return 1
+  [[ -f "$TARGET/manifest.json" && -f "$TARGET/applied-role" ]] || return 1
+  [[ "$(cat -- "$TARGET/applied-role")" == "$ROLE" ]] || return 1
+  diff -qr -- "$PACKAGE_DIR/config" "$TARGET/config" >/dev/null 2>&1 || return 1
+  diff -qr -- "$PACKAGE_DIR/zones" "$TARGET/zones" >/dev/null 2>&1 || return 1
+  cmp -s -- "$PACKAGE_DIR/manifest.json" "$TARGET/manifest.json"
+}
+copy_new_zone() {
+  local source="$1" target="$2"
+  if [[ -L "$target" ]]; then
+    echo "refusing to write through symlink: $target" >&2
+    return 1
+  fi
+  if [[ -e "$target" ]]; then
+    cmp -s -- "$source" "$target" || { echo "refusing to overwrite existing zone file: $target" >&2; return 1; }
+    return 0
+  fi
+  install -o "$BIND_USER" -g "$BIND_GROUP" -m 0640 -- "$source" "$target"
+}
+verify() { "$PACKAGE_DIR/verify-rpz-config.sh" "$ROLE"; }
 if [[ -e "$TARGET" ]]; then
   [[ -d "$TARGET" ]] || { echo "refusing to replace non-directory $TARGET" >&2; exit 1; }
-  if diff -qr -- "$PACKAGE_DIR/config" "$TARGET/config" >/dev/null 2>&1 && \
-     diff -qr -- "$PACKAGE_DIR/zones" "$TARGET/zones" >/dev/null 2>&1 && \
-     cmp -s -- "$PACKAGE_DIR/manifest.json" "$TARGET/manifest.json"; then
-    "$PACKAGE_DIR/verify-rpz-config.sh"
-    echo "CHECK PASS: the same package is already present at $TARGET"
+  if same_package; then
+    install -d -o "$BIND_USER" -g "$BIND_GROUP" -m 0750 -- "$DATA_DIR"
+    if [[ "$ROLE" == primary ]]; then
+      copy_new_zone "$PACKAGE_DIR/zones/db.$BUSINESS_ZONE" "$DATA_DIR/db.$BUSINESS_ZONE"
+      copy_new_zone "$PACKAGE_DIR/zones/db.$GLOBAL_DENY_ZONE" "$DATA_DIR/db.$GLOBAL_DENY_ZONE"
+    fi
+    verify
+    echo "CHECK PASS: the same $ROLE package is already present at $TARGET"
     exit 0
   fi
   echo "refusing to overwrite existing $TARGET; back it up and review conflicts manually" >&2
@@ -375,25 +446,32 @@ if [[ -e "$TARGET" ]]; then
 fi
 for candidate in "$ROOT/named.conf" "$ROOT/named.conf.local"; do
   [[ -f "$candidate" ]] || continue
-  if grep -Eq "zone[[:space:]]+\\\"($BUSINESS_ZONE|$GLOBAL_DENY_ZONE)\\\"" "$candidate"; then
+  if grep -Eq "zone[[:space:]]+\"($BUSINESS_ZONE|$GLOBAL_DENY_ZONE)\"" "$candidate"; then
     echo "existing BIND zone declaration found in $candidate; refusing duplicate configuration" >&2
     exit 1
   fi
 done
 if [[ ${1:-} = "--check" ]]; then
-  "$PACKAGE_DIR/verify-rpz-config.sh"
+  verify
   echo "CHECK PASS: no existing generated directory; named.conf was not modified"
   exit 0
 fi
-mkdir -p "$BACKUP"
+install -d -m 0750 -- "$BACKUP"
 for candidate in "$ROOT/named.conf" "$ROOT/named.conf.local"; do
   [[ -f "$candidate" ]] && cp -p -- "$candidate" "$BACKUP/$(basename "$candidate")"
 done
-mkdir "$STAGE"
+install -d -m 0750 -- "$STAGE/config" "$STAGE/zones"
 cp -a -- "$PACKAGE_DIR/config" "$PACKAGE_DIR/zones" "$STAGE/"
 cp -p -- "$PACKAGE_DIR/manifest.json" "$STAGE/manifest.json"
+printf '%%s\n' "$ROLE" > "$STAGE/applied-role"
 mv -- "$STAGE" "$TARGET"
-echo "APPLY PASS: generated files copied to $TARGET"
+install -d -o "$BIND_USER" -g "$BIND_GROUP" -m 0750 -- "$DATA_DIR"
+if [[ "$ROLE" == primary ]]; then
+  copy_new_zone "$PACKAGE_DIR/zones/db.$BUSINESS_ZONE" "$DATA_DIR/db.$BUSINESS_ZONE"
+  copy_new_zone "$PACKAGE_DIR/zones/db.$GLOBAL_DENY_ZONE" "$DATA_DIR/db.$GLOBAL_DENY_ZONE"
+fi
+echo "APPLY PASS: generated $ROLE files copied to $TARGET"
+echo "BIND data directory prepared with mode 0750 for $BIND_USER:$BIND_GROUP: $DATA_DIR"
 echo "Manual next step: review and include the config fragments, then run named-checkconf and reload BIND through your normal change process."
 echo "Global Deny remains absent from response-policy until whitelist synchronization is verified."
 echo "Recovery: if review fails, remove only $TARGET and restore the timestamped files from $BACKUP; do not clear existing BIND data."

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -61,12 +62,38 @@ func TestRPZPackageIsValidatedAndContainsNoSecret(t *testing.T) {
 			t.Fatalf("package is missing %q", required)
 		}
 	}
+	scriptDir := t.TempDir()
+	for _, name := range []string{"apply-rpz-config.sh", "verify-rpz-config.sh"} {
+		path := filepath.Join(scriptDir, name)
+		if err := os.WriteFile(path, []byte(packageFileContent(preview, name)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if output, runErr := exec.Command("bash", "-n", path).CombinedOutput(); runErr != nil {
+			t.Fatalf("generated %s has invalid shell syntax: %v\n%s", name, runErr, output)
+		}
+		if _, lookErr := exec.LookPath("shellcheck"); lookErr == nil {
+			if output, runErr := exec.Command("shellcheck", "-x", path).CombinedOutput(); runErr != nil {
+				t.Fatalf("generated %s failed shellcheck: %v\n%s", name, runErr, output)
+			}
+		}
+	}
 	if strings.Contains(joined, "test-secret") || strings.Contains(joined, "secret-value") {
 		t.Fatal("package must not contain TSIG secret material")
 	}
 	responsePolicy := packageFileContent(preview, "config/response-policy.conf")
 	if !strings.Contains(responsePolicy, `zone "rpz.local";`) || !strings.Contains(responsePolicy, `// zone "global-deny.rpz.local";`) {
 		t.Fatal("Global Deny must remain commented out in the generated response-policy fragment")
+	}
+	primaryConfig := packageFileContent(preview, "config/rpz-primary.conf")
+	if !strings.Contains(primaryConfig, `allow-transfer { key rpz-manager; };`) ||
+		!strings.Contains(primaryConfig, `also-notify { 127.0.0.11 key rpz-manager;`) ||
+		!strings.Contains(primaryConfig, `/var/lib/bind/dnsguard-rpz-primary/db.rpz.local`) {
+		t.Fatal("Primary config must sign transfers/notifications and use the writable primary data directory")
+	}
+	secondaryConfig := packageFileContent(preview, "config/rpz-secondary.conf")
+	if !strings.Contains(secondaryConfig, `masters { 127.0.0.10 key rpz-manager; };`) ||
+		!strings.Contains(secondaryConfig, `/var/cache/bind/dnsguard-rpz-secondary/db.rpz.local`) {
+		t.Fatal("Secondary config must use the TSIG-authenticated master and writable transfer directory")
 	}
 }
 
@@ -93,6 +120,61 @@ func TestRPZPackageZoneFilesPassNamedCheckzone(t *testing.T) {
 		if output, runErr := command.CombinedOutput(); runErr != nil {
 			t.Fatalf("named-checkzone rejected %s: %v\n%s", zone, runErr, output)
 		}
+	}
+}
+
+func TestRPZPackagePrimaryFragmentPassesNamedCheckconf(t *testing.T) {
+	if _, err := exec.LookPath("named-checkconf"); err != nil {
+		t.Skip("named-checkconf is not installed")
+	}
+	setupTestEnvironment(t)
+	preview, err := buildRPZPackage(packageTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "primary-data")
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range preview.Files {
+		if !strings.HasPrefix(file.Path, "zones/db.") {
+			continue
+		}
+		name := filepath.Base(file.Path)
+		if err := os.WriteFile(filepath.Join(dataDir, name), []byte(file.Content), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keyPath := filepath.Join(root, "rpz-manager.key")
+	if err := os.WriteFile(keyPath, []byte("key \"rpz-manager\" { algorithm hmac-sha256; secret \"c2VjcmV0\"; };\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	tsig := strings.ReplaceAll(packageFileContent(preview, "config/tsig.conf"), "/etc/bind/keys/rpz-manager.key", keyPath)
+	if err := os.WriteFile(filepath.Join(root, "tsig.conf"), []byte(tsig), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	primary := packageFileContent(preview, "config/rpz-primary.conf")
+	primary = strings.ReplaceAll(primary, "/var/lib/bind/dnsguard-rpz-primary", dataDir)
+	namedConf := filepath.Join(root, "named.conf")
+	content := fmt.Sprintf("options { directory %q; recursion no; listen-on { any; }; listen-on-v6 { none; }; };\ninclude %q;\n%s", root, filepath.Join(root, "tsig.conf"), primary)
+	if err := os.WriteFile(namedConf, []byte(content), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("named-checkconf", "-z", namedConf)
+	if output, runErr := command.CombinedOutput(); runErr != nil {
+		t.Fatalf("named-checkconf rejected the generated Primary configuration: %v\n%s", runErr, output)
+	}
+	secondary := packageFileContent(preview, "config/rpz-secondary.conf")
+	secondary = strings.ReplaceAll(secondary, "/var/cache/bind/dnsguard-rpz-secondary", filepath.Join(root, "secondary-data"))
+	secondaryConf := filepath.Join(root, "secondary.conf")
+	secondaryContent := fmt.Sprintf("options { directory %q; recursion no; listen-on { any; }; listen-on-v6 { none; }; };\ninclude %q;\n%s", root, filepath.Join(root, "tsig.conf"), secondary)
+	if err := os.WriteFile(secondaryConf, []byte(secondaryContent), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("named-checkconf", secondaryConf)
+	if output, runErr := command.CombinedOutput(); runErr != nil {
+		t.Fatalf("named-checkconf rejected the generated Secondary configuration: %v\n%s", runErr, output)
 	}
 }
 
@@ -173,22 +255,32 @@ func TestRPZPackageApplyIsIdempotentAndRefusesConflicts(t *testing.T) {
 
 	run := func(args ...string) error {
 		command := exec.Command("bash", append([]string{filepath.Join(packageDir, "apply-rpz-config.sh")}, args...)...)
-		command.Env = append(os.Environ(), "BIND_CONFIG_ROOT="+configRoot)
-		return command.Run()
+		command.Env = append(os.Environ(),
+			"BIND_CONFIG_ROOT="+configRoot,
+			"PRIMARY_DATA_DIR="+filepath.Join(root, "primary-data"),
+			"SECONDARY_DATA_DIR="+filepath.Join(root, "secondary-data"),
+			"BIND_USER="+os.Getenv("USER"),
+			"BIND_GROUP="+os.Getenv("USER"),
+		)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
 	}
-	if err := run("--check"); err != nil {
+	if err := run("--check", "primary"); err != nil {
 		t.Fatalf("pre-apply check failed: %v", err)
 	}
-	if err := run("--apply"); err != nil {
+	if err := run("--apply", "primary"); err != nil {
 		t.Fatalf("first apply failed: %v", err)
 	}
-	if err := run("--apply"); err != nil {
+	if err := run("--apply", "primary"); err != nil {
 		t.Fatalf("repeat apply should be idempotent: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(configRoot, "dnsguard-rpz", "manifest.json"), []byte("conflict\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := run("--apply"); err == nil {
+	if err := run("--apply", "primary"); err == nil {
 		t.Fatal("conflicting generated directory must not be overwritten")
 	}
 	if content, readErr := os.ReadFile(filepath.Join(configRoot, "named.conf")); readErr != nil || string(content) != "// existing\n" {
