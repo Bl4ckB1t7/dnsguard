@@ -306,18 +306,18 @@ response-policy {
 func renderRPZZone(zone string) string {
 	return fmt.Sprintf(`$ORIGIN %s.
 $TTL 60
-@ IN SOA ns1.%s. hostmaster.%s. ( 1 60 60 60 60 )
-@ IN NS ns1.%s.
-`, zone, zone, zone, zone)
+@ IN SOA ns1.dnsguard.invalid. hostmaster.dnsguard.invalid. ( 1 60 60 60 60 )
+@ IN NS ns1.dnsguard.invalid.
+`, zone)
 }
 
 func renderGlobalDenyZone(zone string) string {
 	return fmt.Sprintf(`$ORIGIN %s.
 $TTL 60
-@ IN SOA ns1.%s. hostmaster.%s. ( 1 60 60 60 60 )
-@ IN NS ns1.%s.
+@ IN SOA ns1.dnsguard.invalid. hostmaster.dnsguard.invalid. ( 1 60 60 60 60 )
+@ IN NS ns1.dnsguard.invalid.
 * IN CNAME .
-`, zone, zone, zone, zone)
+`, zone)
 }
 
 func renderVerifyScript(zone, globalDeny string) string {

@@ -70,6 +70,32 @@ func TestRPZPackageIsValidatedAndContainsNoSecret(t *testing.T) {
 	}
 }
 
+func TestRPZPackageZoneFilesPassNamedCheckzone(t *testing.T) {
+	if _, err := exec.LookPath("named-checkzone"); err != nil {
+		t.Skip("named-checkzone is not installed")
+	}
+	setupTestEnvironment(t)
+	preview, err := buildRPZPackage(packageTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for _, file := range preview.Files {
+		if !strings.HasPrefix(file.Path, "zones/db.") {
+			continue
+		}
+		path := filepath.Join(dir, filepath.Base(file.Path))
+		if err := os.WriteFile(path, []byte(file.Content), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		zone := strings.TrimPrefix(file.Path, "zones/db.")
+		command := exec.Command("named-checkzone", zone, path)
+		if output, runErr := command.CombinedOutput(); runErr != nil {
+			t.Fatalf("named-checkzone rejected %s: %v\n%s", zone, runErr, output)
+		}
+	}
+}
+
 func TestRPZPackageRejectsUnsafeInputsAndConflicts(t *testing.T) {
 	setupTestEnvironment(t)
 	cases := []struct {
