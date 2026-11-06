@@ -74,7 +74,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:setup-wizard
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
       - run: npm run test:ui
       - if: failure()
         uses: actions/upload-artifact@v4
