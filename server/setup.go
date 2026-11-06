@@ -318,6 +318,23 @@ func platformBootstrapEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("DNSGUARD_PLATFORM_ONLY")), "true")
 }
 
+// platformFirstOnboardingPending is the narrow exception for a fresh
+// platform-first deployment. While the explicit deferred switch remains
+// enabled, the API must stay restartable both before and after BIND attachment
+// so the administrator can review and publish the whitelist before enabling
+// Global Deny. Legacy completed deployments do not carry PlatformReady and
+// therefore keep the original deferred startup guard.
+func platformFirstOnboardingPending() bool {
+	initializationMu.Lock()
+	current := initialization
+	initializationMu.Unlock()
+	return platformBootstrapEnabled() &&
+		current.Status == initializationCompleted &&
+		current.PlatformReady &&
+		!current.DeploymentCompleted &&
+		globalDenySetupDeferred()
+}
+
 func currentPublishEvidenceReady() bool {
 	dnsMu.RLock()
 	nodes := append([]DNSNode(nil), state.Nodes...)

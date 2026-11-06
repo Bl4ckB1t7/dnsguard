@@ -170,10 +170,10 @@ func validateSecurityConfig() error {
 	if err := validatePolicyModeConsistency(); err != nil {
 		return err
 	}
-	if initialized && bindReady && configuredPolicyMode() == "global" && globalDenySetupDeferred() {
+	if initialized && bindReady && configuredPolicyMode() == "global" && globalDenySetupDeferred() && !platformFirstOnboardingPending() {
 		return fmt.Errorf("RPZ_GLOBAL_DENY_SETUP_DEFERRED 仅用于首次初始化；请先完成白名单发布和同步，再启用 BIND 全局 DENY 后移除该配置")
 	}
-	if configuredPolicyMode() == "global" && (bindReady || !platformBootstrapEnabled()) {
+	if configuredPolicyMode() == "global" && (!platformFirstOnboardingPending() || !globalDenySetupDeferred()) {
 		zone := configuredGlobalDenyZone()
 		if zone == "" || !domainPattern.MatchString(zone) {
 			return fmt.Errorf("RPZ_GLOBAL_DENY_ZONE must be a valid zone in global default-deny mode")
