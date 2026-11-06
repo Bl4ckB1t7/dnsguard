@@ -40,6 +40,13 @@ flowchart LR
 - DNSGuard API 能访问 BIND 的 DNS、SOA 和必要的 AXFR 路径。
 - 不需要在 DNSGuard 主机安装 Go、Node.js、npm 或 BIND。
 
+安装前请确认当前安装用户可以执行 `docker info`，而不只是读取
+`docker compose version`；Docker Socket 权限应由管理员预先配置，安装器不会修改用户组或放宽 Socket 权限。
+同时准备可读取的已有 BIND TSIG Key、HTTPS 证书和私钥。测试环境必须先准备业务 RPZ
+以及独立的 `global-deny.rpz.local` Zone，并在启用 DENY 前准备一个确实能正常解析的递归基线域名。
+DNSGuard 只负责控制面和 `nsupdate + TSIG` 发布，不代替管理员配置生产 BIND、`response-policy`
+或 Primary/Secondary 同步。
+
 ## 快速开始
 
 ### 1. 部署前准备 BIND
@@ -63,6 +70,11 @@ git clone --branch v1.1.1 --single-branch \
 cd dnsguard
 ./install.sh
 ```
+
+无人值守执行时，必须预先提供 `RPZ_PRIMARY`、`RPZ_GLOBAL_DENY_RECURSOR`、
+`RPZ_GLOBAL_DENY_CHECK_NAME`、`RPZ_TSIG_SOURCE`、`TLS_CERT_SOURCE` 和
+`TLS_KEY_SOURCE`，或通过 `DNSGUARD_ENV_FILE` 指向受保护的配置文件；缺少项会明确报错，
+不会静默生成半成品环境文件。
 
 首次尚未存在 `deploy/docker/dnsguard.env` 时，安装脚本会检查 Docker/Compose，准备目录，生成运行密钥和一次性 Bootstrap Token，并提示提供已有 BIND TSIG Key、HTTPS 证书和私钥。若已存在环境文件，则必须先填入真实安全参数。脚本不会生成或替换生产 TSIG Key，也不会生成不可信的自签名证书；缺少必要文件时会停止。
 
