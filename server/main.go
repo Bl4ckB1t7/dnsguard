@@ -152,6 +152,7 @@ func validateSecurityConfig() error {
 		return fmt.Errorf("MONITORING_TOKEN must be at least 32 characters in production")
 	}
 	initialized := isInitialized()
+	bindReady := bindReadyStatus()
 	if initialized && !authFileHasPasswordHash() {
 		return fmt.Errorf("AUTH_FILE must contain a bcrypt password hash")
 	}
@@ -163,16 +164,16 @@ func validateSecurityConfig() error {
 	if (os.Getenv("TLS_CERT_FILE") == "" || os.Getenv("TLS_KEY_FILE") == "") && os.Getenv("TRUST_PROXY_TLS") != "true" {
 		return fmt.Errorf("configure TLS_CERT_FILE/TLS_KEY_FILE or set TRUST_PROXY_TLS=true in production")
 	}
-	if err := validateProductionRuntimeFiles(initialized); err != nil {
+	if err := validateProductionRuntimeFiles(initialized, bindReady); err != nil {
 		return err
 	}
 	if err := validatePolicyModeConsistency(); err != nil {
 		return err
 	}
-	if initialized && configuredPolicyMode() == "global" && globalDenySetupDeferred() {
+	if initialized && bindReady && configuredPolicyMode() == "global" && globalDenySetupDeferred() && !platformFirstOnboardingPending() {
 		return fmt.Errorf("RPZ_GLOBAL_DENY_SETUP_DEFERRED 仅用于首次初始化；请先完成白名单发布和同步，再启用 BIND 全局 DENY 后移除该配置")
 	}
-	if configuredPolicyMode() == "global" {
+	if configuredPolicyMode() == "global" && (!platformFirstOnboardingPending() || !globalDenySetupDeferred()) {
 		zone := configuredGlobalDenyZone()
 		if zone == "" || !domainPattern.MatchString(zone) {
 			return fmt.Errorf("RPZ_GLOBAL_DENY_ZONE must be a valid zone in global default-deny mode")
@@ -186,8 +187,12 @@ func validateSecurityConfig() error {
 
 func validateProductionRuntimeFiles(requireConfigured ...bool) error {
 	requireNodeAndAuth := true
+	bindReady := true
 	if len(requireConfigured) > 0 {
 		requireNodeAndAuth = requireConfigured[0]
+	}
+	if len(requireConfigured) > 1 {
+		bindReady = requireConfigured[1]
 	}
 	if _, err := exec.LookPath("named-checkzone"); err != nil {
 		return fmt.Errorf("named-checkzone is required in production: %w", err)
@@ -239,7 +244,7 @@ func validateProductionRuntimeFiles(requireConfigured ...bool) error {
 			return fmt.Errorf("runtime data directory must not be world writable: %s", parent)
 		}
 	}
-	if rpzConfig("RPZ_PUBLISH_MODE", "artifact") == "nsupdate" {
+	if rpzConfig("RPZ_PUBLISH_MODE", "artifact") == "nsupdate" && (bindReady || !platformBootstrapEnabled()) {
 		keyFile := os.Getenv("RPZ_KEY_FILE")
 		info, err := os.Stat(keyFile) // #nosec G703 -- RPZ_KEY_FILE is a protected administrator-controlled path.
 		if keyFile == "" || err != nil || !info.Mode().IsRegular() {

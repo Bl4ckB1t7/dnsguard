@@ -605,6 +605,12 @@ func loadDNSNodeConfig() error {
 	if err == nil {
 		var configs []DNSNodeConfig
 		if err := json.Unmarshal(content, &configs); err != nil || len(configs) == 0 {
+			if err == nil && len(configs) == 0 && platformBootstrapEnabled() && isInitialized() && !bindReadyStatus() {
+				dnsMu.Lock()
+				state.Nodes = []DNSNode{}
+				dnsMu.Unlock()
+				return nil
+			}
 			if err == nil {
 				err = fmt.Errorf("节点配置为空")
 			}

@@ -69,7 +69,8 @@ run_expect_fail_notty() {
   ((code != 0)) || { cat "$log" >&2; return 1; }
 }
 
-# 1. No TTY and no required parameters must list every missing input.
+# 1. No TTY and no BIND parameters must still reach the platform-first path;
+#    the first missing requirement is the trusted HTTPS certificate, not BIND.
 NO_TTY_ENV="$WORK/no-tty.env"
 NO_TTY_LOG="$WORK/no-tty.log"
 run_expect_fail_notty "$NO_TTY_LOG" env PATH="$FAKE_BIN:$PATH" \
@@ -78,11 +79,40 @@ run_expect_fail_notty "$NO_TTY_LOG" env PATH="$FAKE_BIN:$PATH" \
   DNSGUARD_SECRET_DIR="$WORK/no-tty-secrets" \
   DNSGUARD_TLS_DIR="$WORK/no-tty-tls" \
   DNSGUARD_BIND_LOG_DIR="$WORK/no-tty-logs" "$INSTALL"
-grep -q 'BIND Primary 地址' "$NO_TTY_LOG" || fail 'non-interactive error omitted Primary'
-grep -q '递归 DNS 地址' "$NO_TTY_LOG" || fail 'non-interactive error omitted recursor'
-grep -q '全局 DENY 测试域名' "$NO_TTY_LOG" || fail 'non-interactive error omitted check name'
+grep -q 'HTTPS 证书' "$NO_TTY_LOG" || fail 'platform-first error omitted HTTPS certificate guidance'
+if grep -q 'BIND Primary 地址' "$NO_TTY_LOG"; then fail 'platform-first install still requires BIND before startup'; fi
 [[ ! -e "$NO_TTY_ENV" ]] || fail 'non-interactive missing-input path created env'
 pass 'non-interactive missing inputs are explicit and non-zero'
+
+# 1b. A fresh platform-first install needs only protected HTTPS material and
+#     does not create or validate a TSIG/BIND configuration.
+PLATFORM_DIR="$WORK/platform"
+PLATFORM_SOURCES="$WORK/platform-sources"
+mkdir -p "$PLATFORM_DIR" "$PLATFORM_SOURCES"
+printf '%s\n' 'certificate fixture' >"$PLATFORM_SOURCES/fullchain.pem"
+printf '%s\n' 'private-key fixture' >"$PLATFORM_SOURCES/privkey.pem"
+chmod 0644 "$PLATFORM_SOURCES/fullchain.pem"; chmod 0600 "$PLATFORM_SOURCES/privkey.pem"
+env PATH="$FAKE_BIN:$PATH" \
+  DNSGUARD_ENV_FILE="$PLATFORM_DIR/dnsguard.env" \
+  DNSGUARD_DATA_DIR="$PLATFORM_DIR/data" \
+  DNSGUARD_SECRET_DIR="$PLATFORM_DIR/secrets" \
+  DNSGUARD_TLS_DIR="$PLATFORM_DIR/tls" \
+  DNSGUARD_BIND_LOG_DIR="$PLATFORM_DIR/logs" \
+  TLS_CERT_SOURCE="$PLATFORM_SOURCES/fullchain.pem" TLS_KEY_SOURCE="$PLATFORM_SOURCES/privkey.pem" "$INSTALL" >"$WORK/platform.log" 2>&1 || {
+    cat "$WORK/platform.log" >&2
+    fail 'platform-first install failed without BIND or TSIG'
+  }
+grep -q 'DNSGUARD_PLATFORM_ONLY=true' "$PLATFORM_DIR/dnsguard.env" || fail 'platform-first env flag missing'
+[[ ! -e "$PLATFORM_DIR/secrets/rpz-manager.key" ]] || fail 'platform-first install unexpectedly created a TSIG key'
+cp -p "$PLATFORM_DIR/dnsguard.env" "$WORK/platform.env.before"
+cp -p "$PLATFORM_DIR/secrets/bootstrap.token" "$WORK/platform.token.before"
+env PATH="$FAKE_BIN:$PATH" DNSGUARD_ENV_FILE="$PLATFORM_DIR/dnsguard.env" "$INSTALL" >"$WORK/platform-repeat.log" 2>&1 || {
+  cat "$WORK/platform-repeat.log" >&2
+  fail 'repeated platform-first install failed'
+}
+cmp -s "$PLATFORM_DIR/dnsguard.env" "$WORK/platform.env.before" || fail 'repeated install overwrote platform env'
+cmp -s "$PLATFORM_DIR/secrets/bootstrap.token" "$WORK/platform.token.before" || fail 'repeated install overwrote Bootstrap Token'
+pass 'platform-first install starts with HTTPS only and defers BIND/TSIG'
 
 # 2. Docker Compose can be present while the Engine is inaccessible.
 DOCKER_LOG="$WORK/docker.log"
@@ -97,6 +127,7 @@ BASELINE_LOG="$WORK/baseline.log"
 SOURCES="$WORK/sources"
 make_sources "$SOURCES"
 run_expect_fail_notty "$BASELINE_LOG" env PATH="$FAKE_BIN:$PATH" FAKE_DIG_BASELINE_FAIL=1 \
+  DNSGUARD_PLATFORM_ONLY=false \
   DNSGUARD_ENV_FILE="$BASELINE_ENV" \
   DNSGUARD_DATA_DIR="$WORK/baseline-data" \
   DNSGUARD_SECRET_DIR="$WORK/baseline-secrets" \

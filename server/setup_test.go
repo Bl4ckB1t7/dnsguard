@@ -93,6 +93,39 @@ func TestSetupRejectsBadBootstrapTokenWithoutReturningExpectedToken(t *testing.T
 	}
 }
 
+func TestPlatformOnlySetupStartsWithoutBINDOrSeedAndBlocksPublish(t *testing.T) {
+	_, key := setupTestEnvironment(t)
+	if err := os.Remove(key); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DNSGUARD_PLATFORM_ONLY", "true")
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	request := setupRequest{Username: "admin", Password: "a-strong-setup-password", PlatformOnly: true}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/api/setup/complete", setupRequestBody(t, request))
+	httpRequest.Header.Set("X-DNSGuard-Bootstrap", "setup-bootstrap-token-012345678901234567890")
+	recorder := httptest.NewRecorder()
+	setupComplete(recorder, httpRequest)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("platform-only setup failed without BIND: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !isInitialized() || !platformReadyStatus() || bindReadyStatus() {
+		t.Fatalf("platform-only setup state is wrong: initialized=%v platform=%v bind=%v", isInitialized(), platformReadyStatus(), bindReadyStatus())
+	}
+	statusRecorder := httptest.NewRecorder()
+	setupStatus(statusRecorder, httptest.NewRequest(http.MethodGet, "/api/setup/status", nil))
+	statusBody := statusRecorder.Body.String()
+	if !strings.Contains(statusBody, `"platformReady":true`) || !strings.Contains(statusBody, `"bindReady":false`) {
+		t.Fatalf("setup status must expose the deferred BIND state: %s", statusBody)
+	}
+	state.Rules = []RPZRule{{ID: "draft-1", Domain: "example.com", Action: "passthru", Type: "CNAME", Status: "draft"}}
+	publishRecorder := httptest.NewRecorder()
+	publishRequest := httptest.NewRequest(http.MethodPost, "/api/dns/rpz/publish", nil)
+	publishRPZ(publishRecorder, publishRequest)
+	if publishRecorder.Code != http.StatusPreconditionRequired {
+		t.Fatalf("RPZ publish must be blocked before BIND attach, got %d %s", publishRecorder.Code, publishRecorder.Body.String())
+	}
+}
+
 func TestSetupCompletesOnceAndRejectsRepeat(t *testing.T) {
 	_, key := setupTestEnvironment(t)
 	originalChecks := setupChecksFunc

@@ -39,6 +39,11 @@ type initializationState struct {
 	SecondaryCnt int    `json:"secondaryCount,omitempty"`
 	Error        string `json:"error,omitempty"`
 	PolicyMode   string `json:"policyMode,omitempty"`
+	// PlatformReady records that the control plane administrator exists. BindReady
+	// is deliberately separate: a platform can be usable for onboarding while
+	// BIND and TSIG are still unavailable.
+	PlatformReady bool `json:"platformReady,omitempty"`
+	BindReady     bool `json:"bindReady,omitempty"`
 	// Historical fact: later health or draft changes must not reopen the guide.
 	DeploymentCompleted   bool   `json:"deploymentCompleted,omitempty"`
 	DeploymentCompletedAt string `json:"deploymentCompletedAt,omitempty"`
@@ -58,13 +63,14 @@ type setupNode struct {
 }
 
 type setupRequest struct {
-	Username    string      `json:"username"`
-	Password    string      `json:"password"`
-	Zone        string      `json:"zone"`
-	Primary     setupNode   `json:"primary"`
-	Secondaries []setupNode `json:"secondaries"`
-	TSIGKeyPath string      `json:"tsigKeyPath"`
-	WriteTest   bool        `json:"writeTest"`
+	Username     string      `json:"username"`
+	Password     string      `json:"password"`
+	Zone         string      `json:"zone"`
+	Primary      setupNode   `json:"primary"`
+	Secondaries  []setupNode `json:"secondaries"`
+	TSIGKeyPath  string      `json:"tsigKeyPath"`
+	WriteTest    bool        `json:"writeTest"`
+	PlatformOnly bool        `json:"platformOnly,omitempty"`
 }
 
 type setupCheck struct {
@@ -269,6 +275,66 @@ func deploymentCompletionStatus() (bool, string) {
 	return completed, completedAt
 }
 
+func platformReadyStatus() bool {
+	initializationMu.Lock()
+	current := initialization
+	initializationMu.Unlock()
+	if current.Status == initializationCompleted && current.PlatformReady {
+		return authFileHasPasswordHash()
+	}
+	// Existing installations predate the split platform/BIND state. Their
+	// authenticated state remains a completed platform and is kept compatible.
+	return isInitializedLegacyState(current)
+}
+
+func isInitializedLegacyState(current initializationState) bool {
+	if current.Status == initializationPending || current.Status == initializationFailed {
+		return false
+	}
+	if current.Status == initializationCompleted {
+		if current.PlatformReady {
+			return authFileHasPasswordHash()
+		}
+		return authFileHasPasswordHash() && regularFileExists(dnsNodeConfigPath())
+	}
+	return authFileHasPasswordHash() && regularFileExists(dnsNodeConfigPath())
+}
+
+func bindReadyStatus() bool {
+	initializationMu.Lock()
+	current := initialization
+	initializationMu.Unlock()
+	if current.Status == initializationCompleted && current.PlatformReady {
+		return current.BindReady
+	}
+	// A state without the new fields is an existing fully configured deployment.
+	if current.Status == initializationCompleted {
+		return current.Primary != "" && regularFileExists(dnsNodeConfigPath())
+	}
+	return current.Status == "" && authFileHasPasswordHash() && regularFileExists(dnsNodeConfigPath())
+}
+
+func platformBootstrapEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("DNSGUARD_PLATFORM_ONLY")), "true")
+}
+
+// platformFirstOnboardingPending is the narrow exception for a fresh
+// platform-first deployment. While the explicit deferred switch remains
+// enabled, the API must stay restartable both before and after BIND attachment
+// so the administrator can review and publish the whitelist before enabling
+// Global Deny. Legacy completed deployments do not carry PlatformReady and
+// therefore keep the original deferred startup guard.
+func platformFirstOnboardingPending() bool {
+	initializationMu.Lock()
+	current := initialization
+	initializationMu.Unlock()
+	return platformBootstrapEnabled() &&
+		current.Status == initializationCompleted &&
+		current.PlatformReady &&
+		!current.DeploymentCompleted &&
+		globalDenySetupDeferred()
+}
+
 func currentPublishEvidenceReady() bool {
 	dnsMu.RLock()
 	nodes := append([]DNSNode(nil), state.Nodes...)
@@ -423,15 +489,18 @@ func isInitialized() bool {
 		return true
 	}
 	initializationMu.Lock()
-	status := initialization.Status
+	current := initialization
 	initializationMu.Unlock()
-	if status == initializationPending {
+	if current.Status == initializationPending {
 		return false
 	}
-	if status == initializationCompleted {
+	if current.Status == initializationCompleted {
+		if current.PlatformReady {
+			return authFileHasPasswordHash()
+		}
 		return authFileHasPasswordHash() && regularFileExists(dnsNodeConfigPath())
 	}
-	if status == initializationFailed {
+	if current.Status == initializationFailed {
 		return false
 	}
 	// Existing installations that predate the marker have valid auth and node
@@ -462,6 +531,9 @@ func setupStatus(w http.ResponseWriter, r *http.Request) {
 	deploymentCompleted, deploymentCompletedAt := deploymentCompletionStatus()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"initialized":             isInitialized(),
+		"platformReady":           platformReadyStatus(),
+		"bindReady":               bindReadyStatus(),
+		"platformBootstrap":       platformBootstrapEnabled(),
 		"inProgress":              current.Status == initializationPending,
 		"status":                  current.Status,
 		"error":                   current.Error,
@@ -637,6 +709,25 @@ func validateSetupRequest(request setupRequest) (setupRequest, []DNSNode, error)
 	return request, nodes, nil
 }
 
+func validatePlatformSetupRequest(request setupRequest) error {
+	request.Username = strings.TrimSpace(request.Username)
+	if !setupUsernamePattern.MatchString(request.Username) {
+		return fmt.Errorf("管理员用户名格式无效")
+	}
+	if len(request.Password) < 12 {
+		return fmt.Errorf("管理员密码至少需要 12 位")
+	}
+	return nil
+}
+
+func setupAdminAuthenticated(r *http.Request) bool {
+	if !authEnabled() {
+		return true
+	}
+	cookie, err := r.Cookie(sessionCookie)
+	return err == nil && validSession(cookie.Value) && csrfValid(r)
+}
+
 func setupNodeName(name, fallback string) string {
 	if name = strings.TrimSpace(name); name != "" {
 		return name
@@ -650,12 +741,8 @@ func setupValidate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if isInitialized() || initializationInProgress() {
+	if initializationInProgress() {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "系统已经初始化或正在初始化"})
-		return
-	}
-	if _, err := setupToken(r); err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
 	var request setupRequest
@@ -663,14 +750,47 @@ func setupValidate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
 		return
 	}
+	if request.PlatformOnly {
+		if isInitialized() || !platformBootstrapEnabled() {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "平台已经初始化，或未启用平台优先安装模式"})
+			return
+		}
+		if _, err := setupToken(r); err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := validatePlatformSetupRequest(request); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, setupCheckResult{Ready: true, Checks: []setupCheck{{Name: "DNSGuard 平台启动", Status: "pass", Detail: "控制面可以先启动；BIND、RPZ Zone 和 TSIG 将在登录后的接入阶段检查"}}})
+		return
+	}
+	if isInitialized() {
+		if bindReadyStatus() {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "BIND 已经接入，无需重复配置"})
+			return
+		}
+		if !setupAdminAuthenticated(r) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "需要已登录管理员会话和 CSRF Token 才能接入 BIND"})
+			return
+		}
+		request.Username = authUsername()
+		request.Password = "bind-configuration-validation-placeholder"
+	} else if _, err := setupToken(r); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
 	request, _, err := validateSetupRequest(request)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if _, err := loadWhitelistSeedForZone(request.Zone); err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "白名单初始 JSON 校验失败：" + err.Error()})
-		return
+	if !isInitialized() {
+		if _, err := loadWhitelistSeedForZone(request.Zone); err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "白名单初始 JSON 校验失败：" + err.Error()})
+			return
+		}
 	}
 	result := setupChecksFunc(r.Context(), request)
 	status := http.StatusOK
@@ -686,18 +806,14 @@ func setupComplete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if initializationInProgress() || isInitialized() {
+	if initializationInProgress() {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "系统已经初始化或正在初始化"})
 		return
 	}
 	setupTransactionMu.Lock()
 	defer setupTransactionMu.Unlock()
-	if initializationInProgress() || isInitialized() {
+	if initializationInProgress() {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "系统已经初始化或正在初始化"})
-		return
-	}
-	if _, err := setupToken(r); err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
 	var request setupRequest
@@ -705,23 +821,69 @@ func setupComplete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
 		return
 	}
+	if request.PlatformOnly {
+		if isInitialized() || !platformBootstrapEnabled() {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "平台已经初始化，或未启用平台优先安装模式"})
+			return
+		}
+		if _, err := setupToken(r); err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := validatePlatformSetupRequest(request); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := commitPlatformSetup(request, r); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "平台初始化未完成：" + err.Error()})
+			return
+		}
+		issueSetupSession(w, r, request.Username)
+		writeJSON(w, http.StatusOK, map[string]any{"initialized": true, "authenticated": true, "platformReady": true, "bindReady": false, "username": request.Username})
+		return
+	}
+	wasInitialized := isInitialized()
+	if wasInitialized {
+		if bindReadyStatus() {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "BIND 已经接入，无需重复配置"})
+			return
+		}
+		if !setupAdminAuthenticated(r) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "需要已登录管理员会话和 CSRF Token 才能接入 BIND"})
+			return
+		}
+		request.Username = authUsername()
+		request.Password = "bind-configuration-validation-placeholder"
+	} else if _, err := setupToken(r); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
 	request, nodes, err := validateSetupRequest(request)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	seedRules, err := loadWhitelistSeedForZone(request.Zone)
-	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "白名单初始 JSON 校验失败：" + err.Error()})
-		return
+	seedRules := []RPZRule(nil)
+	if !wasInitialized {
+		seedRules, err = loadWhitelistSeedForZone(request.Zone)
+		if err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "白名单初始 JSON 校验失败：" + err.Error()})
+			return
+		}
 	}
 	result := setupChecksFunc(r.Context(), request)
 	if !result.Ready {
 		writeJSON(w, http.StatusUnprocessableEntity, result)
 		return
 	}
-	if err := commitSetup(request, nodes, seedRules, r); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "初始化未完成：" + err.Error()})
+	var commitErr error
+	if wasInitialized {
+		commitErr = commitBindSetup(request, nodes, r)
+	} else {
+		commitErr = commitSetup(request, nodes, seedRules, r)
+	}
+	if commitErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "初始化未完成：" + commitErr.Error()})
 		return
 	}
 	issueSetupSession(w, r, request.Username)
@@ -748,6 +910,151 @@ func issueSetupSession(w http.ResponseWriter, r *http.Request, username string) 
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrfToken, Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
 }
 
+func commitPlatformSetup(request setupRequest, r *http.Request) error {
+	backupDir, err := os.MkdirTemp(filepath.Dir(dnsStatePath()), ".dnsguard-platform-backup-")
+	if err != nil {
+		return err
+	}
+	paths := []string{authFilePath(), dnsNodeConfigPath(), dnsStatePath()}
+	existed := make([]bool, len(paths))
+	for index, path := range paths {
+		existed[index] = regularFileExists(path)
+		if existed[index] {
+			content, readErr := os.ReadFile(path)
+			if readErr != nil || os.WriteFile(filepath.Join(backupDir, strconv.Itoa(index)), content, 0o600) != nil {
+				_ = os.RemoveAll(backupDir)
+				return fmt.Errorf("备份现有配置失败")
+			}
+		}
+	}
+	initializationMu.Lock()
+	initialization = initializationState{Status: initializationPending, Version: 1, StartedAt: time.Now().UTC().Format(time.RFC3339), Username: request.Username, PolicyMode: configuredPolicyMode(), PlatformReady: true, BindReady: false, BackupDir: backupDir, AuthExisted: existed[0], NodesExisted: existed[1], DNSStateExisted: existed[2]}
+	initializationMu.Unlock()
+	if err := saveInitializationState(); err != nil {
+		_ = os.RemoveAll(backupDir)
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(request.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return recoverSetupAndFail(fmt.Errorf("管理员密码哈希失败: %w", err))
+	}
+	authContent, _ := json.MarshalIndent(authStore{Username: request.Username, PasswordHash: string(hash), MustChangePassword: false}, "", "  ")
+	dnsMu.RLock()
+	newState := state
+	newState.Nodes = []DNSNode{}
+	newState.PolicyMode = configuredPolicyMode()
+	dnsMu.RUnlock()
+	nodeContent := []byte("[]\n")
+	stateContent, _ := json.MarshalIndent(newState, "", "  ")
+	stages := []struct {
+		path string
+		data []byte
+		mode os.FileMode
+	}{
+		{authFilePath(), append(authContent, '\n'), 0o600},
+		{dnsNodeConfigPath(), nodeContent, 0o640},
+		{dnsStatePath(), append(stateContent, '\n'), 0o640},
+	}
+	for index, stage := range stages {
+		if err := writeAtomicSetupFile(stage.path, stage.data, stage.mode); err != nil {
+			return recoverSetupAndFail(fmt.Errorf("写入平台初始化配置失败: %w", err))
+		}
+		if failAfter := strings.TrimSpace(os.Getenv("DNSGUARD_SETUP_FAIL_AFTER")); failAfter != "" && failAfter == []string{"auth", "nodes", "state"}[index] {
+			return recoverSetupAndFail(fmt.Errorf("平台初始化在测试注入点中断"))
+		}
+	}
+	loadAuth()
+	dnsMu.Lock()
+	state = newState
+	dnsMu.Unlock()
+	if err := recordCriticalAudit(r, request.Username, "setup.platform.complete", "success; bind=not_ready"); err != nil {
+		return recoverSetupAndFail(fmt.Errorf("审计记录失败: %w", err))
+	}
+	initializationMu.Lock()
+	initialization.Status = initializationCompleted
+	initialization.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+	initialization.Error = ""
+	initialization.BackupDir = ""
+	initialization.PlatformReady = true
+	initialization.BindReady = false
+	initializationMu.Unlock()
+	if err := saveInitializationState(); err != nil {
+		return recoverSetupAndFail(fmt.Errorf("平台初始化状态持久化失败: %w", err))
+	}
+	_ = os.RemoveAll(backupDir)
+	return nil
+}
+
+func restoreSetupFile(path string, content []byte, existed bool, mode os.FileMode) error {
+	if existed {
+		return writeAtomicSetupFile(path, content, mode)
+	}
+	return os.Remove(path)
+}
+
+func commitBindSetup(request setupRequest, nodes []DNSNode, r *http.Request) error {
+	oldNode, nodeErr := os.ReadFile(dnsNodeConfigPath())
+	oldState, stateErr := os.ReadFile(dnsStatePath())
+	oldInitialization := initialization
+	oldNodeExists := nodeErr == nil
+	oldStateExists := stateErr == nil
+	if nodeErr != nil && !os.IsNotExist(nodeErr) {
+		return nodeErr
+	}
+	if stateErr != nil && !os.IsNotExist(stateErr) {
+		return stateErr
+	}
+	dnsMu.RLock()
+	oldStateValue := state
+	newState := state
+	newState.Nodes = append([]DNSNode(nil), nodes...)
+	newState.PolicyMode = configuredPolicyMode()
+	dnsMu.RUnlock()
+	nodeContent, _ := json.MarshalIndent(nodeConfigsFromNodes(nodes), "", "  ")
+	stateContent, _ := json.MarshalIndent(newState, "", "  ")
+	if err := writeAtomicSetupFile(dnsNodeConfigPath(), append(nodeContent, '\n'), 0o640); err != nil {
+		return fmt.Errorf("写入 BIND 节点配置失败: %w", err)
+	}
+	if err := writeAtomicSetupFile(dnsStatePath(), append(stateContent, '\n'), 0o640); err != nil {
+		_ = restoreSetupFile(dnsNodeConfigPath(), oldNode, oldNodeExists, 0o640)
+		return fmt.Errorf("写入 DNS 状态失败: %w", err)
+	}
+	initializationMu.Lock()
+	initialization.PlatformReady = true
+	initialization.BindReady = true
+	initialization.Zone = request.Zone
+	initialization.Primary = nodes[0].Address
+	initialization.SecondaryCnt = len(nodes) - 1
+	initialization.PolicyMode = configuredPolicyMode()
+	initialization.Error = ""
+	candidate := initialization
+	initializationMu.Unlock()
+	if err := writeInitializationState(candidate); err != nil {
+		_ = restoreSetupFile(dnsNodeConfigPath(), oldNode, oldNodeExists, 0o640)
+		_ = restoreSetupFile(dnsStatePath(), oldState, oldStateExists, 0o640)
+		initializationMu.Lock()
+		initialization = oldInitialization
+		initializationMu.Unlock()
+		return fmt.Errorf("BIND 接入状态持久化失败: %w", err)
+	}
+	dnsMu.Lock()
+	state = newState
+	dnsMu.Unlock()
+	if err := recordCriticalAudit(r, authUsername(), "setup.bind.attach", fmt.Sprintf("zone=%s nodes=%d", request.Zone, len(nodes))); err != nil {
+		_ = restoreSetupFile(dnsNodeConfigPath(), oldNode, oldNodeExists, 0o640)
+		_ = restoreSetupFile(dnsStatePath(), oldState, oldStateExists, 0o640)
+		dnsMu.Lock()
+		state = oldStateValue
+		dnsMu.Unlock()
+		initializationMu.Lock()
+		initialization = oldInitialization
+		initializationMu.Unlock()
+		_ = saveInitializationState()
+		return fmt.Errorf("BIND 接入审计失败: %w", err)
+	}
+	return nil
+}
+
 func commitSetup(request setupRequest, nodes []DNSNode, seedRules []RPZRule, r *http.Request) error {
 	backupDir, err := os.MkdirTemp(filepath.Dir(dnsStatePath()), ".dnsguard-setup-backup-")
 	if err != nil {
@@ -765,7 +1072,7 @@ func commitSetup(request setupRequest, nodes []DNSNode, seedRules []RPZRule, r *
 		}
 	}
 	initializationMu.Lock()
-	initialization = initializationState{Status: initializationPending, Version: 1, StartedAt: time.Now().UTC().Format(time.RFC3339), Username: request.Username, Zone: request.Zone, Primary: nodes[0].Address, SecondaryCnt: len(nodes) - 1, PolicyMode: configuredPolicyMode(), BackupDir: backupDir, AuthExisted: existed[0], NodesExisted: existed[1], DNSStateExisted: existed[2]}
+	initialization = initializationState{Status: initializationPending, Version: 1, StartedAt: time.Now().UTC().Format(time.RFC3339), Username: request.Username, Zone: request.Zone, Primary: nodes[0].Address, SecondaryCnt: len(nodes) - 1, PolicyMode: configuredPolicyMode(), PlatformReady: true, BindReady: true, BackupDir: backupDir, AuthExisted: existed[0], NodesExisted: existed[1], DNSStateExisted: existed[2]}
 	initializationMu.Unlock()
 	if err := saveInitializationState(); err != nil {
 		_ = os.RemoveAll(backupDir)
@@ -975,7 +1282,7 @@ func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck
 	// the administrator enables the policy and removes the temporary setting.
 	if globalDenySetupDeferred() {
 		if recursor == "" || checkName == "" {
-			return []setupCheck{{Name: "全局拒绝递归基线", Status: "not_run", Detail: "未配置 RPZ_GLOBAL_DENY_RECURSOR 和 RPZ_GLOBAL_DENY_CHECK_NAME", Impact: "缺少已知可解析基线，不能证明启用 DENY 后的 NXDOMAIN 命中了 RPZ"}}
+			return []setupCheck{{Name: "全局拒绝递归基线", Status: "not_run", Detail: "尚未配置递归测试地址和基线域名；将在 Global Deny 收尾时验证", Impact: "当前仅完成 BIND 业务 Zone/TSIG 接入，不能据此证明 DENY 已启用", Optional: true}}
 		}
 		baseline, baselineCheck := querySetupResolvableName(ctx, recursor, checkName)
 		if baselineCheck.Status == "pass" {

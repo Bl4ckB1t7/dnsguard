@@ -122,3 +122,75 @@ func TestProductionRuntimePreflightAcceptsConfiguredFiles(t *testing.T) {
 		t.Fatalf("expected production preflight to pass: %v", err)
 	}
 }
+
+func TestPlatformFirstDeferredStartupRemainsAvailableUntilGlobalDeny(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "global", true)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("MONITORING_TOKEN", "a-long-monitoring-token-for-platform-first-tests-2026")
+	t.Setenv("TRUST_PROXY_TLS", "true")
+	t.Setenv("DNSGUARD_PLATFORM_ONLY", "true")
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")
+	// Platform-first installs do not need a deny zone or recursive baseline
+	// until the administrator finishes the BIND-side cutover.
+	initialization = initializationState{
+		Status:        initializationCompleted,
+		PolicyMode:    "global",
+		PlatformReady: true,
+		BindReady:     false,
+	}
+	if err := validateSecurityConfig(); err != nil {
+		t.Fatalf("platform-only API must restart before BIND attach: %v", err)
+	}
+
+	// BIND attachment changes only the persisted readiness marker. The API must
+	// remain restartable while the whitelist is still draft or being verified.
+	initialization.BindReady = true
+	if err := validateSecurityConfig(); err != nil {
+		t.Fatalf("API must restart after BIND attach while deferred: %v", err)
+	}
+	if err := validateSecurityConfig(); err != nil {
+		t.Fatalf("API must restart after whitelist publication before Global Deny: %v", err)
+	}
+
+	// Finalization removes the temporary switch and restores the normal global
+	// configuration requirements. A completed deployment must not retain the
+	// deferred startup exception.
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "false")
+	t.Setenv("RPZ_GLOBAL_DENY_ZONE", "global-deny.rpz.local")
+	t.Setenv("RPZ_GLOBAL_DENY_RECURSOR", "10.0.0.53:53")
+	t.Setenv("RPZ_GLOBAL_DENY_CHECK_NAME", "baseline.example.com")
+	if err := validateSecurityConfig(); err != nil {
+		t.Fatalf("API must restart after Global Deny finalization: %v", err)
+	}
+	initialization.DeploymentCompleted = true
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")
+	if err := validateSecurityConfig(); err == nil {
+		t.Fatal("completed platform-first deployment must reject a stale deferred switch")
+	}
+}
+
+func TestLegacyDeferredStartupGuardRemains(t *testing.T) {
+	setupTestEnvironment(t)
+	writeInitializedPolicyState(t, "global", true)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("MONITORING_TOKEN", "a-long-monitoring-token-for-legacy-tests-2026")
+	t.Setenv("TRUST_PROXY_TLS", "true")
+	t.Setenv("DNSGUARD_PLATFORM_ONLY", "false")
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")
+	t.Setenv("RPZ_GLOBAL_DENY_ZONE", "global-deny.rpz.local")
+	t.Setenv("RPZ_GLOBAL_DENY_RECURSOR", "10.0.0.53:53")
+	t.Setenv("RPZ_GLOBAL_DENY_CHECK_NAME", "baseline.example.com")
+	initialization = initializationState{
+		Status:        initializationCompleted,
+		Primary:       "127.0.0.1:5353",
+		PolicyMode:    "global",
+		BindReady:     false,
+		PlatformReady: false,
+	}
+	if err := validateSecurityConfig(); err == nil {
+		t.Fatal("legacy completed deployment must keep rejecting stale deferred startup")
+	}
+}
