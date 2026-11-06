@@ -213,5 +213,5 @@ docker compose --env-file "$ENV_FILE" "${COMPOSE_FILES[@]}" ps
 host="${DNSGUARD_INSTALL_HOST:-localhost}"
 port="${DNSGUARD_WEB_PORT:-443}"
 echo "安装完成：https://${host}:${port}/"
-echo "Bootstrap Token 未显示；请在受保护终端读取：cat '$bootstrap'"
+echo "Bootstrap Token 未显示；请在受保护终端读取：sudo cat '$bootstrap'（不要将 Token 写入聊天、截图或普通日志）"
 echo "下一步：打开 Web 完成 BIND 对接；在 RPZ 规则页面导入 TXT/JSON 白名单（只生成 draft），人工发布并确认同步后再启用全局 DENY。"

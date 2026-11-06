@@ -78,7 +78,7 @@ export DNSGUARD_BIND_NETWORK=existing-bind-network
 Bootstrap Token 不会打印到普通日志。默认安装后在仓库根目录用受保护终端读取：
 
 ```bash
-cat ./secrets/bootstrap.token
+sudo cat ./secrets/bootstrap.token
 ```
 
 如果设置了 `DNSGUARD_SECRET_DIR`，读取该自定义目录下的 `bootstrap.token`；安装脚本最后输出的实际路径优先。不要把 Token 放进聊天、截图或工单。重复执行安装不会覆盖现有配置、密钥、Token 或数据。
@@ -91,7 +91,7 @@ cat ./secrets/bootstrap.token
 2. 在 RPZ 规则页面导入 TXT（每行一个域名）或白名单 JSON，审核后保存为 `draft`。
 3. 人工确认并发布白名单/A 重定向，等待 Primary 和所有 Secondary 验证成功。
 4. 由 BIND 管理员把预先准备的 `global-deny.rpz.local` 加入 `response-policy`。
-5. 从 `deploy/docker/dnsguard.env` 移除 `RPZ_GLOBAL_DENY_SETUP_DEFERRED=true`，再按原来的 Compose 文件重建 DNSGuard。
+5. 由 BIND 管理员完成配置并 reload 后，运行 `./scripts/finalize-global-deny.sh`；脚本会只读核对 BIND、原子关闭临时配置并使用现有镜像重建 API。
 6. 回到 Web 执行只读核验，确认白名单、多级子域名、A 重定向和未知域名的实际递归结果。
 
 普通 BIND 使用：
@@ -101,13 +101,15 @@ docker compose --env-file deploy/docker/dnsguard.env \
   -f compose.yaml up -d --force-recreate
 ```
 
-如果设置了 `DNSGUARD_BIND_NETWORK`，重建时必须保留外部网络 override：
+如果设置了 `DNSGUARD_BIND_NETWORK`，收尾脚本和手工重建都必须保留外部网络 override：
 
 ```bash
 export DNSGUARD_BIND_NETWORK=existing-bind-network
 docker compose --env-file deploy/docker/dnsguard.env \
   -f compose.yaml -f compose.bind-network.yaml up -d --force-recreate
 ```
+
+收尾脚本不会修改或 reload BIND，也不会重新构建镜像；失败时会保留 env 保护备份并给出恢复提示。
 
 首次安装使用 deferred 只是为了先完成初始化和白名单发布，不是长期运行模式。完成初始化后仍保留该变量，API 会拒绝启动。
 

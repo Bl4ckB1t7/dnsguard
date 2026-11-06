@@ -892,7 +892,7 @@ func runSetupChecks(ctx context.Context, request setupRequest) setupCheckResult 
 		serial, check := querySetupSOA(ctx, fmt.Sprintf("Secondary %d SOA / Zone", index+1), secondary.Address, request.Zone)
 		if primarySerial != "" && serial != "" && primarySerial != serial {
 			check.Status = "fail"
-			check.Detail = fmt.Sprintf("SOA Serial=%s，与 Primary Serial=%s 不一致", serial, primarySerial)
+			check.Detail = fmt.Sprintf("SOA Serial=%s，与 Primary Serial=%s 不一致；请等待同步后重试", serial, primarySerial)
 		}
 		checks = append(checks, check)
 	}
@@ -968,6 +968,34 @@ func globalDenyCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck {
+	recursor := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_RECURSOR"))
+	checkName := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_CHECK_NAME"))
+	// During staged onboarding the deny zone is intentionally not active yet.
+	// Only record the normal-resolution baseline; defer all deny-zone checks until
+	// the administrator enables the policy and removes the temporary setting.
+	if globalDenySetupDeferred() {
+		if recursor == "" || checkName == "" {
+			return []setupCheck{{Name: "全局拒绝递归基线", Status: "not_run", Detail: "未配置 RPZ_GLOBAL_DENY_RECURSOR 和 RPZ_GLOBAL_DENY_CHECK_NAME", Impact: "缺少已知可解析基线，不能证明启用 DENY 后的 NXDOMAIN 命中了 RPZ"}}
+		}
+		baseline, baselineCheck := querySetupResolvableName(ctx, recursor, checkName)
+		if baselineCheck.Status == "pass" {
+			if err := saveGlobalDenyBaseline(baseline); err != nil {
+				baselineCheck.Status = "fail"
+				baselineCheck.Detail = "测试域名基线已通过，但无法持久化；未保存的对照证据不能用于后续 DENY 验收"
+			}
+		}
+		return []setupCheck{
+			baselineCheck,
+			{
+				Name:     "全局拒绝递归效果",
+				Status:   "not_run",
+				Detail:   "分阶段首次部署：已记录测试域名正常解析基线；白名单发布并确认同步、启用全局 DENY 后再执行 NXDOMAIN 检查",
+				Impact:   "初始化完成前请勿将全局 deny Zone 加入 response-policy；白名单发布完成后必须由 BIND 管理员启用并重新执行只读策略检查",
+				Optional: true,
+			},
+		}
+	}
+
 	zone := configuredGlobalDenyZone()
 	if zone == "" || !domainPattern.MatchString(zone) {
 		return []setupCheck{{Name: "全局默认拒绝 Zone", Status: "fail", Detail: "RPZ_GLOBAL_DENY_ZONE 未配置或格式无效"}}
@@ -979,33 +1007,13 @@ func runGlobalDenyChecks(ctx context.Context, request setupRequest) []setupCheck
 		serial, secondaryCheck := querySetupSOA(ctx, fmt.Sprintf("全局拒绝 Secondary %d Zone", index+1), secondary.Address, zone)
 		if primarySerial != "" && serial != "" && primarySerial != serial {
 			secondaryCheck.Status = "fail"
-			secondaryCheck.Detail = fmt.Sprintf("SOA Serial=%s，与全局拒绝 Primary Serial=%s 不一致", serial, primarySerial)
+			secondaryCheck.Detail = fmt.Sprintf("SOA Serial=%s，与全局拒绝 Primary Serial=%s 不一致；请等待同步后重试", serial, primarySerial)
 		}
 		checks = append(checks, secondaryCheck)
 	}
 	checks = append(checks, querySetupGlobalDenyTrigger(ctx, request.Primary.Address, zone))
-	recursor := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_RECURSOR"))
-	checkName := strings.TrimSpace(os.Getenv("RPZ_GLOBAL_DENY_CHECK_NAME"))
 	if recursor == "" || checkName == "" {
 		checks = append(checks, setupCheck{Name: "全局拒绝递归基线", Status: "not_run", Detail: "未配置 RPZ_GLOBAL_DENY_RECURSOR 和 RPZ_GLOBAL_DENY_CHECK_NAME", Impact: "缺少已知可解析基线，不能证明启用 DENY 后的 NXDOMAIN 命中了 RPZ"})
-		return checks
-	}
-	if globalDenySetupDeferred() {
-		baseline, baselineCheck := querySetupResolvableName(ctx, recursor, checkName)
-		if baselineCheck.Status == "pass" {
-			if err := saveGlobalDenyBaseline(baseline); err != nil {
-				baselineCheck.Status = "fail"
-				baselineCheck.Detail = "测试域名基线已通过，但无法持久化；未保存的对照证据不能用于后续 DENY 验收"
-			}
-		}
-		checks = append(checks, baselineCheck)
-		checks = append(checks, setupCheck{
-			Name:     "全局拒绝递归效果",
-			Status:   "not_run",
-			Detail:   "分阶段首次部署：已记录测试域名正常解析基线；白名单发布并确认同步、启用全局 DENY 后再执行 NXDOMAIN 检查",
-			Impact:   "初始化完成前请勿将全局 deny Zone 加入 response-policy；白名单发布完成后必须由管理员启用并重新执行只读策略检查",
-			Optional: true,
-		})
 		return checks
 	}
 	if err := loadGlobalDenyBaseline(checkName, recursor); err != nil {
