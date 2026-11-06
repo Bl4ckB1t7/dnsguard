@@ -49,6 +49,12 @@ jobs:
             tests/bind-cluster/runtime/acceptance-report.md
             tests/bind-cluster/runtime/evidence/
             tests/bind-cluster/runtime/docker-compose.log
+            tests/bind-cluster/runtime/*/api*.log
+            tests/bind-cluster/runtime/*/one.code
+            tests/bind-cluster/runtime/*/two.code
+            tests/bind-cluster/runtime/*/job.json
+            tests/bind-cluster/runtime/*/rules.json
+            tests/bind-cluster/runtime/*/publish.json
           if-no-files-found: warn
 
   web:

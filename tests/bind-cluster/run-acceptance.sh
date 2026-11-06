@@ -678,7 +678,7 @@ case_axfr_recovery() {
   direct_add_rpz_rule axfr-recovery.app.test 192.0.2.90
   primary_after="$(soa_serial "${PRIMARY_PORT}")"
   [[ "$primary_after" != "$before" ]]
-  rm -f "$RUNTIME_DIR/secondary-1-data/rpz.local.zone"*
+  remove_bind_files "$RUNTIME_DIR/secondary-1-data/rpz.local.zone"*
   compose start bind-secondary-1 >/dev/null
   wait_dns "${SECONDARY_1_PORT}"
   for _ in $(seq 1 60); do
@@ -690,6 +690,20 @@ case_axfr_recovery() {
     [[ "$(dig +tcp +norecurse +time=2 +tries=1 @127.0.0.1 -p "${SECONDARY_1_PORT}" axfr-recovery.app.test.rpz.local A +short)" == "192.0.2.90" ]]
   direct_delete_rpz_rule axfr-recovery.app.test
   echo "Secondary recovered by full transfer after local RPZ data removal: serial=$secondary_after"
+}
+
+remove_bind_files() {
+  local path
+  for path in "$@"; do
+    if rm -f "$path" 2>/dev/null; then
+      continue
+    fi
+    if command -v sudo >/dev/null 2>&1 && sudo -n rm -f "$path" 2>/dev/null; then
+      continue
+    fi
+    printf 'cannot remove isolated BIND test file %s; permission is required for this test\n' "$path" >&2
+    return 1
+  done
 }
 
 copy_api_fixture() {
@@ -946,7 +960,7 @@ EOF
 }
 
 case_failed_publish_recovery() {
-  local dir="$RUNTIME_DIR/state-write-failure" fake="$RUNTIME_DIR/state-write-failure/fake-bin" marker="$RUNTIME_DIR/state-write-failure/nsupdate.done" pid job
+  local dir="$RUNTIME_DIR/state-write-failure" fake="$RUNTIME_DIR/state-write-failure/fake-bin" marker="$RUNTIME_DIR/state-write-failure/nsupdate.done" status_file="$RUNTIME_DIR/state-write-failure-job.json" pid job
   copy_api_fixture "$dir"
   mkdir -p "$fake"
   cp "$RUNTIME_DIR/keys/rpz-manager.key" "$dir/test.key"
@@ -970,12 +984,12 @@ EOF
   [[ -f "$marker" ]]
   chmod 0500 "$dir"
   for _ in $(seq 1 100); do
-    curl -fsS "http://127.0.0.1:18085/api/dns/rpz/jobs/$job" >"$dir/job.json" || true
-    [[ "$(json_value "$dir/job.json" status 2>/dev/null || true)" == reconcile_required ]] && break
+    curl -fsS "http://127.0.0.1:18085/api/dns/rpz/jobs/$job" >"$status_file" || true
+    [[ "$(json_value "$status_file" status 2>/dev/null || true)" == reconcile_required ]] && break
     sleep 0.25
   done
   chmod 0700 "$dir"
-  [[ "$(json_value "$dir/job.json" status)" == reconcile_required ]]
+  [[ "$(json_value "$status_file" status)" == reconcile_required ]]
   stop_api_pid "$dir/api.pid"
   direct_delete_rpz_rule state-failure.app.test
   chmod 0700 "$RUNTIME_DIR"
