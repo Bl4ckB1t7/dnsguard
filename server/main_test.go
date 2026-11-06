@@ -171,6 +171,30 @@ func TestPlatformFirstDeferredStartupRemainsAvailableUntilGlobalDeny(t *testing.
 	}
 }
 
+func TestFreshPlatformFirstStartupAllowsMissingGlobalDenyInputs(t *testing.T) {
+	setupTestEnvironment(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("MONITORING_TOKEN", "a-long-monitoring-token-for-fresh-platform-first-tests-2026")
+	t.Setenv("TRUST_PROXY_TLS", "true")
+	t.Setenv("DNSGUARD_PLATFORM_ONLY", "true")
+	t.Setenv("RPZ_DEFAULT_DENY_MODE", "global")
+	t.Setenv("RPZ_GLOBAL_DENY_SETUP_DEFERRED", "true")
+	t.Setenv("AUTH_ENABLED", "true")
+	t.Setenv("AUTH_SECRET", "setup-test-secret-with-more-than-32-characters-2026")
+	t.Setenv("TLS_CERT_FILE", "")
+	t.Setenv("TLS_KEY_FILE", "")
+	t.Setenv("RPZ_GLOBAL_DENY_ZONE", "global-deny.rpz.local")
+	t.Setenv("RPZ_GLOBAL_DENY_RECURSOR", "")
+	t.Setenv("RPZ_GLOBAL_DENY_CHECK_NAME", "")
+
+	if isInitialized() {
+		t.Fatal("fresh platform-first test must not start initialized")
+	}
+	if err := validateSecurityConfig(); err != nil {
+		t.Fatalf("fresh platform-first API must start before Global Deny inputs exist: %v", err)
+	}
+}
+
 func TestLegacyDeferredStartupGuardRemains(t *testing.T) {
 	setupTestEnvironment(t)
 	writeInitializedPolicyState(t, "global", true)
