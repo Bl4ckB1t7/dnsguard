@@ -146,7 +146,7 @@ export function SetupWizard({ onComplete, platformOnly = false }: { onComplete: 
     }
   };
 
-  if (complete) return <main className="setup-viewport"><section className="setup-card"><h1>{platformOnly ? "DNSGuard 平台已启动" : "BIND 接入完成"}</h1><p>{platformOnly ? "管理员会话已建立，下一步在此页面接入 BIND。" : "BIND 节点和 TSIG 已验证，可以进入 RPZ 管理页面。"}</p></section></main>;
+  if (complete) return <main className="setup-viewport"><section className="setup-card"><h1>{platformOnly ? "DNSGuard 平台已启动" : "BIND 接入完成"}</h1><p>{platformOnly ? "管理员会话已建立，下一步在此页面接入 BIND。" : "BIND 节点和 TSIG 已验证，可以进入 RPZ 管理页面。"}</p><div className="setup-actions"><button type="button" onClick={onComplete}>进入 RPZ 管理页面</button></div></section></main>;
   return (
     <main className="setup-viewport">
       <section className="setup-card">
