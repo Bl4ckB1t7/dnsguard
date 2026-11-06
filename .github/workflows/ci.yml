@@ -1,0 +1,85 @@
+name: DNSGuard CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install -y bind9-utils
+      - run: go test ./...
+        working-directory: server
+      - run: go test -race ./...
+        working-directory: server
+      - run: go vet ./...
+        working-directory: server
+
+  shell-and-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck -x install.sh scripts/*.sh tests/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
+      - run: bash -n install.sh scripts/*.sh tests/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
+      - run: DNSGUARD_ENV_FILE=./deploy/docker/dnsguard.env.example docker compose --env-file deploy/docker/dnsguard.env.example -f compose.yaml config
+
+  bind-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils bind9-utils
+      - run: TLD_FIXTURE_COUNT=2 TEST_RUN_USER="$USER" bash ./tests/bind-cluster/run-acceptance.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bind-acceptance-evidence
+          path: |
+            tests/bind-cluster/runtime/acceptance-report.md
+            tests/bind-cluster/runtime/evidence/
+            tests/bind-cluster/runtime/docker-compose.log
+            tests/bind-cluster/runtime/*/api*.log
+            tests/bind-cluster/runtime/*/one.code
+            tests/bind-cluster/runtime/*/two.code
+            tests/bind-cluster/runtime/*/job.json
+            tests/bind-cluster/runtime/*/rules.json
+            tests/bind-cluster/runtime/*/publish.json
+          if-no-files-found: warn
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:setup-wizard
+      - run: npx playwright install chromium
+      - run: npm run test:ui
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            playwright-report/
+            test-results/

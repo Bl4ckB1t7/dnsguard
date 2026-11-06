@@ -83,7 +83,7 @@ export function SetupWizard({ onComplete, platformOnly = false }: { onComplete: 
       if (!response.ok) throw new Error(payload.error ?? "配置包生成失败");
       setPackagePreview(payload);
     } catch (reason) {
-      setPackageError(reason instanceof Error ? reason.message : "配置包生成失败");
+      setPackageError(`配置包预览失败：${reason instanceof Error ? reason.message : "未知错误"}`);
     } finally {
       setPackageLoading(false);
     }
@@ -111,7 +111,7 @@ export function SetupWizard({ onComplete, platformOnly = false }: { onComplete: 
       link.click();
       URL.revokeObjectURL(url);
     } catch (reason) {
-      setPackageError(reason instanceof Error ? reason.message : "配置包下载失败");
+      setPackageError(`配置包下载失败：${reason instanceof Error ? reason.message : "未知错误"}`);
     } finally {
       setPackageLoading(false);
     }
