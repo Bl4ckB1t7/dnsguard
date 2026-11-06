@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "dev:tailscale": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "test:setup-wizard": "node scripts/test-web-setup.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
