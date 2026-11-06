@@ -70,10 +70,13 @@ compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
 
 chown_bind_path() {
   local path="$1"
-  if chown 53:53 "$path" 2>/dev/null; then
+  # The API test process must read the same temporary TSIG file as BIND. Keep
+  # the file private while making the test account the owner and the BIND gid
+  # the group; this avoids relying on the CI runner being root.
+  if chown "${TEST_RUN_USER}:53" "$path" 2>/dev/null; then
     return 0
   fi
-  if command -v sudo >/dev/null 2>&1 && sudo -n chown 53:53 "$path" 2>/dev/null; then
+  if command -v sudo >/dev/null 2>&1 && sudo -n chown "${TEST_RUN_USER}:53" "$path" 2>/dev/null; then
     return 0
   fi
   printf 'cannot set BIND ownership on %s; run the isolated test with permission to chown test data\n' "$path" >&2
