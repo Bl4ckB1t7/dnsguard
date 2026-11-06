@@ -68,6 +68,30 @@ done
 
 compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
 
+chown_bind_path() {
+  local path="$1"
+  if chown 53:53 "$path" 2>/dev/null; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n chown 53:53 "$path" 2>/dev/null; then
+    return 0
+  fi
+  printf 'cannot set BIND ownership on %s; run the isolated test with permission to chown test data\n' "$path" >&2
+  return 1
+}
+
+chown_bind_tree() {
+  local path="$1"
+  if chown -R 53:53 "$path" 2>/dev/null; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n chown -R 53:53 "$path" 2>/dev/null; then
+    return 0
+  fi
+  printf 'cannot set BIND ownership on %s; run the isolated test with permission to chown test data\n' "$path" >&2
+  return 1
+}
+
 record_case() {
   local name="$1" status="$2" evidence="$3"
   CASE_NAMES+=("$name")
@@ -183,7 +207,7 @@ prepare_runtime() {
   secret="$(openssl rand -base64 32 | tr -d '\n')"
   printf 'key "rpz-manager" {\n    algorithm hmac-sha256;\n    secret "%s";\n};\n' "$secret" >"$RUNTIME_DIR/keys/rpz-manager.key"
   chmod 0640 "$RUNTIME_DIR/keys/rpz-manager.key"
-  chown 53:53 "$RUNTIME_DIR/keys/rpz-manager.key" 2>/dev/null || true
+  chown_bind_path "$RUNTIME_DIR/keys/rpz-manager.key"
 
   cat >"$RUNTIME_DIR/primary-data/rpz.local.zone" <<'EOF'
 $TTL 60
@@ -240,7 +264,7 @@ EOF
   } >"$RUNTIME_DIR/tlds.txt"
   for dir in "$RUNTIME_DIR"/*-data "$RUNTIME_DIR"/*-logs; do
     chmod 0775 "$dir"
-    chown -R 53:53 "$dir" 2>/dev/null || true
+    chown_bind_tree "$dir"
   done
 
   cat >"$RUNTIME_DIR/dns-state.json" <<EOF
