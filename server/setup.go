@@ -328,11 +328,18 @@ func platformFirstOnboardingPending() bool {
 	initializationMu.Lock()
 	current := initialization
 	initializationMu.Unlock()
-	return platformBootstrapEnabled() &&
-		current.Status == initializationCompleted &&
+	if !platformBootstrapEnabled() || !globalDenySetupDeferred() {
+		return false
+	}
+	// A fresh platform-first install has no completed initialization marker yet.
+	// It must still be able to start so the administrator can reach the Web
+	// setup flow before BIND, RPZ, or the Global Deny baseline exists.
+	if !isInitialized() {
+		return true
+	}
+	return current.Status == initializationCompleted &&
 		current.PlatformReady &&
-		!current.DeploymentCompleted &&
-		globalDenySetupDeferred()
+		!current.DeploymentCompleted
 }
 
 func currentPublishEvidenceReady() bool {
