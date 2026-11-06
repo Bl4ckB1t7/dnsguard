@@ -92,6 +92,8 @@ func main() {
 	mux.HandleFunc("/api/setup/status", setupStatus)
 	mux.HandleFunc("/api/setup/validate", setupValidate)
 	mux.HandleFunc("/api/setup/complete", setupComplete)
+	mux.HandleFunc("/api/setup/rpz-package/preview", setupRPZPackage)
+	mux.HandleFunc("/api/setup/rpz-package/download", downloadRPZPackage)
 	mux.HandleFunc("/api/settings/telegram", telegramSettings)
 	mux.HandleFunc("/api/settings/telegram/test", telegramTest)
 	mux.HandleFunc("/api/auth/login", authLogin)

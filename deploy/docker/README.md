@@ -59,6 +59,25 @@ sudo cat ./secrets/bootstrap.token
    目录。完成 SOA、节点和 TSIG 检查。
 4. BIND 未通过检查前，RPZ 发布和其他依赖 BIND 的写操作保持禁用；页面可以登录并显示下一步。
 
+### 可选：生成 RPZ 初始化配置包
+
+在接入向导填写 Primary、Secondary、业务 RPZ Zone 和 Global Deny Zone 后，可以先点击“预览配置包”或“下载 ZIP”。配置包只包含：
+
+- Primary/Secondary Zone 配置片段和初始 Zone 文件；
+- 业务 RPZ 优先、Global Deny 暂不加入 `response-policy` 的示例；
+- TSIG include 配置和受保护环境中的生成说明；
+- `named-checkconf`/`named-checkzone` 验证脚本、备份和冲突拒绝说明。
+
+配置包不包含 TSIG Secret，也不会通过 SSH、Docker Socket 或 API 修改 BIND。BIND 管理员必须在 BIND 主机审核并执行包内脚本：
+
+```bash
+./apply-rpz-config.sh --check
+./apply-rpz-config.sh --apply
+./verify-rpz-config.sh
+```
+
+脚本默认只检查；`--apply` 也只在 `BIND_CONFIG_ROOT` 下创建不存在的 DNSGuard 管理目录，发现已有目录会拒绝覆盖。管理员仍需手工审核并将片段纳入 `named.conf`，再按正常变更流程执行 `named-checkconf` 和 BIND reload。Global Deny Zone 可以先创建，但在白名单发布、Primary/Secondary 同步确认前不得加入 `response-policy`。
+
 已有 BIND 时，使用与 Primary `update-policy` 匹配的现有 Key。DNSGuard 不生成、替换或修改
 BIND Key。新建 Key 必须由 BIND 管理员生成并同步配置 Primary，之后再把同一份 Key 安全提供给
 DNSGuard。
