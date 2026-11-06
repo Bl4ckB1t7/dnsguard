@@ -1,40 +1,22 @@
-# DNSGuard v1.1.1 Docker Compose 安装手册
+# DNSGuard Docker Compose 安装手册
 
-DNSGuard 生产环境只支持 Docker Compose。Compose 只运行 DNSGuard 控制面：
-`dnsguard-api` 和 `dnsguard-web`。生产 BIND Primary/Secondary 必须独立运行，DNSGuard
-不会安装、修改、代理或重启 BIND。
+DNSGuard 的生产部署方式是 Docker Compose，生产 Compose 只运行 `dnsguard-api` 和
+`dnsguard-web`。BIND Primary/Secondary 由管理员独立部署；DNSGuard 不安装、修改、代理或
+重启 BIND。
 
-## 服务器要求
+## 1. 安装前准备
 
-- Debian 12 或 Ubuntu 22.04/24.04，x86_64。
-- Docker Engine 24+、Docker Compose Plugin 2.20+。
-- 主机或 API 容器可访问 BIND 的 DNS、SOA 和必要的 AXFR 路径。
-- 已准备已有 BIND 使用的 TSIG Key、企业 HTTPS 证书和私钥。
+- Docker Engine 24+ 和 Docker Compose Plugin 2.20+。
+- 当前用户可以执行 `docker info`；安装器不会修改 Docker Socket 权限。
+- 可信 HTTPS 证书和私钥。安装器不会生成自签名证书。
+- **首次启动前不要求 BIND、RPZ Zone 或 TSIG。** BIND 接入在平台启动后的 Web 向导中完成。
+- BIND 接入阶段需要已有 Primary/Secondary、业务 RPZ Zone、授权 TSIG，以及管理员配置的
+  NOTIFY/IXFR/AXFR 和网络权限。
 
-目标服务器不需要安装 Go、Node.js、npm 或 BIND。管理入口应只允许管理网段访问，不要直接暴露到公网。
+DNSGuard 不自动修改 `named.conf`、`response-policy` 或生产 Zone 文件，也不会自动启用
+`global-deny.rpz.local`。
 
-## 第 1 步：准备现有 BIND
-
-由 BIND 管理员提前完成：
-
-1. 准备白名单/A 重定向 RPZ Zone、动态更新 TSIG、NOTIFY、IXFR/AXFR 和必要的只读 SOA/AXFR 权限。
-2. 将白名单/A 重定向 Zone 放在 `response-policy` 的较高优先级。
-3. 如使用 v1.1.1 全局 DENY，创建独立 `global-deny.rpz.local`，例如：
-
-   ```dns
-   $ORIGIN global-deny.rpz.local.
-   * IN CNAME .
-   ```
-
-4. 首次上线先不要把 deny Zone 加入递归 `response-policy`，并准备一个目前能够正常解析的测试域名作为递归基线。
-
-DNSGuard 不会编辑 `named.conf`、`response-policy` 或 Zone 文件。v1.1.1 的全局 DENY 不依赖 IANA TLD 列表。
-
-旧版 `tld-deny.rpz.local` 仅作为 v1.0.1 兼容 Zone 保留；`global-deny.rpz.local` 才是 v1.1.0+ 的正式全局 DENY Zone。
-
-详细 BIND 配置见[BIND RPZ 部署与对接文档](../../docs/bind-rpz-deployment.md)。
-
-## 第 2 步：获取 v1.1.1 并运行一键安装
+## 2. 一键启动控制面
 
 先克隆，再运行仓库内脚本：
 
@@ -45,156 +27,74 @@ cd dnsguard
 ./install.sh
 ```
 
-首次运行会检查 Docker/Compose，提示提供：
+首次安装只会要求 HTTPS 证书和私钥，并生成受保护的一次性 Bootstrap Token。没有 BIND、RPZ
+或 TSIG 时，平台仍应启动；安装器会明确提示这些内容稍后在 Web 中准备。重复执行不会覆盖
+已有 env、密钥、Token、证书或数据。失败时先按错误提示修正，再重新执行。
 
-- BIND Primary 地址；
-- 启用 DENY 前可正常解析的测试域名及递归 DNS 地址；
-- 已有 BIND TSIG Key；
-- HTTPS 证书和私钥。
-
-首次尚未存在 `deploy/docker/dnsguard.env` 时，安装会生成 `AUTH_SECRET`、`MONITORING_TOKEN` 和一次性 Bootstrap Token，并创建持久化目录。若已经准备了环境文件，则必须先填入真实安全参数。已有配置、密钥、证书、Token 和数据不会被覆盖。缺少 TSIG 或证书时会停止，不会用不可信的自签名证书继续启动。
-
-### BIND 在另一套 Docker 网络中
-
-如果 BIND 位于独立物理机或虚拟机，直接使用 BIND 实际可达的地址和 `53` 端口，不设置下面的变量。
-
-如果 BIND 位于另一套已经存在的 Docker 网络：
+如果 BIND 在另一套已存在的 Docker 网络中：
 
 ```bash
 export DNSGUARD_BIND_NETWORK=existing-bind-network
 ./install.sh
 ```
 
-安装脚本会检查网络存在，并检查其实际 Subnet 是否被 `DNS_NODE_ALLOWED_CIDRS` 明确授权；不满足时失败，不创建网络、不修改网络、不自动放宽 CIDR。API 使用 BIND 容器在该网络中的可达地址和 `53` 端口；不要把宿主机的 `127.0.0.1:15353` 之类映射端口填给 API。
+安装器会检查实际 Subnet 是否已包含在 `DNS_NODE_ALLOWED_CIDRS` 中，不会创建或修改网络。
+API 使用 BIND 容器在外部网络中的地址和 53 端口；不要把宿主机映射端口（例如
+`127.0.0.1:15353`）填给 API。Web 只加入 `dnsguard-internal`。
 
-如果脚本提示 Subnet 未授权，先查看实际网段并将其明确加入 `deploy/docker/dnsguard.env` 的 `DNS_NODE_ALLOWED_CIDRS`，然后重新运行安装：
-
-```bash
-docker network inspect "$DNSGUARD_BIND_NETWORK"
-./install.sh
-```
-
-不要用 `docker network connect` 手工补连接。安装脚本会自动同时使用 `compose.yaml` 和 `compose.bind-network.yaml`；API 重建时也必须保留这两个文件：
-
-```bash
-docker compose --env-file deploy/docker/dnsguard.env \
-  -f compose.yaml -f compose.bind-network.yaml \
-  up -d --force-recreate dnsguard-api
-```
-
-`dnsguard-web` 只加入 `dnsguard-internal`，不会加入 BIND 外部网络。未设置 `DNSGUARD_BIND_NETWORK` 时，正式 `compose.yaml` 的默认网络架构不变。
-
-### Bootstrap Token
-
-默认安装完成后，在仓库根目录的受保护终端读取：
+Bootstrap Token 默认读取方式：
 
 ```bash
 sudo cat ./secrets/bootstrap.token
 ```
 
-如果设置了 `DNSGUARD_SECRET_DIR`，改为读取该自定义目录下的 `bootstrap.token`；安装脚本最后输出的实际路径是最终依据。Token 不会打印到普通日志，重复安装不会重新生成或覆盖它。
+若设置 `DNSGUARD_SECRET_DIR`，读取该目录下的 `bootstrap.token`；以安装脚本最后输出的实际
+路径为准。不要将 Token 写入聊天、截图或普通日志。
 
-### TSIG Key 边界
+## 3. Web 初始化：先平台，后 BIND
 
-已有 BIND Primary 时，默认复制当前已授权且与 Primary `update-policy` 匹配的 Key。DNSGuard 只读取它，不会生成、替换或修改生产 BIND Key。
+1. 打开安装输出的 HTTPS 地址。
+2. 输入 Bootstrap Token，创建管理员。此时只有 DNSGuard 平台完成启动，BIND 状态为“未接入”。
+3. 登录后在向导中填写 Primary、Secondary、RPZ Zone，并将已有 TSIG Key 放入挂载的 secrets
+   目录。完成 SOA、节点和 TSIG 检查。
+4. BIND 未通过检查前，RPZ 发布和其他依赖 BIND 的写操作保持禁用；页面可以登录并显示下一步。
 
-如果是新建 Primary，由 BIND 管理员在受保护的 DNS 管理主机生成 Key，并将同一份 Key 配置到 Primary 和 DNSGuard。重新生成后必须同步修改 Primary，否则动态更新会认证失败。
+已有 BIND 时，使用与 Primary `update-policy` 匹配的现有 Key。DNSGuard 不生成、替换或修改
+BIND Key。新建 Key 必须由 BIND 管理员生成并同步配置 Primary，之后再把同一份 Key 安全提供给
+DNSGuard。
 
-管理员可在受保护的管理主机生成新 Key：
+## 4. 白名单发布和 Global Deny
 
-```bash
-KEY_DIR="$HOME/dnsguard-admin-keys"
-umask 077
-install -d -m 0700 "$KEY_DIR"
-tsig-keygen -a hmac-sha256 dnsguard-rpz > "$KEY_DIR/rpz-manager.key"
-chmod 0640 "$KEY_DIR/rpz-manager.key"
-```
+接入 BIND 后：
 
-上例中的 `$HOME/dnsguard-admin-keys` 是本机实际目录，不是 DNSGuard 容器路径。先完成 BIND 侧配置和检查，再把 Key 的实际路径提供给 `./install.sh`。安装检查文件类型、权限和基本 BIND `key`/`algorithm`/`secret` 结构，但不会打印密钥内容。
+1. 在 RPZ 页面导入 TXT（每行一个域名）或现有白名单 JSON。
+2. 预览并审核；导入只生成 `draft`，不会自动调用 `nsupdate`。
+3. 管理员确认发布，等待 Primary 和所有 Secondary 完成真实验证。
+4. 由 BIND 管理员准备并启用独立 `global-deny.rpz.local`，并按目标 BIND 配置完成递归基线。
+5. 回到 Web 执行全局 DENY 只读检查。
 
-## 第 3 步：初始化与白名单
+`global-deny.rpz.local` 是 v1.1.0+ 的全局默认拒绝 Zone；`tld-deny.rpz.local` 是 v1.0.1
+旧 TLD 兼容路径，不是当前全局 DENY 的必要依赖。DNSGuard 不会自动修改 `response-policy`。
 
-打开安装输出的 HTTPS 地址，完成：
+权威 Zone 查询使用 `+norecurse`，实际递归策略效果必须用递归查询验证。客户端 NXDOMAIN 不
+等于完整 QNAME 没有到达上游；隔离测试中部分 DNSSEC `DO=1` 查询仍可能外传。
 
-1. Bootstrap Token、管理员账户和密码；
-2. Primary、Secondary、Zone 和 TSIG 选择；
-3. 只读 SOA、Serial、Zone 和连通性检查。
+## 5. 手工 Compose 运维
 
-首次安装不要求手工导出 Seed JSON。白名单可以在登录后的 RPZ 规则页面直接导入：
-
-```text
-baidu.com
-qq.com
-example.org
-```
-
-TXT 每行一个域名；现有白名单 JSON 也可以导入。导入前会校验和预览，导入后只生成 `draft`，不会自动调用 `nsupdate`。必须由管理员审核并确认发布。
-
-如需在部署前生成可审阅的 JSON，可使用只读对接脚本导出；这不是标准安装必需步骤：
-
-```bash
-cp deploy/docker/rpz-connect.env.example .local-rpz-connect.env
-# 编辑 .local-rpz-connect.env，填写实际 Primary、Secondary 和宿主机 TSIG 路径
-./scripts/rpz-connect.sh --env-file .local-rpz-connect.env \
-  --whitelist-file approved-domains.txt \
-  --export-whitelist-json whitelist-seed.json
-```
-
-默认对接检查只读，不修改 BIND。临时 TXT 写入测试必须显式使用 `--write-test --confirm WRITE-TEST`，且只允许脚本限定的测试命名空间。
-
-## 第 4 步：安全上线顺序
-
-首次上线必须严格按以下顺序：
-
-1. 连接 BIND，完成初始化检查；
-2. 导入、审核并发布白名单和 A 重定向；
-3. 确认 Primary 及所有 Secondary 的 Serial、关键规则和实际递归结果；
-4. 由 BIND 管理员把 `global-deny.rpz.local` 加入 `response-policy`；
-5. 由 BIND 管理员完成配置并 reload 后，运行收尾脚本：
-
-   ```bash
-   ./scripts/finalize-global-deny.sh
-   ```
-
-   脚本会在 API 容器内执行只读核验，确认白名单发布、Primary/Secondary 同步、Global Deny Zone、`* CNAME .` 和基线对应的递归 NXDOMAIN；通过后原子关闭 `RPZ_GLOBAL_DENY_SETUP_DEFERRED`，保留权限一致的 env 备份，并使用 `--no-build` 只重建 API。
-
-6. 回到 Web 执行全局 DENY 只读核验；
-
-普通 BIND 使用：
+普通部署：
 
 ```bash
 docker compose --env-file deploy/docker/dnsguard.env \
   -f compose.yaml up -d --force-recreate
 ```
 
-如果设置了 `DNSGUARD_BIND_NETWORK`，必须保留外部网络 override：
+使用外部 BIND 网络时，重建 API 必须保留 override：
 
 ```bash
 export DNSGUARD_BIND_NETWORK=existing-bind-network
 docker compose --env-file deploy/docker/dnsguard.env \
-  -f compose.yaml -f compose.bind-network.yaml up -d --force-recreate
+  -f compose.yaml -f compose.bind-network.yaml up -d --force-recreate dnsguard-api
 ```
-
-首次安装在需要分阶段上线时会使用 `RPZ_GLOBAL_DENY_SETUP_DEFERRED=true`，它只允许先完成初始化和白名单发布。已初始化部署保留该变量会被拒绝启动；DNSGuard 不会代替管理员修改或 reload BIND。若收尾脚本失败，不会伪造完成状态；请按输出的日志和 env 备份提示排障后重复执行。
-
-只有发布和所有节点同步证据完整、全局 DENY 只读核验通过后，首次部署引导才会完全消失。之后新增草稿或节点暂时离线不会重新打开引导，相关异常会在规则和节点页面显示。
-
-## 第 5 步：完成后检查
-
-通过递归 DNS 节点验证：
-
-- 白名单域名及任意层级子域名正常放行；
-- A 重定向返回预期 IPv4；
-- 未授权域名按 BIND 全局 DENY 返回预期结果；
-- Primary/Secondary 状态和 Serial 一致。
-
-权威 RPZ Zone 检查使用非递归查询；实际策略效果必须使用递归查询。客户端收到 `NXDOMAIN` 不等于完整 QNAME 没有到达上游，隔离测试中部分 DNSSEC `DO=1` 查询仍可能外传。
-
-## 高级运维
-
-备份、恢复、升级、回滚、旧部署迁移和故障排查见[Docker 高级运维手册](../../docs/docker-operations.md)。环境变量完整分组见[`deploy/docker/dnsguard.env.example`](dnsguard.env.example)。
-
-## 卸载
 
 停止服务但保留数据：
 
@@ -202,4 +102,13 @@ docker compose --env-file deploy/docker/dnsguard.env \
 docker compose --env-file deploy/docker/dnsguard.env -f compose.yaml down
 ```
 
-如使用外部 BIND 网络，停止时同样保留 `-f compose.bind-network.yaml`。删除持久化目录前请先完成备份，并确认不会误删生产 TSIG、证书或 JSON 状态。
+外部网络部署停止时同样保留 `-f compose.bind-network.yaml`。不要使用 `down -v`，不要直接
+清空 `docker-data`；备份、恢复、升级和回滚见[高级运维手册](../../docs/docker-operations.md)。
+
+## 6. 部署边界
+
+DNSGuard 只通过 `nsupdate + TSIG` 更新管理员预先准备的 RPZ。它不代替 BIND 递归架构，
+不保证所有 DNSSEC 或 DNS 隧道场景都能阻断上游 QNAME 外传。
+
+详细 BIND 配置见[BIND RPZ 部署与对接文档](../../docs/bind-rpz-deployment.md)，环境变量见
+[`dnsguard.env.example`](dnsguard.env.example)。

@@ -182,10 +182,10 @@ func authMe(w http.ResponseWriter, r *http.Request) {
 	initialized := isInitialized()
 	if !authEnabled() {
 		if !initialized {
-			writeJSON(w, http.StatusOK, map[string]any{"authenticated": false, "authEnabled": false, "initialized": false, "mustChangePassword": false})
+			writeJSON(w, http.StatusOK, map[string]any{"authenticated": false, "authEnabled": false, "initialized": false, "platformReady": false, "bindReady": false, "mustChangePassword": false})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "authEnabled": false, "initialized": true, "username": authUsername(), "mustChangePassword": false})
+		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "authEnabled": false, "initialized": true, "platformReady": platformReadyStatus(), "bindReady": bindReadyStatus(), "username": authUsername(), "mustChangePassword": false})
 		return
 	}
 	cookie, err := r.Cookie(sessionCookie)
@@ -194,13 +194,13 @@ func authMe(w http.ResponseWriter, r *http.Request) {
 		if !initialized {
 			status = http.StatusOK
 		}
-		writeJSON(w, status, map[string]any{"authenticated": false, "initialized": initialized})
+		writeJSON(w, status, map[string]any{"authenticated": false, "initialized": initialized, "platformReady": platformReadyStatus(), "bindReady": bindReadyStatus()})
 		return
 	}
 	authMu.RLock()
 	mustChangePassword := storedAuth.MustChangePassword
 	authMu.RUnlock()
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "initialized": true, "username": authUsername(), "mustChangePassword": mustChangePassword})
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "initialized": true, "platformReady": platformReadyStatus(), "bindReady": bindReadyStatus(), "username": authUsername(), "mustChangePassword": mustChangePassword})
 }
 
 func authLogin(w http.ResponseWriter, r *http.Request) {

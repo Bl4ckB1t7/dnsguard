@@ -8,6 +8,7 @@ export function App() {
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [initialized, setInitialized] = useState<boolean | null>(null);
+  const [bindReady, setBindReady] = useState<boolean | null>(null);
 
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "include" })
@@ -17,14 +18,16 @@ export function App() {
         setAuthEnabled(payload.authEnabled !== false);
         setMustChangePassword(payload.mustChangePassword === true);
         setInitialized(payload.initialized !== false);
+        setBindReady(payload.bindReady !== false);
       })
-      .catch(() => { setAuthenticated(false); setAuthEnabled(true); setInitialized(true); });
+      .catch(() => { setAuthenticated(false); setAuthEnabled(true); setInitialized(false); setBindReady(false); });
   }, []);
 
-  if (authenticated === null || authEnabled === null || initialized === null) return <div className="login-viewport" />;
-  if (!initialized) return <SetupWizard onComplete={() => { setInitialized(true); setAuthenticated(true); setAuthEnabled(true); }} />;
+  if (authenticated === null || authEnabled === null || initialized === null || bindReady === null) return <div className="login-viewport" />;
+  if (!initialized) return <SetupWizard platformOnly onComplete={() => { setInitialized(true); setAuthenticated(true); setAuthEnabled(true); setBindReady(false); }} />;
   if (!authEnabled) return <DnsDashboard authEnabled={false} onLogout={() => undefined} />;
   if (!authenticated) return <LoginPage onLogin={(required) => { setAuthenticated(true); setMustChangePassword(required); }} />;
+  if (!bindReady) return <SetupWizard onComplete={() => setBindReady(true)} />;
 
   return <DnsDashboard authEnabled mustChangePassword={mustChangePassword} onLogout={() => { setAuthenticated(false); setMustChangePassword(false); }} />;
 }

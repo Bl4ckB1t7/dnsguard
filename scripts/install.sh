@@ -66,6 +66,10 @@ verify_deny_baseline() {
 
 ENV_FILE="$(dnsguard_resolve_path "${DNSGUARD_ENV_FILE:-$ROOT/deploy/docker/dnsguard.env}" "$ROOT")"
 export DNSGUARD_ENV_FILE="$ENV_FILE"
+platform_only="${DNSGUARD_PLATFORM_ONLY:-false}"
+primary="${RPZ_PRIMARY:-${DNSGUARD_PRIMARY:-}}"
+recursor="${RPZ_GLOBAL_DENY_RECURSOR:-${DNSGUARD_RECURSOR:-}}"
+check_name="${RPZ_GLOBAL_DENY_CHECK_NAME:-}"
 
 missing_config=()
 read_error=()
@@ -103,34 +107,37 @@ if [[ -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
+  platform_only="${DNSGUARD_PLATFORM_ONLY:-$platform_only}"
 else
   DNSGUARD_DATA_DIR="${DNSGUARD_DATA_DIR:-$ROOT/docker-data}"
   DNSGUARD_SECRET_DIR="${DNSGUARD_SECRET_DIR:-$ROOT/secrets}"
   DNSGUARD_TLS_DIR="${DNSGUARD_TLS_DIR:-$ROOT/tls}"
   DNSGUARD_BIND_LOG_DIR="${DNSGUARD_BIND_LOG_DIR:-$ROOT/bind-logs}"
 
-  primary="${RPZ_PRIMARY:-${DNSGUARD_PRIMARY:-}}"
-  prompt_or_missing "BIND Primary 地址" primary "BIND Primary 地址（例如 10.0.0.10）: "
+  platform_only="${DNSGUARD_PLATFORM_ONLY:-true}"
+  if [[ "$platform_only" != true ]]; then
+    prompt_or_missing "BIND Primary 地址" primary "BIND Primary 地址（例如 10.0.0.10）: "
 
-  recursor="${RPZ_GLOBAL_DENY_RECURSOR:-${DNSGUARD_RECURSOR:-}}"
-  if [[ -z "$recursor" && -t 0 && -n "$primary" ]]; then
-    if ! IFS= read -r -p "递归 DNS 地址（回车使用 ${primary}:53）: " answer; then
-      read_error+=("递归 DNS 地址（RPZ_GLOBAL_DENY_RECURSOR 或 DNSGUARD_RECURSOR）")
-    else
-      recursor="${answer:-$primary:53}"
+    if [[ -z "$recursor" && -t 0 && -n "$primary" ]]; then
+      if ! IFS= read -r -p "递归 DNS 地址（回车使用 ${primary}:53）: " answer; then
+        read_error+=("递归 DNS 地址（RPZ_GLOBAL_DENY_RECURSOR 或 DNSGUARD_RECURSOR）")
+      else
+        recursor="${answer:-$primary:53}"
+      fi
+    elif [[ -z "$recursor" ]]; then
+      missing_config+=("递归 DNS 地址（RPZ_GLOBAL_DENY_RECURSOR 或 DNSGUARD_RECURSOR）")
     fi
-  elif [[ -z "$recursor" ]]; then
-    missing_config+=("递归 DNS 地址（RPZ_GLOBAL_DENY_RECURSOR 或 DNSGUARD_RECURSOR）")
+    prompt_or_missing "全局 DENY 测试域名" check_name "全局 DENY 测试域名（启用前必须可以正常解析）: "
+    report_missing_config
+    [[ -n "$primary" && "$primary" != *DNS_PRIMARY* ]] || die "必须提供真实的 BIND Primary 地址；请设置 RPZ_PRIMARY 或 DNSGUARD_PRIMARY"
+    [[ -n "$recursor" ]] || die "必须提供真实的递归 DNS 地址；请设置 RPZ_GLOBAL_DENY_RECURSOR 或 DNSGUARD_RECURSOR"
+    [[ -n "$check_name" ]] || die "必须提供 RPZ_GLOBAL_DENY_CHECK_NAME；不能使用默认或未知测试域名"
+  else
+    echo "首次安装平台模式：暂不要求 BIND、RPZ Zone 或 TSIG；请在 Web 初始化向导中接入 BIND。"
   fi
-  check_name="${RPZ_GLOBAL_DENY_CHECK_NAME:-}"
-  prompt_or_missing "全局 DENY 测试域名" check_name "全局 DENY 测试域名（启用前必须可以正常解析）: "
-  report_missing_config
-  [[ -n "$primary" && "$primary" != *DNS_PRIMARY* ]] || die "必须提供真实的 BIND Primary 地址；请设置 RPZ_PRIMARY 或 DNSGUARD_PRIMARY"
-  [[ -n "$recursor" ]] || die "必须提供真实的递归 DNS 地址；请设置 RPZ_GLOBAL_DENY_RECURSOR 或 DNSGUARD_RECURSOR"
-  [[ -n "$check_name" ]] || die "必须提供 RPZ_GLOBAL_DENY_CHECK_NAME；不能使用默认或未知测试域名"
 fi
 
-if [[ -f "$ENV_FILE" ]]; then
+if [[ -f "$ENV_FILE" && "$platform_only" != true ]]; then
   primary="${RPZ_PRIMARY:-${DNSGUARD_PRIMARY:-}}"
   [[ -n "$primary" && "$primary" != *DNS_PRIMARY* ]] || die "现有环境文件缺少有效的 BIND Primary 地址：$ENV_FILE；请安全修正后重试，不会覆盖该文件"
   recursor="${RPZ_GLOBAL_DENY_RECURSOR:-${DNSGUARD_RECURSOR:-}}"
@@ -149,7 +156,7 @@ tsig_source="${RPZ_TSIG_SOURCE:-${DNSGUARD_TSIG_SOURCE:-}}"
 tls_cert_source="${TLS_CERT_SOURCE:-${DNSGUARD_TLS_CERT_SOURCE:-}}"
 tls_key_source="${TLS_KEY_SOURCE:-${DNSGUARD_TLS_KEY_SOURCE:-}}"
 
-if [[ ! -e "$DNSGUARD_SECRET_DIR/rpz-manager.key" && -z "$tsig_source" && -t 0 ]]; then
+if [[ "$platform_only" != true && ! -e "$DNSGUARD_SECRET_DIR/rpz-manager.key" && -z "$tsig_source" && -t 0 ]]; then
   if ! IFS= read -r -p "RPZ TSIG Key 源文件路径: " tsig_source; then
     die "无法读取 RPZ TSIG Key 路径；请设置 RPZ_TSIG_SOURCE 或 DNSGUARD_TSIG_SOURCE 后重试"
   fi
@@ -165,14 +172,14 @@ if [[ ! -e "$DNSGUARD_TLS_DIR/privkey.pem" && -z "$tls_key_source" && -t 0 ]]; t
   fi
 fi
 
-if [[ ! -e "$DNSGUARD_SECRET_DIR/rpz-manager.key" ]]; then
+if [[ "$platform_only" != true && ! -e "$DNSGUARD_SECRET_DIR/rpz-manager.key" ]]; then
   validate_source_file "$tsig_source" "RPZ TSIG Key"
   dnsguard_validate_tsig_key_file "$tsig_source" "RPZ TSIG Key" || die "TSIG Key 无法使用；请修复后重试，不会自动修改 BIND"
 fi
 [[ -e "$DNSGUARD_TLS_DIR/fullchain.pem" ]] || validate_source_file "$tls_cert_source" "HTTPS 证书"
 [[ -e "$DNSGUARD_TLS_DIR/privkey.pem" ]] || validate_source_file "$tls_key_source" "HTTPS 私钥"
 
-if [[ "${RPZ_DEFAULT_DENY_MODE:-global}" == "global" ]]; then
+if [[ "$platform_only" != true && "${RPZ_DEFAULT_DENY_MODE:-global}" == "global" ]]; then
   [[ -n "$check_name" && "$check_name" != "KNOWN_RESOLVABLE_DENY_TEST_NAME" && "$check_name" != "blocked.example.com" ]] || die "请配置真实的 RPZ_GLOBAL_DENY_CHECK_NAME，不得使用占位或默认域名"
   if [[ "${RPZ_GLOBAL_DENY_SETUP_DEFERRED:-true}" == "true" ]]; then
     verify_deny_baseline "$recursor" "$check_name"
@@ -182,7 +189,10 @@ fi
 if [[ ! -f "$ENV_FILE" ]]; then
   auth_secret="$(openssl rand -hex 32)"
   monitoring_token="$(openssl rand -hex 32)"
-  temporary="$(mktemp "$ROOT/.dnsguard-env.XXXXXX")"
+  # Keep the temporary next to the destination so the no-clobber hard-link
+  # remains atomic even when DNSGUARD_ENV_FILE is on another filesystem.
+  mkdir -p "$(dirname "$ENV_FILE")"
+  temporary="$(mktemp "$(dirname "$ENV_FILE")/.dnsguard-env.XXXXXX")"
   cleanup_temporary() {
     [[ -n "${temporary:-}" && -e "$temporary" ]] || return 0
     python3 - "$temporary" <<'PY'
@@ -199,6 +209,7 @@ DNSGUARD_DATA_DIR=$DNSGUARD_DATA_DIR
 DNSGUARD_SECRET_DIR=$DNSGUARD_SECRET_DIR
 DNSGUARD_TLS_DIR=$DNSGUARD_TLS_DIR
 DNSGUARD_BIND_LOG_DIR=$DNSGUARD_BIND_LOG_DIR
+DNSGUARD_PLATFORM_ONLY=$platform_only
 APP_ENV=production
 AUTH_ENABLED=true
 AUTH_USERNAME=admin
@@ -231,7 +242,6 @@ TRUST_PROXY_TLS=true
 TRUST_PROXY_HEADERS=true
 TRUSTED_PROXY_CIDRS=172.28.0.0/24
 ENV
-  mkdir -p "$(dirname "$ENV_FILE")"
   python3 - "$temporary" "$ENV_FILE" <<'PY'
 import os
 import pathlib
@@ -263,6 +273,7 @@ set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 set +a
+platform_only="${DNSGUARD_PLATFORM_ONLY:-$platform_only}"
 
 COMPOSE_FILES=(-f compose.yaml)
 if [[ -n "${DNSGUARD_BIND_NETWORK:-}" ]]; then
@@ -291,8 +302,12 @@ copy_once() {
   install -D -m "$mode" "$source_path" "$destination"
 }
 
-copy_once "$tsig_source" "$DNSGUARD_SECRET_DIR/rpz-manager.key" "RPZ TSIG Key" 0640
-dnsguard_validate_tsig_key_file "$DNSGUARD_SECRET_DIR/rpz-manager.key" "RPZ TSIG Key" || die "目标 TSIG Key 校验失败；请提供现有且已授权的 BIND Key"
+if [[ "$platform_only" == true ]]; then
+  : # TSIG is intentionally supplied later through the authenticated Web setup.
+else
+  copy_once "$tsig_source" "$DNSGUARD_SECRET_DIR/rpz-manager.key" "RPZ TSIG Key" 0640
+  dnsguard_validate_tsig_key_file "$DNSGUARD_SECRET_DIR/rpz-manager.key" "RPZ TSIG Key" || die "目标 TSIG Key 校验失败；请提供现有且已授权的 BIND Key"
+fi
 copy_once "$tls_cert_source" "$DNSGUARD_TLS_DIR/fullchain.pem" "HTTPS 证书" 0644
 copy_once "$tls_key_source" "$DNSGUARD_TLS_DIR/privkey.pem" "HTTPS 私钥" 0640
 

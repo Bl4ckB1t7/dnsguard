@@ -36,31 +36,19 @@ flowchart LR
 ## 环境要求
 
 - Docker Engine 24+ 和 Docker Compose Plugin 2.20+。
-- 已运行的 BIND Primary、至少一台 Secondary，以及管理员准备的 RPZ、TSIG 和 HTTPS 证书。
-- DNSGuard API 能访问 BIND 的 DNS、SOA 和必要的 AXFR 路径。
+- 首次启动前只需要 Docker 权限、可信 HTTPS 证书和私钥；BIND、RPZ Zone、TSIG 可以在平台启动后通过 Web 向导接入。
+- 完成 BIND 接入时，DNSGuard API 必须能访问 Primary/Secondary 的 DNS、SOA 和必要的 AXFR 路径。
 - 不需要在 DNSGuard 主机安装 Go、Node.js、npm 或 BIND。
 
 安装前请确认当前安装用户可以执行 `docker info`，而不只是读取
 `docker compose version`；Docker Socket 权限应由管理员预先配置，安装器不会修改用户组或放宽 Socket 权限。
-同时准备可读取的已有 BIND TSIG Key、HTTPS 证书和私钥。测试环境必须先准备业务 RPZ
-以及独立的 `global-deny.rpz.local` Zone，并在启用 DENY 前准备一个确实能正常解析的递归基线域名。
-DNSGuard 只负责控制面和 `nsupdate + TSIG` 发布，不代替管理员配置生产 BIND、`response-policy`
-或 Primary/Secondary 同步。
+HTTPS 证书和私钥必须由管理员提供；安装器不会生成不可信的临时证书。已有 BIND 的 TSIG、业务 RPZ
+和独立的 `global-deny.rpz.local` Zone 可在 Web 接入阶段准备。DNSGuard 只负责控制面和
+`nsupdate + TSIG` 发布，不代替管理员配置生产 BIND、`response-policy` 或 Primary/Secondary 同步。
 
 ## 快速开始
 
-### 1. 部署前准备 BIND
-
-请由 BIND 管理员先完成：
-
-1. 准备白名单/A 重定向 RPZ Zone、动态更新 TSIG、NOTIFY 和 IXFR/AXFR。
-2. 将白名单/A 重定向 Zone 放在 `response-policy` 的较高优先级。
-3. 如使用全局 DENY，预先创建 `global-deny.rpz.local`，但首次上线先不要把它加入递归 `response-policy`。
-4. 准备一个启用 DENY 前确实能够正常解析的测试域名，用于递归基线检查。
-
-DNSGuard 不安装或配置生产 BIND。具体 BIND 准备要求见[BIND RPZ 对接文档](docs/bind-rpz-deployment.md)。
-
-### 2. 获取 v1.1.1 并启动控制面
+### 1. 获取 v1.1.1 并先启动控制面
 
 先克隆仓库，再运行仓库内安装入口：
 
@@ -71,12 +59,7 @@ cd dnsguard
 ./install.sh
 ```
 
-无人值守执行时，必须预先提供 `RPZ_PRIMARY`、`RPZ_GLOBAL_DENY_RECURSOR`、
-`RPZ_GLOBAL_DENY_CHECK_NAME`、`RPZ_TSIG_SOURCE`、`TLS_CERT_SOURCE` 和
-`TLS_KEY_SOURCE`，或通过 `DNSGUARD_ENV_FILE` 指向受保护的配置文件；缺少项会明确报错，
-不会静默生成半成品环境文件。
-
-首次尚未存在 `deploy/docker/dnsguard.env` 时，安装脚本会检查 Docker/Compose，准备目录，生成运行密钥和一次性 Bootstrap Token，并提示提供已有 BIND TSIG Key、HTTPS 证书和私钥。若已存在环境文件，则必须先填入真实安全参数。脚本不会生成或替换生产 TSIG Key，也不会生成不可信的自签名证书；缺少必要文件时会停止。
+首次尚未存在 `deploy/docker/dnsguard.env` 时，安装脚本会检查 Docker/Compose，准备目录，生成运行密钥和一次性 Bootstrap Token，并只要求提供可信 HTTPS 证书和私钥。此时不要求 BIND、RPZ Zone 或 TSIG；平台启动后再通过 Web 向导接入。缺少证书、私钥或 Docker 权限时会明确失败，不会留下可冒充成功的半成品环境文件。
 
 如果 BIND 在另一套已经存在的 Docker 网络中，先设置网络名再安装：
 
@@ -95,16 +78,16 @@ sudo cat ./secrets/bootstrap.token
 
 如果设置了 `DNSGUARD_SECRET_DIR`，读取该自定义目录下的 `bootstrap.token`；安装脚本最后输出的实际路径优先。不要把 Token 放进聊天、截图或工单。重复执行安装不会覆盖现有配置、密钥、Token 或数据。
 
-### 3. 首次上线顺序
+### 2. 首次上线顺序
 
 打开安装输出的 HTTPS 地址，按以下顺序操作：
 
-1. 完成 Web 初始化，连接 BIND Primary/Secondary 并完成只读检查。
-2. 在 RPZ 规则页面导入 TXT（每行一个域名）或白名单 JSON，审核后保存为 `draft`。
-3. 人工确认并发布白名单/A 重定向，等待 Primary 和所有 Secondary 验证成功。
-4. 由 BIND 管理员把预先准备的 `global-deny.rpz.local` 加入 `response-policy`。
-5. 由 BIND 管理员完成配置并 reload 后，运行 `./scripts/finalize-global-deny.sh`；脚本会只读核对 BIND、原子关闭临时配置并使用现有镜像重建 API。
-6. 回到 Web 执行只读核验，确认白名单、多级子域名、A 重定向和未知域名的实际递归结果。
+1. 打开 Web，使用 Bootstrap Token 创建管理员；平台此时已启动，但 BIND 尚未接入，RPZ 发布保持禁用。
+2. 在向导中填写 BIND Primary、Secondary、RPZ Zone，并将已有授权 TSIG 安全放入 secrets 目录，完成连通性、SOA 和写权限检查。
+3. 在 RPZ 规则页面导入 TXT（每行一个域名）或白名单 JSON，审核后保存为 `draft`。
+4. 人工确认并发布白名单/A 重定向，等待 Primary 和所有 Secondary 验证成功。
+5. 由 BIND 管理员准备并启用 `global-deny.rpz.local`，再按[BIND RPZ 对接文档](docs/bind-rpz-deployment.md)完成递归基线和只读核验。
+6. 确认白名单、多级子域名、A 重定向和未知域名的实际递归结果。DNSGuard 不会修改或 reload BIND。
 
 普通 BIND 使用：
 
@@ -123,7 +106,7 @@ docker compose --env-file deploy/docker/dnsguard.env \
 
 收尾脚本不会修改或 reload BIND，也不会重新构建镜像；失败时会保留 env 保护备份并给出恢复提示。
 
-首次安装使用 deferred 只是为了先完成初始化和白名单发布，不是长期运行模式。完成初始化后仍保留该变量，API 会拒绝启动。
+首次平台启动使用 deferred 是为了在 BIND 尚未接入时开放安全的 Web 向导；BIND 接入后仍须先完成白名单发布和同步，再由管理员启用 Global Deny 并执行最终只读核验。未完成 BIND 接入前不会开放 RPZ 发布。
 
 完成真实发布、节点同步和全局 DENY 只读核验后，首次部署引导会完全消失。之后新增 `draft` 或 Secondary 暂时离线不会重新打开引导；这些状态仍在规则和节点页面显示。
 

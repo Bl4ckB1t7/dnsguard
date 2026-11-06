@@ -1123,6 +1123,9 @@ func reconcileTLDPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	if !requireBINDReadyForWrite(w) {
+		return
+	}
 	tldSyncMu.Lock()
 	defer tldSyncMu.Unlock()
 	current := tldStatusSnapshot()

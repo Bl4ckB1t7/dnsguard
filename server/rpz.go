@@ -297,6 +297,25 @@ func rpzZoneName() string {
 	return rpzConfig("RPZ_ZONE", "rpz.local")
 }
 
+func rpzPrimaryEndpoint() (string, string) {
+	configured := strings.TrimSpace(os.Getenv("RPZ_PRIMARY"))
+	if configured == "" || strings.Contains(configured, "DNS_PRIMARY") {
+		dnsMu.RLock()
+		for _, node := range state.Nodes {
+			role, _ := dnsNodeRoleKind(node.Role)
+			if role == "primary" || node.ID == "primary-1" {
+				configured = strings.TrimSpace(node.Address)
+				break
+			}
+		}
+		dnsMu.RUnlock()
+	}
+	if host, port, err := net.SplitHostPort(configured); err == nil {
+		return strings.Trim(host, "[]"), port
+	}
+	return strings.Trim(configured, "[]"), rpzConfig("RPZ_PRIMARY_PORT", "53")
+}
+
 func rpzQNAMETriggers(domain string) []string {
 	return []string{domain, "*." + domain}
 }
@@ -557,8 +576,10 @@ func verifyRPZCluster(ctx context.Context, previousSerial int64, rules, removed 
 }
 
 func runNSUpdate(ctx context.Context, current, previous []RPZRule) error {
-	server := rpzConfig("RPZ_PRIMARY", "RPZ_PRIMARY")
-	port := rpzConfig("RPZ_PRIMARY_PORT", "53")
+	server, port := rpzPrimaryEndpoint()
+	if server == "" {
+		return fmt.Errorf("RPZ_PRIMARY 未配置，且尚未从已接入的 Primary 节点获得地址")
+	}
 	keyFile := strings.TrimSpace(os.Getenv("RPZ_KEY_FILE"))
 	if keyFile == "" {
 		return fmt.Errorf("RPZ_KEY_FILE 未配置")
@@ -697,7 +718,11 @@ func performPublish(ctx context.Context, actor, remoteAddr string) (publishResul
 	status := "compiled"
 	attempts := 1
 	if mode == "nsupdate" {
-		address := net.JoinHostPort(rpzConfig("RPZ_PRIMARY", "RPZ_PRIMARY"), rpzConfig("RPZ_PRIMARY_PORT", "53"))
+		server, port := rpzPrimaryEndpoint()
+		if server == "" {
+			return publishResult{Status: status}, fmt.Errorf("发布前缺少已接入的 RPZ Primary 地址")
+		}
+		address := net.JoinHostPort(server, port)
 		before, err := probeDNSNode(ctx, address)
 		if err != nil {
 			return publishResult{Status: status}, fmt.Errorf("发布前 RPZ Primary SOA 探测失败: %w", err)
@@ -856,6 +881,18 @@ func publishRPZ(w http.ResponseWriter, r *http.Request) {
 	publishRPZInternal(w, r, "")
 }
 
+func requireBINDReadyForWrite(w http.ResponseWriter) bool {
+	// Legacy/dev fixtures do not use the platform-first gate. Preserve their
+	// existing behavior; only the explicit first-install mode blocks writes.
+	if !platformBootstrapEnabled() || bindReadyStatus() {
+		return true
+	}
+	writeJSON(w, http.StatusPreconditionRequired, map[string]string{
+		"error": "BIND 尚未接入；请先在初始化向导中完成 Primary、Secondary、RPZ Zone 和 TSIG 验证，当前只允许保存草稿",
+	})
+	return false
+}
+
 // publishRPZInternal optionally consumes a reservation held by rollbackRPZ.
 // The reservation is retained from the rollback state mutation through job
 // creation, then atomically handed to runPublishJob.
@@ -863,6 +900,9 @@ func publishRPZInternal(w http.ResponseWriter, r *http.Request, reservationID st
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return false
+	}
+	if !requireBINDReadyForWrite(w) {
 		return false
 	}
 	if job, ok := pendingReconciliationJob(); ok {
@@ -958,6 +998,9 @@ func rollbackRPZ(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !requireBINDReadyForWrite(w) {
 		return
 	}
 	if job, ok := pendingReconciliationJob(); ok {

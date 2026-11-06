@@ -25,6 +25,7 @@ set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 set +a
+PLATFORM_ONLY="${DNSGUARD_PLATFORM_ONLY:-false}"
 
 COMPOSE_FILES=(-f compose.yaml)
 if [[ -n "${DNSGUARD_BIND_NETWORK:-}" ]]; then
@@ -39,10 +40,14 @@ fi
 DNSGUARD_ENV_FILE="$ENV_FILE"
 dnsguard_prepare_paths "$ROOT"
 
-for value_name in AUTH_SECRET MONITORING_TOKEN RPZ_PRIMARY; do
+for value_name in AUTH_SECRET MONITORING_TOKEN; do
   value="${!value_name:-}"
   [[ -n "$value" && "$value" != REPLACE_* && "$value" != *DNS_PRIMARY* && "$value" != *DNS_SECONDARY_* ]] || die "$value_name is not configured in $ENV_FILE"
 done
+if [[ "$PLATFORM_ONLY" != true ]]; then
+  value="${RPZ_PRIMARY:-}"
+  [[ -n "$value" && "$value" != REPLACE_* && "$value" != *DNS_PRIMARY* ]] || die "RPZ_PRIMARY is not configured in $ENV_FILE"
+fi
 [[ "${APP_ENV:-}" == production ]] || die "APP_ENV must be production"
 [[ "${AUTH_ENABLED:-}" == true ]] || die "AUTH_ENABLED must be true"
 [[ "${#AUTH_SECRET}" -ge 32 ]] || die "AUTH_SECRET must contain at least 32 characters"
@@ -56,7 +61,7 @@ mkdir -p "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 chmod 0750 "$DATA_DIR" "$DATA_DIR/rpz" "$SECRET_DIR" "$TLS_DIR" "$LOG_DIR"
 [[ ! -e "$DATA_DIR/.restore-in-progress.json" ]] || die "an incomplete restore marker exists at $DATA_DIR/.restore-in-progress.json; inspect and recover it before starting"
 
-if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == global ]]; then
+if [[ "$PLATFORM_ONLY" != true && "${RPZ_DEFAULT_DENY_MODE:-legacy}" == global ]]; then
   [[ -n "${RPZ_GLOBAL_DENY_ZONE:-}" ]] || die "RPZ_GLOBAL_DENY_ZONE is required in global default-deny mode"
   [[ -n "${RPZ_GLOBAL_DENY_RECURSOR:-}" && -n "${RPZ_GLOBAL_DENY_CHECK_NAME:-}" && "${RPZ_GLOBAL_DENY_CHECK_NAME}" != "KNOWN_RESOLVABLE_DENY_TEST_NAME" && "${RPZ_GLOBAL_DENY_CHECK_NAME}" != "blocked.example.com" ]] || die "global default-deny mode requires a real RPZ_GLOBAL_DENY_CHECK_NAME; placeholder/default names are forbidden"
   # Existing v1.0.1 data is not forced through the first-run seed import.
@@ -81,7 +86,11 @@ if [[ "${RPZ_DEFAULT_DENY_MODE:-legacy}" == global ]]; then
 fi
 
 KEY_FILE="$SECRET_DIR/rpz-manager.key"
-dnsguard_validate_tsig_key_file "$KEY_FILE" "RPZ TSIG Key" || die "copy an existing authorized BIND TSIG key to $KEY_FILE and fix the reported issue; DNSGuard will not generate or replace it"
+if [[ "$PLATFORM_ONLY" != true ]]; then
+  dnsguard_validate_tsig_key_file "$KEY_FILE" "RPZ TSIG Key" || die "copy an existing authorized BIND TSIG key to $KEY_FILE and fix the reported issue; DNSGuard will not generate or replace it"
+else
+  echo "Platform bootstrap mode: BIND and TSIG validation are deferred to the Web setup wizard"
+fi
 [[ -f "$TLS_DIR/fullchain.pem" && -f "$TLS_DIR/privkey.pem" ]] || die "place HTTPS certificate and key in $TLS_DIR"
 BOOTSTRAP_FILE="$SECRET_DIR/bootstrap.token"
 if [[ ! -f "$DATA_DIR/auth.json" ]]; then
@@ -129,13 +138,19 @@ docker run --rm --user 0:0 \
     find /var/lib/dnsguard -type d -exec chmod 0750 {} +
     find /var/lib/dnsguard -type f -exec chmod 0640 {} +
     [ ! -e /var/lib/dnsguard/auth.json ] || chmod 0600 /var/lib/dnsguard/auth.json
-    chmod 0640 /run/dnsguard-secrets/rpz-manager.key
+    [ ! -e /run/dnsguard-secrets/rpz-manager.key ] || chmod 0640 /run/dnsguard-secrets/rpz-manager.key
     [ ! -e /run/dnsguard-secrets/bootstrap.token ] || chmod 0600 /run/dnsguard-secrets/bootstrap.token
   '
 
-docker run --rm --user 10001:10001 \
-  -v "$SECRET_DIR:/run/dnsguard-secrets:ro" \
-  --entrypoint sh "$IMAGE" -c 'test -r /run/dnsguard-secrets/rpz-manager.key && { [ ! -e /run/dnsguard-secrets/bootstrap.token ] || test -r /run/dnsguard-secrets/bootstrap.token; }'
+if [[ "$PLATFORM_ONLY" == true ]]; then
+  docker run --rm --user 10001:10001 \
+    -v "$SECRET_DIR:/run/dnsguard-secrets:ro" \
+    --entrypoint sh "$IMAGE" -c '{ [ ! -e /run/dnsguard-secrets/rpz-manager.key ] || test -r /run/dnsguard-secrets/rpz-manager.key; } && { [ ! -e /run/dnsguard-secrets/bootstrap.token ] || test -r /run/dnsguard-secrets/bootstrap.token; }'
+else
+  docker run --rm --user 10001:10001 \
+    -v "$SECRET_DIR:/run/dnsguard-secrets:ro" \
+    --entrypoint sh "$IMAGE" -c 'test -r /run/dnsguard-secrets/rpz-manager.key && { [ ! -e /run/dnsguard-secrets/bootstrap.token ] || test -r /run/dnsguard-secrets/bootstrap.token; }'
+fi
 
 docker run --rm --user 0:0 \
   -v "$TLS_DIR:/run/tls" \
