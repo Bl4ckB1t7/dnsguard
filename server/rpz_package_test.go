@@ -6,8 +6,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -253,14 +256,22 @@ func TestRPZPackageApplyIsIdempotentAndRefusesConflicts(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	bindUser, bindGroup := os.Getenv("USER"), os.Getenv("USER")
+	checkGeneratedOwner := false
+	if os.Geteuid() == 0 {
+		if _, lookupErr := user.Lookup("bind"); lookupErr == nil {
+			bindUser, bindGroup = "bind", "bind"
+			checkGeneratedOwner = true
+		}
+	}
 	run := func(args ...string) error {
 		command := exec.Command("bash", append([]string{filepath.Join(packageDir, "apply-rpz-config.sh")}, args...)...)
 		command.Env = append(os.Environ(),
 			"BIND_CONFIG_ROOT="+configRoot,
 			"PRIMARY_DATA_DIR="+filepath.Join(root, "primary-data"),
 			"SECONDARY_DATA_DIR="+filepath.Join(root, "secondary-data"),
-			"BIND_USER="+os.Getenv("USER"),
-			"BIND_GROUP="+os.Getenv("USER"),
+			"BIND_USER="+bindUser,
+			"BIND_GROUP="+bindGroup,
 		)
 		output, err := command.CombinedOutput()
 		if err != nil {
@@ -273,6 +284,20 @@ func TestRPZPackageApplyIsIdempotentAndRefusesConflicts(t *testing.T) {
 	}
 	if err := run("--apply", "primary"); err != nil {
 		t.Fatalf("first apply failed: %v", err)
+	}
+	if checkGeneratedOwner {
+		bind, lookupErr := user.Lookup("bind")
+		if lookupErr != nil {
+			t.Fatal(lookupErr)
+		}
+		info, statErr := os.Stat(filepath.Join(configRoot, "dnsguard-rpz", "config", "rpz-primary.conf"))
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || strconv.FormatUint(uint64(stat.Uid), 10) != bind.Uid || info.Mode().Perm() != 0o640 {
+			t.Fatalf("generated BIND fragment has unsafe owner or mode: uid=%v mode=%o", stat, info.Mode().Perm())
+		}
 	}
 	if err := run("--apply", "primary"); err != nil {
 		t.Fatalf("repeat apply should be idempotent: %v", err)
