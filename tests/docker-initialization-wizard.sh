@@ -154,7 +154,18 @@ cleanup() {
 }
 
 main() {
-  command -v docker >/dev/null && command -v curl >/dev/null && docker info >/dev/null 2>&1 || { echo 'NOT RUN: Docker unavailable'; exit 2; }
+  if ! command -v docker >/dev/null 2>&1; then
+    echo 'NOT RUN: Docker CLI unavailable' >&2
+    exit 2
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    echo 'NOT RUN: curl unavailable' >&2
+    exit 2
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo 'NOT RUN: Docker Engine unavailable or inaccessible' >&2
+    exit 2
+  fi
   trap cleanup EXIT
   prepare; start
   run_case 'bad-bootstrap-token-is-rejected' case_bad_token
