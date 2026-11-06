@@ -350,6 +350,7 @@ start_api() {
   local artifact_file="${RPZ_ARTIFACT_FILE_OVERRIDE:-$dir/rpz.local.db}"
   local run_user="${API_RUN_USER:-}"
   local configured_path="${path_prefix:+$path_prefix:}$PATH"
+  local current_uid target_uid
   local -a environment=(
     "APP_ENV=development"
     "AUTH_ENABLED=false"
@@ -382,7 +383,21 @@ start_api() {
   (
     cd "$ROOT_DIR"
     if [[ -n "$run_user" ]]; then
-      runuser -u "$run_user" -- env "${environment[@]}" "$API_BIN" >"$log_file" 2>&1 &
+      current_uid="$(id -u)"
+      target_uid="$(id -u "$run_user")"
+      if [[ "$current_uid" == "$target_uid" ]]; then
+        env "${environment[@]}" "$API_BIN" >"$log_file" 2>&1 &
+      elif [[ "$current_uid" == 0 ]]; then
+        runuser -u "$run_user" -- env "${environment[@]}" "$API_BIN" >"$log_file" 2>&1 &
+      elif command -v sudo >/dev/null 2>&1 && sudo -n -u "$run_user" -- true >/dev/null 2>&1; then
+        # The invoking user owns the isolated log directory; only the child
+        # process identity changes, so this redirection is intentional.
+        # shellcheck disable=SC2024
+        sudo -n -u "$run_user" -- env "${environment[@]}" "$API_BIN" >"$log_file" 2>&1 &
+      else
+        echo "cannot run isolated API as $run_user from uid $current_uid" >&2
+        return 1
+      fi
     else
       env "${environment[@]}" "$API_BIN" >"$log_file" 2>&1 &
     fi
