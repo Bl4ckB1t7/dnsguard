@@ -41,6 +41,15 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils bind9-utils
       - run: TLD_FIXTURE_COUNT=2 TEST_RUN_USER="$USER" bash ./tests/bind-cluster/run-acceptance.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bind-acceptance-evidence
+          path: |
+            tests/bind-cluster/runtime/acceptance-report.md
+            tests/bind-cluster/runtime/evidence/
+            tests/bind-cluster/runtime/docker-compose.log
+          if-no-files-found: warn
 
   web:
     runs-on: ubuntu-latest
