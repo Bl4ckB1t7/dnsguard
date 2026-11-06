@@ -1,8 +1,8 @@
 # Changelog
 
-## [1.2.0-rc.1] — Release Candidate 草稿
+## [1.2.0] — 正式发布
 
-> 本文件是 v1.2.0 发布候选版本草稿；尚未创建正式 Tag 或 GitHub Release。
+> DNSGuard v1.2.0 已正式发布。详见 [GitHub Release](https://github.com/Bl4ckB1t7/dnsguard/releases/tag/v1.2.0)。
 
 ### 新增与改进
 
