@@ -408,6 +408,13 @@ for required in config zones; do
 done
 DATA_DIR="$PRIMARY_DATA_DIR"
 [[ "$ROLE" == primary ]] || DATA_DIR="$SECONDARY_DATA_DIR"
+prepare_data_dir() {
+  if [[ -L "$DATA_DIR" ]]; then
+    echo "refusing to use symlink as BIND data directory: $DATA_DIR" >&2
+    return 1
+  fi
+  install -d -o "$BIND_USER" -g "$BIND_GROUP" -m 0750 -- "$DATA_DIR"
+}
 same_package() {
   [[ -d "$TARGET/config" && -d "$TARGET/zones" ]] || return 1
   [[ -f "$TARGET/manifest.json" && -f "$TARGET/applied-role" ]] || return 1
@@ -429,10 +436,14 @@ copy_new_zone() {
   install -o "$BIND_USER" -g "$BIND_GROUP" -m 0640 -- "$source" "$target"
 }
 verify() { "$PACKAGE_DIR/verify-rpz-config.sh" "$ROLE"; }
+if [[ -L "$TARGET" ]]; then
+  echo "refusing to use symlink as generated configuration directory: $TARGET" >&2
+  exit 1
+fi
 if [[ -e "$TARGET" ]]; then
   [[ -d "$TARGET" ]] || { echo "refusing to replace non-directory $TARGET" >&2; exit 1; }
   if same_package; then
-    install -d -o "$BIND_USER" -g "$BIND_GROUP" -m 0750 -- "$DATA_DIR"
+    prepare_data_dir
     if [[ "$ROLE" == primary ]]; then
       copy_new_zone "$PACKAGE_DIR/zones/db.$BUSINESS_ZONE" "$DATA_DIR/db.$BUSINESS_ZONE"
       copy_new_zone "$PACKAGE_DIR/zones/db.$GLOBAL_DENY_ZONE" "$DATA_DIR/db.$GLOBAL_DENY_ZONE"
@@ -465,7 +476,7 @@ cp -a -- "$PACKAGE_DIR/config" "$PACKAGE_DIR/zones" "$STAGE/"
 cp -p -- "$PACKAGE_DIR/manifest.json" "$STAGE/manifest.json"
 printf '%%s\n' "$ROLE" > "$STAGE/applied-role"
 mv -- "$STAGE" "$TARGET"
-install -d -o "$BIND_USER" -g "$BIND_GROUP" -m 0750 -- "$DATA_DIR"
+prepare_data_dir
 if [[ "$ROLE" == primary ]]; then
   copy_new_zone "$PACKAGE_DIR/zones/db.$BUSINESS_ZONE" "$DATA_DIR/db.$BUSINESS_ZONE"
   copy_new_zone "$PACKAGE_DIR/zones/db.$GLOBAL_DENY_ZONE" "$DATA_DIR/db.$GLOBAL_DENY_ZONE"
