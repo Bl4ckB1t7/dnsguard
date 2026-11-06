@@ -3,6 +3,8 @@ import { FormEvent, useEffect, useState } from "react";
 type SetupCheck = { name: string; status: "pass" | "fail" | "not_run"; detail: string; impact?: string; cleanup?: string };
 type SetupStatus = { tsigKeyPath?: string; keyCandidates?: string[]; writeTestRequired?: boolean; policyMode?: "global" | "legacy"; globalDenySetupDeferred?: boolean; platformReady?: boolean; bindReady?: boolean; platformBootstrap?: boolean; whitelistSeed?: { available?: boolean; count?: number; mode?: string; error?: string }; error?: string };
 type SetupPayload = { ready?: boolean; checks?: SetupCheck[]; error?: string };
+type RPZPackageFile = { path: string; content: string; executable?: boolean };
+type RPZPackagePreview = { zone: string; globalDenyZone: string; tsigKeyMode: string; tsigKeyName: string; files: RPZPackageFile[]; warnings: string[] };
 
 function csrfHeaders(): Record<string, string> {
   const token = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("dnsguard_csrf="))?.split("=").slice(1).join("=");
@@ -15,9 +17,11 @@ export function SetupWizard({ onComplete, platformOnly = false }: { onComplete: 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [zone, setZone] = useState("rpz.local");
+  const [globalDenyZone, setGlobalDenyZone] = useState("global-deny.rpz.local");
   const [primary, setPrimary] = useState("");
   const [secondaries, setSecondaries] = useState("");
   const [tsigKeyPath, setTsigKeyPath] = useState("");
+  const [tsigKeyMode, setTsigKeyMode] = useState("existing");
   const [checks, setChecks] = useState<SetupCheck[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -26,6 +30,9 @@ export function SetupWizard({ onComplete, platformOnly = false }: { onComplete: 
   const [globalDenySetupDeferred, setGlobalDenySetupDeferred] = useState(false);
   const [whitelistSeed, setWhitelistSeed] = useState<SetupStatus["whitelistSeed"]>();
   const [validationReady, setValidationReady] = useState(false);
+  const [packagePreview, setPackagePreview] = useState<RPZPackagePreview>();
+  const [packageError, setPackageError] = useState("");
+  const [packageLoading, setPackageLoading] = useState(false);
 
   useEffect(() => {
     fetch("/api/setup/status", { cache: "no-store" })
@@ -50,6 +57,65 @@ export function SetupWizard({ onComplete, platformOnly = false }: { onComplete: 
     writeTest: true,
     platformOnly,
   });
+
+  const packageBody = () => ({
+    zone,
+    globalDenyZone,
+    primary: { name: "BIND-PRIMARY", role: "primary", address: primary.trim() },
+    secondaries: secondaries.split(/[\n,]/).map((address) => address.trim()).filter(Boolean).map((address, index) => ({ name: `BIND-SECONDARY-${index + 1}`, role: "secondary", address })),
+    // The package contains only a safe key filename, never the mounted host
+    // path or the key contents used by the BIND attachment check.
+    tsigKeyPath: tsigKeyPath.trim().split(/[\\/]/).pop() || "rpz-manager.key",
+    tsigKeyMode,
+  });
+
+  const generatePackage = async () => {
+    setPackageError("");
+    setPackageLoading(true);
+    try {
+      const response = await fetch("/api/setup/rpz-package/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        credentials: "include",
+        body: JSON.stringify(packageBody()),
+      });
+      const payload = await response.json().catch(() => ({})) as RPZPackagePreview & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "配置包生成失败");
+      setPackagePreview(payload);
+    } catch (reason) {
+      setPackageError(reason instanceof Error ? reason.message : "配置包生成失败");
+    } finally {
+      setPackageLoading(false);
+    }
+  };
+
+  const downloadPackage = async () => {
+    setPackageError("");
+    setPackageLoading(true);
+    try {
+      const response = await fetch("/api/setup/rpz-package/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        credentials: "include",
+        body: JSON.stringify(packageBody()),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(payload.error ?? "配置包下载失败");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "dnsguard-rpz-package.zip";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setPackageError(reason instanceof Error ? reason.message : "配置包下载失败");
+    } finally {
+      setPackageLoading(false);
+    }
+  };
 
   const submit = async (event: FormEvent, endpoint: "validate" | "complete") => {
     event.preventDefault();
@@ -95,18 +161,20 @@ export function SetupWizard({ onComplete, platformOnly = false }: { onComplete: 
           {platformOnly && <label>Bootstrap Token<input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} autoComplete="off" /></label>}
           <div className="setup-grid">
             {platformOnly && <label>管理员用户名<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label>}
-            {!platformOnly && <label>RPZ Zone<input value={zone} onChange={(event) => setZone(event.target.value)} /></label>}
+            {!platformOnly && <><label>业务 RPZ Zone<input value={zone} onChange={(event) => setZone(event.target.value)} /></label><label>Global Deny Zone<input value={globalDenyZone} onChange={(event) => setGlobalDenyZone(event.target.value)} /></label></>}
             {platformOnly && <label>管理员密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></label>}
             {platformOnly && <label>确认密码<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" /></label>}
           </div>
           {!platformOnly && <><label>Primary 地址（host:port）<input value={primary} onChange={(event) => setPrimary(event.target.value)} placeholder="例如 10.0.0.10:53" /></label>
           <label>Secondary 地址（每行一台，至少一台）<textarea value={secondaries} onChange={(event) => setSecondaries(event.target.value)} placeholder="例如 10.0.0.11:53" rows={3} /></label>
           <label>受保护 TSIG Key 文件路径<input value={tsigKeyPath} onChange={(event) => setTsigKeyPath(event.target.value)} placeholder="先将已有 Key 安全放入部署 secrets 目录" /></label>
+          <label>TSIG Key 来源<select value={tsigKeyMode} onChange={(event) => setTsigKeyMode(event.target.value)}><option value="existing">复用已有授权 Key</option><option value="admin-generate">由 BIND 管理员生成新 Key</option></select></label>
           <div className="setup-warning">验证会在 Primary Zone 临时写入 TXT 记录，然后立即清理。只有写入和清理都成功，才会允许接入 BIND；只读 SOA 检查不能证明 TSIG 写权限。</div></>}
           {validationReady && <div className="setup-success">BIND 连接成功，可以进入白名单配置。点击“验证通过并完成初始化”后，白名单仍会保持 <code>draft</code>，不会自动发布。</div>}
           {error && <p className="setup-error">{error}</p>}
           <div className="setup-actions"><button type="submit" disabled={loading}>{loading ? "检查中…" : platformOnly ? "检查平台并继续" : "验证节点和 TSIG"}</button><button type="button" disabled={loading} onClick={(event) => void submit(event, "complete")}>{loading ? "处理中…" : platformOnly ? "创建管理员并启动平台" : "验证通过并接入 BIND"}</button></div>
         </form>
+        {!platformOnly && <section className="setup-package"><h2>RPZ 初始化配置包</h2><p>根据上面的节点和 Zone 信息生成可审核的配置包。生成和下载不会修改 BIND，也不包含 TSIG Secret。</p><div className="setup-actions"><button type="button" disabled={packageLoading} onClick={() => void generatePackage()}>{packageLoading ? "生成中…" : "预览配置包"}</button><button type="button" disabled={packageLoading} onClick={() => void downloadPackage()}>下载 ZIP</button></div>{packageError && <p className="setup-error">{packageError}</p>}{packagePreview && <div className="setup-checks"><b>已生成 {packagePreview.files.length} 个文件</b>{packagePreview.warnings.map((warning) => <small key={warning}>{warning}</small>)}{packagePreview.files.map((file) => <details key={file.path}><summary>{file.path}</summary><pre>{file.content}</pre></details>)}</div>}</section>}
         {checks.length > 0 && <div className="setup-checks"><h2>检查结果</h2>{checks.map((check) => <article key={check.name} className={`setup-check ${check.status}`}><b>{check.status === "pass" ? "通过" : check.status === "fail" ? "失败" : "未执行"} · {check.name}</b><span>{check.detail}</span>{check.impact && <small>影响：{check.impact}</small>}{check.cleanup && <small>清理：{check.cleanup}</small>}</article>)}</div>}
       </section>
     </main>

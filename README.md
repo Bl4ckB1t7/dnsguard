@@ -83,11 +83,13 @@ sudo cat ./secrets/bootstrap.token
 打开安装输出的 HTTPS 地址，按以下顺序操作：
 
 1. 打开 Web，使用 Bootstrap Token 创建管理员；平台此时已启动，但 BIND 尚未接入，RPZ 发布保持禁用。
-2. 在向导中填写 BIND Primary、Secondary、RPZ Zone，并将已有授权 TSIG 安全放入 secrets 目录，完成连通性、SOA 和写权限检查。
-3. 在 RPZ 规则页面导入 TXT（每行一个域名）或白名单 JSON，审核后保存为 `draft`。
-4. 人工确认并发布白名单/A 重定向，等待 Primary 和所有 Secondary 验证成功。
-5. 由 BIND 管理员准备并启用 `global-deny.rpz.local`，再按[BIND RPZ 对接文档](docs/bind-rpz-deployment.md)完成递归基线和只读核验。
-6. 确认白名单、多级子域名、A 重定向和未知域名的实际递归结果。DNSGuard 不会修改或 reload BIND。
+2. 在向导中填写 BIND Primary、Secondary、RPZ Zone 和 Global Deny Zone。可先预览或下载 RPZ 初始化配置包；配置包不含 TSIG Secret，也不会修改 BIND。
+3. 由 BIND 管理员在受保护主机审核并应用配置，备份后执行 `named-checkconf`、`named-checkzone`，再按现有变更流程启用业务 RPZ。已有授权 TSIG 需要安全放入 secrets 目录；新 Key 必须由 BIND 管理员生成并同步配置 Primary。
+4. 返回 Web 完成连通性、SOA、TSIG 写权限和 Primary/Secondary 同步检查。BIND 未通过检查前，RPZ 发布保持禁用。
+5. 在 RPZ 规则页面导入 TXT（每行一个域名）或白名单 JSON，审核后保存为 `draft`。
+6. 人工确认并发布白名单/A 重定向，等待 Primary 和所有 Secondary 验证成功。
+7. 由 BIND 管理员预创建 `global-deny.rpz.local`；只有白名单发布并完成同步后，才可将它加入 `response-policy`，再按[BIND RPZ 对接文档](docs/bind-rpz-deployment.md)完成递归基线和只读核验。
+8. 确认白名单、多级子域名、A 重定向和未知域名的实际递归结果。DNSGuard 不会修改或 reload BIND。
 
 普通 BIND 使用：
 
