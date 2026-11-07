@@ -490,6 +490,48 @@ func TestSetupSOAQueryUsesNoRecurse(t *testing.T) {
 	}
 }
 
+func TestSetupSOAQueryReturnsActionableDNSDiagnostics(t *testing.T) {
+	setupTestEnvironment(t)
+	dir := t.TempDir()
+	dig := filepath.Join(dir, "dig")
+	script := `#!/bin/sh
+case "${FAKE_DIG_MODE:-}" in
+refused) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 1' ;;
+servfail) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: SERVFAIL, id: 1' ;;
+nxdomain) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 1' ;;
+missing) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1' ;;
+*) printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1' ';; ANSWER SECTION:' 'rpz.local. 60 IN SOA ns.example. hostmaster.example. 42 3600 900 2592000 60' ;;
+esac
+`
+	if err := os.WriteFile(dig, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, test := range []struct {
+		name string
+		mode string
+		code string
+	}{
+		{name: "REFUSED", mode: "refused", code: "DNS_REFUSED"},
+		{name: "SERVFAIL", mode: "servfail", code: "DNS_SERVFAIL"},
+		{name: "NXDOMAIN", mode: "nxdomain", code: "ZONE_NOT_LOADED"},
+		{name: "missing SOA", mode: "missing", code: "SOA_MISSING"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("FAKE_DIG_MODE", test.mode)
+			serial, check := querySetupSOA(context.Background(), "Primary SOA / Zone", "127.0.0.1:53", "rpz.local")
+			if serial != "" || check.Status != "fail" || check.Code != test.code || check.Remediation == "" {
+				t.Fatalf("expected actionable diagnostic %s, serial=%q check=%+v", test.code, serial, check)
+			}
+		})
+	}
+	t.Setenv("FAKE_DIG_MODE", "")
+	serial, check := querySetupSOA(context.Background(), "Primary SOA / Zone", "127.0.0.1:53", "rpz.local")
+	if serial != "42" || check.Status != "pass" {
+		t.Fatalf("valid SOA should remain a pass: serial=%q check=%+v", serial, check)
+	}
+}
+
 func TestGlobalDenyVerificationPersistsEvidenceAndInvalidatesOnConfigChange(t *testing.T) {
 	setupTestEnvironment(t)
 	baselinePath := filepath.Join(t.TempDir(), "global-deny-baseline.json")
