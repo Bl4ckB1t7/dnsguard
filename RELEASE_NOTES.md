@@ -1,3 +1,23 @@
+# DNSGuard v1.2.1 RC（未发布）
+
+> 候选草稿，不创建 Tag/Release。正式安装仍使用已发布的 v1.2.0。
+
+## 重点
+
+- RPZ 配置包现在通过 preview → apply → verify 流程，将 TSIG、角色 Zone 和业务 response-policy include 原子写入管理员指定的实际 named.conf；不自动 reload BIND。
+- 隔离一主一辅 E2E 真实验证 ZIP 下载、配置加载、TSIG 更新、Zone 同步、白名单发布、Global Deny 门禁和完成态。
+- 保持默认不向公网发布管理端口，BIND/生产配置由管理员独立管理。
+
+## 验收结论
+
+- Go test/race/vet、React 构建、Playwright、ShellCheck、Compose、隔离 BIND 和真实 RPZ 配置包 E2E：PASS（PR #30 run #36）。
+- 公网 DNSLog/独立公网来源、完整历史 TLD 列表、v1.1.1→v1.2.1 升级回滚：NOT RUN。
+- DNSSEC DO=1：仅在指定隔离 profile 观察；不能据此宣称所有递归器均阻断上游 QNAME。
+
+**当前建议：NO-GO，待补齐未运行的升级回滚、完整兼容和独立网络验证。**
+
+---
+
 # DNSGuard v1.1.1
 
 ## 修复版发布说明
