@@ -7,6 +7,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_ID="${UPGRADE_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+RUN_ID="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
 RUNTIME_DIR="${UPGRADE_RUNTIME_DIR:-$ROOT_DIR/tests/upgrade-runtime/$RUN_ID}"
 BASELINE_REF="${UPGRADE_BASELINE_REF:-v1.1.1}"
 CURRENT_REF="${UPGRADE_CURRENT_REF:-HEAD}"
