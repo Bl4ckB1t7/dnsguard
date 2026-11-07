@@ -46,6 +46,16 @@ chown_api_tree() {
   printf '无法将隔离 API 数据和测试 Secret 设置为 UID/GID 10001；请提供本地测试目录的 chown 权限\n' >&2
   return 1
 }
+chown_web_tls() {
+  if chown 101:101 "$@" 2>/dev/null; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n chown 101:101 "$@" 2>/dev/null; then
+    return 0
+  fi
+  printf '无法将隔离 Web TLS 路径设置为 UID/GID 101；请提供本地测试目录的 chown 权限\n' >&2
+  return 1
+}
 record() { CASE_NAMES+=("$1"); CASE_STATUS+=("$2"); CASE_EVIDENCE+=("$3"); printf '%-56s %s\n' "$2" "$1"; }
 case_run() {
   local name="$1" fn="$2" evidence safe_name code
@@ -243,8 +253,9 @@ write_env() {
   printf 'key "rpz-manager" { algorithm hmac-sha256; secret "%s"; };\n' "$(openssl rand -base64 32 | tr -d '\n')" >"$KEY_FILE"
   chmod 0640 "$KEY_FILE"
   openssl req -x509 -newkey rsa:2048 -nodes -days 2 -keyout "$TLS_DIR/privkey.pem" -out "$TLS_DIR/fullchain.pem" -subj '/CN=localhost' >/dev/null 2>&1
-  chown 101:101 "$TLS_DIR/privkey.pem" 2>/dev/null || true
+  chmod 0750 "$TLS_DIR"
   chmod 0640 "$TLS_DIR/privkey.pem"; chmod 0644 "$TLS_DIR/fullchain.pem"
+  chown_web_tls "$TLS_DIR" "$TLS_DIR/privkey.pem"
   cat >"$DATA_DIR/bootstrap/whitelist-seed.json" <<'EOF'
 {"version":1,"source":"rpz-connect","mode":"global","generatedAt":"2026-01-01T00:00:00Z","zone":"rpz.local.","rules":[{"domain":"allowed.app.test","type":"CNAME","action":"passthru","value":"rpz-passthru.","reason":"isolated e2e allowlist"}]}
 EOF
