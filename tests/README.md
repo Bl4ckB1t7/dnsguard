@@ -20,6 +20,9 @@ BIND cluster.
 - `docker-paths.sh`: host-path resolution, overlap and symlink safety checks.
 - `rpz-connect-security.sh`: isolated RPZ preflight and temporary-write safety
   checks using fake DNS tools; it never writes to a real BIND server.
+- `e2e/run-all.sh`: one-command, isolated API/Web plus one BIND Primary and one
+  Secondary acceptance flow. It creates uniquely named resources, runs real
+  Chromium against the HTTPS service, and writes a Markdown evidence report.
 
 The scripts generate TSIG keys, state, logs and reports in ignored runtime
 directories. Nothing under those runtime directories should be committed.
@@ -36,3 +39,13 @@ Docker tests require Docker Engine and the Compose plugin. If Docker is not
 available, record the result as `NOT RUN` rather than substituting a mock for a
 real BIND test. The BIND harness selects an existing non-root account for its
 permission-failure cases; set `TEST_RUN_USER` explicitly in CI when necessary.
+
+Run the modern full flow with:
+
+```bash
+bash ./tests/e2e/run-all.sh
+```
+
+This modern flow uses `global-deny.rpz.local`. The older
+`bind-cluster/run-acceptance.sh` remains a separate legacy TLD-deny compatibility
+harness; its results must not be substituted for the Global Deny flow.

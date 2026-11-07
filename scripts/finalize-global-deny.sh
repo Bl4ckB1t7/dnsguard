@@ -75,6 +75,10 @@ if [[ -n "${DNSGUARD_BIND_NETWORK:-}" ]]; then
   dnsguard_validate_bind_network_cidrs "$DNSGUARD_BIND_NETWORK" "${DNS_NODE_ALLOWED_CIDRS:-}" || die 'BIND Docker 网络未获得显式 CIDR 授权'
   COMPOSE_ARGS+=(-f "$ROOT/compose.bind-network.yaml")
 fi
+if [[ -n "${DNSGUARD_COMPOSE_OVERRIDE:-}" ]]; then
+  [[ -f "$DNSGUARD_COMPOSE_OVERRIDE" ]] || die "Compose override 不存在：$DNSGUARD_COMPOSE_OVERRIDE"
+  COMPOSE_ARGS+=(-f "$DNSGUARD_COMPOSE_OVERRIDE")
+fi
 "${COMPOSE_ARGS[@]}" config >/dev/null || die 'Compose 配置校验失败'
 pass 'Compose 配置和 BIND 网络检查通过'
 
@@ -255,7 +259,11 @@ if grep -Eq '^[[:space:]]*(export[[:space:]]+)?RPZ_GLOBAL_DENY_SETUP_DEFERRED[[:
   ENV_BACKUP="$ENV_FILE.before-global-deny.$(date -u +%Y%m%dT%H%M%SZ)"
   cp -p -- "$ENV_FILE" "$ENV_BACKUP" || die '无法创建 env 保护备份，未修改原配置'
   temporary="$(mktemp "$(dirname "$ENV_FILE")/.dnsguard-env.XXXXXX")"
-  cleanup() { [[ -e "${temporary:-}" ]] && rm -f -- "$temporary"; }
+  cleanup() {
+    if [[ -n "${temporary:-}" && -e "$temporary" ]]; then
+      rm -f -- "$temporary"
+    fi
+  }
   trap cleanup EXIT
   python3 - "$ENV_FILE" "$temporary" <<'PY'
 import re
