@@ -26,6 +26,8 @@ tests/bind-cluster/global-deny-acceptance/runtime/
 tests/docker-production-runtime/
 tests/docker-production-bind/runtime/
 tests/docker-initialization-runtime/
+tests/e2e/runtime/
+tests/e2e/playwright-storage.json
 
 # Docker production deployment secrets and persistent state
 deploy/docker/dnsguard.env
