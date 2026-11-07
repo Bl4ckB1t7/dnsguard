@@ -464,9 +464,15 @@ check_network_exposure() {
     printf 'FAIL: Web 从非回环地址可达：%s\n' "$host_ip"
     return 1
   fi
-  if published="$("${COMPOSE[@]}" port dnsguard-api 8080 2>/dev/null)" && [[ -n "$published" && "$published" != ':0' ]]; then
-    printf 'FAIL: API 发布了宿主机端口：%s\n' "$published"
-    return 1
+  if published="$("${COMPOSE[@]}" port dnsguard-api 8080 2>/dev/null)"; then
+    while IFS= read -r published_line; do
+      # Compose may report an unpublished port as :0, 0.0.0.0:0, or :::0
+      # depending on the Docker/Compose version. Only a non-zero host port is
+      # a publication; do not reject the intentionally unpublished :0 form.
+      [[ -z "$published_line" || "$published_line" =~ :0$ ]] && continue
+      printf 'FAIL: API 发布了宿主机端口：%s\n' "$published_line"
+      return 1
+    done <<< "$published"
   fi
   for bind_container in "$BIND_PRIMARY" "$BIND_SECONDARY" "$BIND_UPSTREAM"; do
     if published="$(docker port "$bind_container" 2>/dev/null)" && [[ -n "$published" ]]; then
