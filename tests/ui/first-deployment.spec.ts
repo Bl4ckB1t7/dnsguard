@@ -26,6 +26,8 @@ test.describe("平台优先的首次部署向导", () => {
       await page.getByRole("button", { name: "验证节点和 TSIG" }).click();
       await expect(page.getByText("初始化检查未通过")).toBeVisible();
       await expect(page.getByText(outcome === "refused" ? "RCODE=REFUSED" : outcome === "servfail" ? "RCODE=SERVFAIL" : outcome === "timeout" ? "请求超时" : "TSIG Key 文件不可读或格式无效")).toBeVisible();
+      if (outcome !== "tsig") await expect(page.getByText(outcome === "refused" ? "DNS_REFUSED" : outcome === "servfail" ? "DNS_SERVFAIL" : "DNS_TIMEOUT", { exact: true })).toBeVisible();
+      if (outcome !== "tsig") await expect(page.getByText("建议：", { exact: false })).toBeVisible();
       await page.unrouteAll();
     }
   });
