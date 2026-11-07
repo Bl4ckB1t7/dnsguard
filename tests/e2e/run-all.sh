@@ -514,6 +514,15 @@ EOF
     chmod 0750 "$check_tools/named-checkconf"
   }
   export PATH="$check_tools:$PATH"
+  run_package_script() {
+    if [[ "${EUID:-$(id -u)}" == 0 ]]; then
+      env "PATH=$check_tools:$PATH" "$@"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      sudo -n env "PATH=$check_tools:$PATH" "$@"
+    else
+      env "PATH=$check_tools:$PATH" "$@"
+    fi
+  }
   host_etc="$BIND_DIR/primary/etc-bind"
   host_lib="$BIND_DIR/primary/lib-bind"
   bind_user="$(id -un)"
@@ -523,20 +532,18 @@ EOF
   # handed back to uid 53.  Keep this isolated parent writable for that
   # operation; the post-apply permission step below restores the container
   # ownership/permissions without touching any external path.
-  chmod u+rwx,go+rwx "$host_lib" "$BIND_DIR/primary/cache-bind"
   # The package is generated for the container's canonical paths. For the
   # host-side apply script, translate only the isolated test tree paths, then
   # restore the canonical paths before named loads the mounted configuration.
   sed -i "s#/etc/bind#$host_etc#g; s#/var/lib/bind#$host_lib#g; s#/var/cache/bind#$BIND_DIR/secondary/lib-bind#g" "$package_root"/config/*.conf
-  env BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$host_lib/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --check primary
-  env BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$host_lib/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --apply primary
+  run_package_script BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$host_lib/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --check primary
+  run_package_script BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$host_lib/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --apply primary
   host_etc="$BIND_DIR/secondary/etc-bind"
   host_lib="$BIND_DIR/secondary/lib-bind"
   make_named_checkconf_wrapper "$host_etc" "$host_lib" "$BIND_DIR/secondary/cache-bind"
-  chmod u+rwx,go+rwx "$host_lib" "$BIND_DIR/secondary/cache-bind"
   sed -i "s#${BIND_DIR}/primary/etc-bind#$host_etc#g; s#${BIND_DIR}/primary/lib-bind#$host_lib#g" "$package_root"/config/*.conf
-  env BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --check secondary
-  env BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --apply secondary
+  run_package_script BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --check secondary
+  run_package_script BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --apply secondary
   # Restore paths as seen inside the BIND containers after the host-side
   # preview/apply/verify completed. No production path is touched.
   sed -i "s#${BIND_DIR}/primary/etc-bind#/etc/bind#g; s#${BIND_DIR}/primary/lib-bind#/var/lib/bind#g; s#${BIND_DIR}/secondary/etc-bind#/etc/bind#g; s#${BIND_DIR}/secondary/lib-bind#/var/lib/bind#g" "$BIND_DIR/primary/etc-bind/named.conf" "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config"/*.conf "$BIND_DIR/secondary/etc-bind/named.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config"/*.conf
