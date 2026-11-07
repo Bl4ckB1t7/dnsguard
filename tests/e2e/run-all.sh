@@ -189,7 +189,7 @@ cleanup() {
 trap cleanup EXIT
 
 write_zone_files() {
-  mkdir -p "$BIND_DIR"/primary/{etc-bind,lib-bind,log-bind} "$BIND_DIR"/secondary/{etc-bind,lib-bind,log-bind} "$BIND_DIR"/upstream/{etc-bind,lib-bind,log-bind} "$BIND_DIR"/primary/etc-bind/keys "$BIND_DIR"/secondary/etc-bind/keys
+  mkdir -p "$BIND_DIR"/primary/{etc-bind,lib-bind,cache-bind,log-bind} "$BIND_DIR"/secondary/{etc-bind,lib-bind,cache-bind,log-bind} "$BIND_DIR"/upstream/{etc-bind,lib-bind,cache-bind,log-bind} "$BIND_DIR"/primary/etc-bind/keys "$BIND_DIR"/secondary/etc-bind/keys
   cat >"$BIND_DIR/primary/lib-bind/rpz.local.zone" <<'EOF'
 $TTL 60
 $ORIGIN rpz.local.
@@ -225,11 +225,11 @@ EOF
   # never prompt or weaken host permissions.  The final chmod fallback keeps
   # the test-only tree readable/writable by the container when neither is
   # available, without touching any host or production path.
-  if ! chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
-    if command -v sudo >/dev/null 2>&1 && sudo -n chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
+  if ! chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/cache-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/cache-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
       :
     else
-      chmod -R u+rwX,go+rwX "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind
+      chmod -R u+rwX,go+rwX "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/cache-bind "$BIND_DIR"/*/log-bind
       chmod 0644 "$BIND_DIR"/*/etc-bind/keys/rpz-manager.key
       printf '%s\n' '[e2e] no ownership change available; using isolated test-tree permissions' >&2
     fi
@@ -264,6 +264,7 @@ services:
     volumes:
       - ./primary/etc-bind:/etc/bind
       - ./primary/lib-bind:/var/lib/bind
+      - ./primary/cache-bind:/var/cache/bind
       - ./primary/log-bind:/var/log/bind
   secondary:
     image: internetsystemsconsortium/bind9:9.20
@@ -273,6 +274,7 @@ services:
     volumes:
       - ./secondary/etc-bind:/etc/bind
       - ./secondary/lib-bind:/var/lib/bind
+      - ./secondary/cache-bind:/var/cache/bind
       - ./secondary/log-bind:/var/log/bind
   upstream:
     image: internetsystemsconsortium/bind9:9.20
@@ -282,6 +284,7 @@ services:
     volumes:
       - ./upstream/etc-bind:/etc/bind
       - ./upstream/lib-bind:/var/lib/bind
+      - ./upstream/cache-bind:/var/cache/bind
       - ./upstream/log-bind:/var/log/bind
 networks:
   bind:
@@ -394,16 +397,16 @@ print(data["NetworkSettings"]["Networks"][network]["IPAddress"])
   [[ "$API_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die '无法确定隔离 API 在 BIND 网络中的地址'
   write_zone_files; write_named_conf; write_bind_compose
   docker run --rm --entrypoint named-checkconf \
-    -v "$BIND_DIR/primary/etc-bind:/etc/bind:ro" -v "$BIND_DIR/primary/lib-bind:/var/lib/bind:ro" \
+    -v "$BIND_DIR/primary/etc-bind:/etc/bind:ro" -v "$BIND_DIR/primary/lib-bind:/var/lib/bind:ro" -v "$BIND_DIR/primary/cache-bind:/var/cache/bind:ro" \
     internetsystemsconsortium/bind9:9.20 -z /etc/bind/named.conf >/dev/null
   docker run --rm --entrypoint named-checkzone \
     -v "$BIND_DIR/primary/lib-bind:/var/lib/bind:ro" internetsystemsconsortium/bind9:9.20 \
     rpz.local /var/lib/bind/rpz.local.zone >/dev/null
   docker run --rm --entrypoint named-checkconf \
-    -v "$BIND_DIR/secondary/etc-bind:/etc/bind:ro" -v "$BIND_DIR/secondary/lib-bind:/var/lib/bind:ro" \
+    -v "$BIND_DIR/secondary/etc-bind:/etc/bind:ro" -v "$BIND_DIR/secondary/lib-bind:/var/lib/bind:ro" -v "$BIND_DIR/secondary/cache-bind:/var/cache/bind:ro" \
     internetsystemsconsortium/bind9:9.20 -z /etc/bind/named.conf >/dev/null
   docker run --rm --entrypoint named-checkconf \
-    -v "$BIND_DIR/upstream/etc-bind:/etc/bind:ro" -v "$BIND_DIR/upstream/lib-bind:/var/lib/bind:ro" \
+    -v "$BIND_DIR/upstream/etc-bind:/etc/bind:ro" -v "$BIND_DIR/upstream/lib-bind:/var/lib/bind:ro" -v "$BIND_DIR/upstream/cache-bind:/var/cache/bind:ro" \
     internetsystemsconsortium/bind9:9.20 -z /etc/bind/named.conf >/dev/null
   docker run --rm --entrypoint named-checkzone \
     -v "$BIND_DIR/upstream/lib-bind:/var/lib/bind:ro" internetsystemsconsortium/bind9:9.20 \
