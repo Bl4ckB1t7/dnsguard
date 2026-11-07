@@ -48,7 +48,9 @@ HTTPS 证书和私钥必须由管理员提供；安装器不会生成不可信�
 
 ## 快速开始
 
-### 1. 获取 v1.2.0 并先启动控制面
+### 1. 获取已发布版本并先启动控制面
+
+> v1.2.1 当前仅为发布候选，尚未创建 Tag 或 Release；正式安装请继续使用已发布的 v1.2.0。
 
 先克隆仓库，再运行仓库内安装入口：
 
@@ -140,6 +142,7 @@ docker compose --env-file deploy/docker/dnsguard.env \
 - [BIND RPZ 部署与对接](docs/bind-rpz-deployment.md)
 - [v1.2.0 升级与回滚验收](docs/acceptance/v1.2.0-upgrade-acceptance.md)
 - [v1.2.0 发布说明](docs/release-notes/v1.2.0-rc.md)
+- [v1.2.1 RC 验收资料](docs/release-notes/v1.2.1-rc.md)
 - [v1.1.0 隔离验收](docs/acceptance/v1.1.0-first-deployment-acceptance.md)
 - [DNS 隧道重新验收](docs/acceptance/v1.1.0-dns-tunnel-retest.md)
 - [v1.0.1 正式验收](docs/acceptance/v1.0.1-bind-acceptance.md)
