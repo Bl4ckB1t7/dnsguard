@@ -13,8 +13,10 @@ INTERNAL_SUBNET="${E2E_INTERNAL_SUBNET:-172.35.0.0/24}"
 PRIMARY_IP="172.34.0.10"
 SECONDARY_IP="172.34.0.11"
 UPSTREAM_IP="172.34.0.12"
+API_IP=""
 BIND_PRIMARY="${PROJECT}-bind-primary"
 BIND_SECONDARY="${PROJECT}-bind-secondary"
+BIND_UPSTREAM="${PROJECT}-bind-upstream"
 BIND_DIR="$ROOT_DIR/tests/e2e/runtime/$RUN_ID/bind"
 RUNTIME="$ROOT_DIR/tests/e2e/runtime/$RUN_ID"
 DATA_DIR="$RUNTIME/data"
@@ -102,14 +104,39 @@ import subprocess
 raw = subprocess.check_output(["docker", "network", "inspect", *subprocess.check_output(
     ["docker", "network", "ls", "-q"], text=True).split()], text=True)
 used = []
+def add_network(value):
+    if value and value != "default":
+        try:
+            used.append(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            pass
+
 for item in json.loads(raw):
     for config in item.get("IPAM", {}).get("Config") or []:
-        subnet = config.get("Subnet")
-        if subnet:
-            try:
-                used.append(ipaddress.ip_network(subnet, strict=False))
-            except ValueError:
-                pass
+        add_network(config.get("Subnet"))
+
+# Docker bridge selection must also avoid the host's routed and assigned
+# networks.  A Docker subnet overlapping an interface (for example the
+# machine's VPN or cloud NIC) can make a loopback-published test Web port
+# hang or reset even though the container itself is healthy.
+if subprocess.call(["sh", "-c", "command -v ip >/dev/null 2>&1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+    for command in (("ip", "-4", "-j", "route", "show"), ("ip", "-4", "-j", "addr", "show")):
+        try:
+            host_data = json.loads(subprocess.check_output(command, text=True))
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+            continue
+        if command[3] == "route":
+            for route in host_data:
+                add_network(route.get("dst"))
+        else:
+            for interface in host_data:
+                for address in interface.get("addr_info", []):
+                    if address.get("family") == "inet":
+                        local = address.get("local")
+                        prefix = address.get("prefixlen")
+                        if local is not None and prefix is not None:
+                            add_network(f"{local}/{prefix}")
+
 for third in range(30, 250, 2):
     candidate = [ipaddress.ip_network(f"172.{third}.0.0/24"), ipaddress.ip_network(f"172.{third + 1}.0.0/24")]
     if all(not any(net.overlaps(existing) for existing in used) for net in candidate):
@@ -195,20 +222,20 @@ EOF
 }
 write_named_conf() {
   cat >"$BIND_DIR/primary/etc-bind/named.conf" <<EOF
-options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion yes; forward only; forwarders { $UPSTREAM_IP; }; allow-query { 127.0.0.1; $SUBNET; }; allow-recursion { 127.0.0.1; $SUBNET; }; dnssec-validation no; response-policy { zone "rpz.local"; } qname-wait-recurse no; notify yes; also-notify { $SECONDARY_IP; }; };
+options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion no; allow-query { 127.0.0.1; $API_IP; $SECONDARY_IP; }; allow-recursion { none; }; dnssec-validation no; response-policy { zone "rpz.local"; } qname-wait-recurse no; notify yes; also-notify { $SECONDARY_IP; }; };
 include "/etc/bind/keys/rpz-manager.key";
 zone "rpz.local" { type primary; file "/var/lib/bind/rpz.local.zone"; allow-update { key rpz-manager; }; allow-transfer { key rpz-manager; }; notify yes; };
 zone "global-deny.rpz.local" { type primary; file "/var/lib/bind/global-deny.rpz.local.zone"; allow-update { key rpz-manager; }; allow-transfer { key rpz-manager; }; notify yes; };
 EOF
   cat >"$BIND_DIR/secondary/etc-bind/named.conf" <<EOF
-options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion yes; forward only; forwarders { $UPSTREAM_IP; }; allow-query { 127.0.0.1; $SUBNET; }; allow-recursion { 127.0.0.1; $SUBNET; }; dnssec-validation no; response-policy { zone "rpz.local"; } qname-wait-recurse no; };
+options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion yes; forward only; forwarders { $UPSTREAM_IP; }; allow-query { 127.0.0.1; $API_IP; }; allow-recursion { 127.0.0.1; $API_IP; }; allow-query-cache { 127.0.0.1; $API_IP; }; dnssec-validation no; response-policy { zone "rpz.local"; } qname-wait-recurse no; };
 include "/etc/bind/keys/rpz-manager.key";
 zone "rpz.local" { type secondary; primaries { $PRIMARY_IP key rpz-manager; }; file "/var/lib/bind/rpz.local.zone"; };
 zone "global-deny.rpz.local" { type secondary; primaries { $PRIMARY_IP key rpz-manager; }; file "/var/lib/bind/global-deny.rpz.local.zone"; };
 EOF
   mkdir -p "$BIND_DIR/upstream/etc-bind/keys"
   cat >"$BIND_DIR/upstream/etc-bind/named.conf" <<EOF
-options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion no; allow-query { $SUBNET; 127.0.0.1; }; dnssec-validation no; };
+options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion no; allow-query { $SECONDARY_IP; 127.0.0.1; }; dnssec-validation no; };
 zone "app.test" { type primary; file "/var/lib/bind/app.test.zone"; };
 EOF
 }
@@ -340,6 +367,17 @@ start_api_web() {
   "${COMPOSE[@]}" ps; "${COMPOSE[@]}" logs --no-color; return 1
 }
 start_bind() {
+  local api_id
+  api_id="$("${COMPOSE[@]}" ps -q dnsguard-api)"
+  API_IP="$(docker inspect "$api_id" | python3 -c '
+import json
+import sys
+
+network = sys.argv[1]
+data = json.load(sys.stdin)[0]
+print(data["NetworkSettings"]["Networks"][network]["IPAddress"])
+' "$BIND_NETWORK")"
+  [[ "$API_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die '无法确定隔离 API 在 BIND 网络中的地址'
   write_zone_files; write_named_conf; write_bind_compose
   docker run --rm --entrypoint named-checkconf \
     -v "$BIND_DIR/primary/etc-bind:/etc/bind:ro" -v "$BIND_DIR/primary/lib-bind:/var/lib/bind:ro" \
@@ -410,6 +448,59 @@ check_real_dns() {
   printf 'business_primary_serial=%s\nbusiness_secondary_serial=%s\nrecursive_baseline=%s\nwhitelist=%s\nnested_whitelist=%s\na_redirect=%s\n' "$p" "$s" "$r" "$allow" "$nested" "$redirect"
   [[ -n "$p" && "$p" == "$s" && "$r" == '192.0.2.42' && "$allow" == '192.0.2.43' && "$nested" == '192.0.2.44' && "$redirect" == '192.0.2.99' ]]
 }
+check_network_exposure() {
+  local host_ip primary_rcode secondary_rcode transfer_rcode update_code response published
+  if ! host_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | awk '$1 !~ /^127\./ && $1 !~ /:/ && NF {print; exit}')"; then
+    printf 'NOT RUN: 无法确定隔离测试主机的非回环 IPv4 地址\n'
+    return 2
+  fi
+  if curl -ksS --connect-timeout 2 --max-time 3 -o /dev/null "$WEB_URL"; then
+    :
+  else
+    printf 'FAIL: 回环 Web 地址不可访问\n'
+    return 1
+  fi
+  if curl -ksS --connect-timeout 2 --max-time 3 -o /dev/null "https://${host_ip}:${WEB_PORT}" 2>/dev/null; then
+    printf 'FAIL: Web 从非回环地址可达：%s\n' "$host_ip"
+    return 1
+  fi
+  if published="$("${COMPOSE[@]}" port dnsguard-api 8080 2>/dev/null)"; then
+    while IFS= read -r published_line; do
+      # Compose may report an unpublished port as :0, 0.0.0.0:0, or :::0
+      # depending on the Docker/Compose version. Only a non-zero host port is
+      # a publication; do not reject the intentionally unpublished :0 form.
+      [[ -z "$published_line" || "$published_line" =~ :0$ ]] && continue
+      printf 'FAIL: API 发布了宿主机端口：%s\n' "$published_line"
+      return 1
+    done <<< "$published"
+  fi
+  for bind_container in "$BIND_PRIMARY" "$BIND_SECONDARY" "$BIND_UPSTREAM"; do
+    if published="$(docker port "$bind_container" 2>/dev/null)" && [[ -n "$published" ]]; then
+      printf 'FAIL: BIND 测试容器发布了宿主机端口：%s (%s)\n' "$bind_container" "$published"
+      return 1
+    fi
+  done
+  primary_rcode=''; secondary_rcode=''; transfer_rcode=''
+  for _ in {1..20}; do
+    response="$(docker exec "$BIND_UPSTREAM" dig +tcp +time=1 +tries=1 +noall +comments @"$PRIMARY_IP" baseline.app.test A 2>/dev/null || true)"
+    primary_rcode="$(printf '%s\n' "$response" | awk '/status:/{gsub(",", "", $6); print $6; exit}')"
+    response="$(docker exec "$BIND_UPSTREAM" dig +tcp +time=1 +tries=1 +noall +comments @"$SECONDARY_IP" baseline.app.test A 2>/dev/null || true)"
+    secondary_rcode="$(printf '%s\n' "$response" | awk '/status:/{gsub(",", "", $6); print $6; exit}')"
+    response="$(docker exec "$BIND_UPSTREAM" dig +tcp +time=1 +tries=1 +noall +comments @"$PRIMARY_IP" rpz.local AXFR 2>/dev/null || true)"
+    transfer_rcode="$(printf '%s\n' "$response" | awk '/status:/{gsub(",", "", $6); print $6; exit}')"
+    [[ "$primary_rcode" == REFUSED && "$secondary_rcode" == REFUSED && "$transfer_rcode" == REFUSED ]] && break
+    sleep 1
+  done
+  [[ "$primary_rcode" == REFUSED ]] || { printf 'FAIL: Primary 未授权递归查询 RCODE=%s\n' "${primary_rcode:-empty}"; return 1; }
+  [[ "$secondary_rcode" == REFUSED ]] || { printf 'FAIL: Secondary 未授权递归查询 RCODE=%s\n' "${secondary_rcode:-empty}"; return 1; }
+  [[ "$transfer_rcode" == REFUSED ]] || { printf 'FAIL: 未授权 AXFR RCODE=%s\n' "${transfer_rcode:-empty}"; return 1; }
+  set +e
+  printf 'server %s\nzone rpz.local\nupdate add unauthorized.rpz.local. 60 TXT denied\nsend\n' "$PRIMARY_IP" | docker exec -i "$BIND_UPSTREAM" nsupdate -v >/dev/null 2>&1
+  update_code=$?
+  set -e
+  ((update_code != 0)) || { printf 'FAIL: 未授权动态更新未被拒绝\n'; return 1; }
+  printf 'PASS: Web 仅回环可达；Primary/Secondary 未授权递归=%s/%s；未授权 AXFR=%s、UPDATE 均拒绝\n' "$primary_rcode" "$secondary_rcode" "$transfer_rcode"
+}
 check_global_dns() {
   local p s trigger r allow nested redirect unknown unknown_rcode
   p="$(docker exec "$BIND_PRIMARY" dig +short +norecurse @127.0.0.1 global-deny.rpz.local SOA | awk 'NF>=3{print $3; exit}')"
@@ -479,6 +570,7 @@ main() {
   case_run 'platform-first API/Web starts before BIND' true
   case_run 'publish gate rejects writes before BIND' api_gate_before_bind
   start_bind
+  require_case 'network exposure and BIND ACL gate' check_network_exposure
   require_case 'real browser platform/BIND/package/whitelist flow' browser_initial
   require_case 'real BIND config and two RPZ zones loaded' check_real_dns
   enable_global_deny

@@ -67,7 +67,9 @@ services:
     mem_limit: 256m
     cpus: "0.50"
     ports:
-      - "${DNSGUARD_WEB_BIND_IP:-0.0.0.0}:${DNSGUARD_WEB_PORT:-443}:8443"
+      # Bind the management UI to localhost unless an administrator explicitly
+      # chooses an approved VPN/listener address through DNSGUARD_WEB_BIND_IP.
+      - "${DNSGUARD_WEB_BIND_IP:-127.0.0.1}:${DNSGUARD_WEB_PORT:-443}:8443"
     volumes:
       - type: bind
         source: ./deploy/docker/nginx-main.conf

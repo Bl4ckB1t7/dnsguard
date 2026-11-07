@@ -77,7 +77,7 @@ options {
     listen-on port 53 { any; };
     listen-on-v6 { none; };
     recursion no;
-    allow-query { any; };
+    allow-query { 127.0.0.1; 172.31.0.11; 172.31.0.12; };
     dnssec-validation no;
 };
 logging {
@@ -120,8 +120,11 @@ options {
     recursion yes;
     forward only;
     forwarders { 172.31.0.20; };
-    allow-query { any; };
-    allow-recursion { any; };
+    # This fixture is queried from inside the BIND containers only. Keep the
+    # recursive service closed to all other Docker-network clients.
+    allow-query { 127.0.0.1; 172.31.0.10; };
+    allow-recursion { 127.0.0.1; };
+    allow-query-cache { 127.0.0.1; };
     dnssec-validation no;
     response-policy {
         zone "rpz.local";
@@ -198,8 +201,11 @@ options {
     recursion yes;
     forward only;
     forwarders { 172.31.0.20; };
-    allow-query { any; };
-    allow-recursion { any; };
+    # This fixture is queried from inside the BIND containers only. Keep the
+    # recursive service closed to all other Docker-network clients.
+    allow-query { 127.0.0.1; };
+    allow-recursion { 127.0.0.1; };
+    allow-query-cache { 127.0.0.1; };
     dnssec-validation no;
     response-policy {
         zone "rpz.local";

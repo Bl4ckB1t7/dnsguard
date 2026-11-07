@@ -61,6 +61,8 @@ cd dnsguard
 
 首次尚未存在 `deploy/docker/dnsguard.env` 时，安装脚本会检查 Docker/Compose，准备目录，生成运行密钥和一次性 Bootstrap Token，并只要求提供可信 HTTPS 证书和私钥。此时不要求 BIND、RPZ Zone 或 TSIG；平台启动后再通过 Web 向导接入。缺少证书、私钥或 Docker 权限时会明确失败，不会留下可冒充成功的半成品环境文件。
 
+默认 Web 只发布到宿主机 `127.0.0.1:443`，API 不发布宿主机端口；不要把管理端口直接暴露到公网。若必须从受控 VPN 地址访问，管理员可显式设置 `DNSGUARD_WEB_BIND_IP` 为已批准的本机/VPN 地址，并由管理员自行配置防火墙和访问控制。安装器不会修改防火墙、路由或云安全组。
+
 如果 BIND 在另一套已经存在的 Docker 网络中，先设置网络名再安装：
 
 ```bash

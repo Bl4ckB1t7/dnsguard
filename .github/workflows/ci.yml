@@ -36,6 +36,7 @@ jobs:
       - run: shellcheck -x install.sh scripts/*.sh tests/*.sh tests/e2e/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
       - run: bash -n install.sh scripts/*.sh tests/*.sh tests/e2e/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
       - run: DNSGUARD_ENV_FILE=./deploy/docker/dnsguard.env.example docker compose --env-file deploy/docker/dnsguard.env.example -f compose.yaml config
+      - run: bash tests/network-exposure.sh
 
   bind-integration:
     runs-on: ubuntu-latest
