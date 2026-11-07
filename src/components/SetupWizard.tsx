@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 
-type SetupCheck = { name: string; status: "pass" | "fail" | "not_run"; detail: string; impact?: string; cleanup?: string };
+type SetupCheck = { name: string; status: "pass" | "fail" | "not_run"; code?: string; detail: string; impact?: string; cleanup?: string; remediation?: string };
 type SetupStatus = { tsigKeyPath?: string; keyCandidates?: string[]; writeTestRequired?: boolean; policyMode?: "global" | "legacy"; globalDenySetupDeferred?: boolean; platformReady?: boolean; bindReady?: boolean; platformBootstrap?: boolean; whitelistSeed?: { available?: boolean; count?: number; mode?: string; error?: string }; error?: string };
 type SetupPayload = { ready?: boolean; checks?: SetupCheck[]; error?: string };
 type RPZPackageFile = { path: string; content: string; executable?: boolean };
@@ -175,7 +175,7 @@ export function SetupWizard({ onComplete, platformOnly = false }: { onComplete: 
           <div className="setup-actions"><button type="submit" disabled={loading}>{loading ? "检查中…" : platformOnly ? "检查平台并继续" : "验证节点和 TSIG"}</button><button type="button" disabled={loading} onClick={(event) => void submit(event, "complete")}>{loading ? "处理中…" : platformOnly ? "创建管理员并启动平台" : "验证通过并接入 BIND"}</button></div>
         </form>
         {!platformOnly && <section className="setup-package"><h2>RPZ 初始化配置包</h2><p>根据上面的节点和 Zone 信息生成可审核的配置包。生成和下载不会修改 BIND，也不包含 TSIG Secret。</p><div className="setup-actions"><button type="button" disabled={packageLoading} onClick={() => void generatePackage()}>{packageLoading ? "生成中…" : "预览配置包"}</button><button type="button" disabled={packageLoading} onClick={() => void downloadPackage()}>下载 ZIP</button></div>{packageError && <p className="setup-error">{packageError}</p>}{packagePreview && <div className="setup-checks"><b>已生成 {packagePreview.files.length} 个文件</b>{packagePreview.warnings.map((warning) => <small key={warning}>{warning}</small>)}{packagePreview.files.map((file) => <details key={file.path}><summary>{file.path}</summary><pre>{file.content}</pre></details>)}</div>}</section>}
-        {checks.length > 0 && <div className="setup-checks"><h2>检查结果</h2>{checks.map((check) => <article key={check.name} className={`setup-check ${check.status}`}><b>{check.status === "pass" ? "通过" : check.status === "fail" ? "失败" : "未执行"} · {check.name}</b><span>{check.detail}</span>{check.impact && <small>影响：{check.impact}</small>}{check.cleanup && <small>清理：{check.cleanup}</small>}</article>)}</div>}
+        {checks.length > 0 && <div className="setup-checks"><h2>检查结果</h2>{checks.map((check) => <article key={check.name} className={`setup-check ${check.status}`}><b>{check.status === "pass" ? "通过" : check.status === "fail" ? "失败" : "未执行"} · {check.name}{check.code && <code className="setup-check-code">{check.code}</code>}</b><span>{check.detail}</span>{check.remediation && <small>建议：{check.remediation}</small>}{check.impact && <small>影响：{check.impact}</small>}{check.cleanup && <small>清理：{check.cleanup}</small>}</article>)}</div>}
       </section>
     </main>
   );

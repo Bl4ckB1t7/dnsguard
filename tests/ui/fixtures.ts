@@ -77,8 +77,14 @@ export async function mockBindSetup(page: Page, outcome: "success" | "refused" |
           ],
         });
       } else {
-        const detail = outcome === "refused" ? "RCODE=REFUSED" : outcome === "servfail" ? "RCODE=SERVFAIL" : outcome === "timeout" ? "请求超时" : "TSIG Key 文件不可读或格式无效";
-        await json(route, { ready: false, error: "初始化检查未通过", checks: [{ name: "Primary SOA / Zone", status: "fail", detail }] }, 400);
+        const diagnostic = outcome === "refused"
+          ? { detail: "RCODE=REFUSED", code: "DNS_REFUSED", remediation: "检查 BIND ACL 和网络路径" }
+          : outcome === "servfail"
+            ? { detail: "RCODE=SERVFAIL", code: "DNS_SERVFAIL", remediation: "检查 Zone 加载和 named 日志" }
+            : outcome === "timeout"
+              ? { detail: "请求超时", code: "DNS_TIMEOUT", remediation: "检查 BIND 地址和端口" }
+              : { detail: "TSIG Key 文件不可读或格式无效", code: "TSIG_KEY_INVALID", remediation: "检查受保护 Key 文件权限" };
+        await json(route, { ready: false, error: "初始化检查未通过", checks: [{ name: "Primary SOA / Zone", status: "fail", ...diagnostic }] }, 400);
       }
       return;
     }

@@ -74,12 +74,14 @@ type setupRequest struct {
 }
 
 type setupCheck struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"` // pass, fail, not_run
-	Detail   string `json:"detail"`
-	Impact   string `json:"impact,omitempty"`
-	Cleanup  string `json:"cleanup,omitempty"`
-	Optional bool   `json:"optional,omitempty"`
+	Name        string `json:"name"`
+	Status      string `json:"status"` // pass, fail, not_run
+	Code        string `json:"code,omitempty"`
+	Detail      string `json:"detail"`
+	Impact      string `json:"impact,omitempty"`
+	Cleanup     string `json:"cleanup,omitempty"`
+	Remediation string `json:"remediation,omitempty"`
+	Optional    bool   `json:"optional,omitempty"`
 }
 
 type setupCheckResult struct {
@@ -1354,7 +1356,10 @@ func querySetupResolvableName(ctx context.Context, address, name string) (global
 	defer cancel()
 	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, "+comments", "+answer", name, "A", "+time=2", "+tries=1").CombinedOutput()
 	if err != nil {
-		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Detail: "无法查询测试域名正常解析基线"}
+		if commandCtx.Err() != nil {
+			return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Code: "DNS_TIMEOUT", Detail: "查询测试域名正常解析基线超时", Remediation: "检查递归节点地址、端口和 DNSGuard 到 BIND 的网络路径"}
+		}
+		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Code: "DNS_UNREACHABLE", Detail: "无法查询测试域名正常解析基线", Remediation: "确认递归节点可达且允许来自 DNSGuard 的测试查询"}
 	}
 	status := ""
 	inAnswer := false
@@ -1375,10 +1380,14 @@ func querySetupResolvableName(ctx context.Context, address, name string) (global
 		}
 	}
 	if status != "NOERROR" {
-		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Detail: "测试域名正常解析基线 RCODE=" + statusOrUnknown(status) + "，需要 NOERROR"}
+		code := "BASELINE_RCODE"
+		if status == "REFUSED" || status == "SERVFAIL" {
+			code = "DNS_" + status
+		}
+		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Code: code, Detail: "测试域名正常解析基线 RCODE=" + statusOrUnknown(status) + "，需要 NOERROR", Remediation: "启用 Global Deny 前使用一个已确认有 Answer 的正常域名建立基线；不要用 NXDOMAIN 作为对照"}
 	}
 	if !answerFound {
-		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Detail: "测试域名正常解析基线没有 Answer；不能使用不存在或无数据的名称进行 DENY 验收"}
+		return globalDenyBaseline{}, setupCheck{Name: "全局拒绝递归基线", Status: "fail", Code: "BASELINE_NO_ANSWER", Detail: "测试域名正常解析基线没有 Answer；不能使用不存在或无数据的名称进行 DENY 验收", Remediation: "更换为当前递归环境中确实能返回 Answer 的测试域名后重试"}
 	}
 	return globalDenyBaseline{CheckName: name, Recursor: address, RCode: status, Observed: time.Now().UTC().Format(time.RFC3339)}, setupCheck{Name: "全局拒绝递归基线", Status: "pass", Detail: "测试域名在启用 DENY 前返回 NOERROR 且存在 Answer，可用于后续对照：" + name}
 }
@@ -1390,12 +1399,15 @@ func querySetupGlobalDenyTrigger(ctx context.Context, address, zone string) setu
 	name := "*." + strings.TrimSuffix(zone, ".") + "."
 	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, "+norecurse", "+comments", name, "CNAME", "+time=2", "+tries=1").CombinedOutput()
 	if err != nil {
-		return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Detail: "无法读取 deny Zone 的通配触发项"}
+		if commandCtx.Err() != nil {
+			return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Code: "DNS_TIMEOUT", Detail: "读取 deny Zone 通配触发项超时", Remediation: "检查权威 Primary 地址、端口和 DNSGuard 到 BIND 的网络路径"}
+		}
+		return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Code: "ZONE_UNREACHABLE", Detail: "无法读取 deny Zone 的通配触发项", Remediation: "确认 Global Deny Zone 已加载，并在最终 named.conf 上完成 reload"}
 	}
 	if err := validateGlobalDenyTriggerResponse(string(output), name); err != nil {
-		return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Detail: err.Error()}
+		return setupCheck{Name: "全局拒绝根级通配触发项", Status: "fail", Code: "RPZ_TRIGGER_INVALID", Detail: err.Error(), Remediation: "检查权威回答的 RCODE、AA、owner、RR Type 和 CNAME 目标；不要仅凭客户端 NXDOMAIN 判定成功"}
 	}
-	return setupCheck{Name: "全局拒绝根级通配触发项", Status: "pass", Detail: "已从权威回答读取 * CNAME .，Zone=" + zone}
+	return setupCheck{Name: "全局拒绝根级通配触发项", Status: "pass", Code: "RPZ_TRIGGER_VERIFIED", Detail: "已从权威回答读取 * CNAME .，Zone=" + zone}
 }
 
 func normalizeDNSName(name string) string {
@@ -1466,19 +1478,71 @@ func querySetupSOA(ctx context.Context, name, address, zone string) (string, set
 	host, port := splitDNSAddress(address)
 	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, "+norecurse", zone, "SOA", "+short", "+time=2", "+tries=1").Output()
+	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, "+norecurse", zone, "SOA", "+noall", "+comments", "+answer", "+time=2", "+tries=1").CombinedOutput()
+	text := string(output)
+	rcode := digResponseCode(text)
+	if rcode != "" && rcode != "NOERROR" {
+		return "", setupDNSFailure(name, rcode, zone)
+	}
 	if err != nil {
-		return "", setupCheck{Name: name, Status: "fail", Detail: "无法读取 SOA：网络不可达或 Zone 不存在"}
+		if commandCtx.Err() != nil {
+			return "", setupCheck{Name: name, Status: "fail", Code: "DNS_TIMEOUT", Detail: "SOA 查询超时，未能确认 BIND 响应", Remediation: "检查 BIND 地址、TCP/UDP 53 路径和容器网络后重试"}
+		}
+		return "", setupCheck{Name: name, Status: "fail", Code: "DNS_UNREACHABLE", Detail: "无法连接到 BIND，SOA 未完成查询", Remediation: "确认节点正在运行、地址和端口正确，并检查 DNSGuard 到 BIND 的网络路径"}
 	}
-	fields := strings.Fields(string(output))
-	if len(fields) < 3 {
-		return "", setupCheck{Name: name, Status: "fail", Detail: "SOA 响应格式无效"}
+	serial := soaSerialFromDig(text)
+	if serial == "" {
+		return "", setupCheck{Name: name, Status: "fail", Code: "SOA_MISSING", Detail: "响应为 " + statusOrUnknown(rcode) + "，但未找到有效 SOA Answer", Remediation: "确认 Zone 已声明并被 named.conf include，完成 reload 后再重试"}
 	}
-	serial := fields[2]
 	if _, err := strconv.ParseUint(serial, 10, 32); err != nil {
-		return "", setupCheck{Name: name, Status: "fail", Detail: "SOA Serial 无效"}
+		return "", setupCheck{Name: name, Status: "fail", Code: "SOA_INVALID", Detail: "SOA Serial 无效", Remediation: "检查最终加载的 Zone 文件和 named-checkzone 输出"}
 	}
 	return serial, setupCheck{Name: name, Status: "pass", Detail: "可读取 Zone SOA，Serial=" + serial}
+}
+
+func digResponseCode(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		marker := strings.Index(line, "status: ")
+		if marker < 0 {
+			continue
+		}
+		value := strings.TrimSpace(strings.SplitN(line[marker+len("status: "):], ",", 2)[0])
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func soaSerialFromDig(output string) string {
+	fields := strings.Fields(output)
+	for index, field := range fields {
+		if strings.EqualFold(field, "SOA") && len(fields) > index+3 {
+			return fields[index+3]
+		}
+	}
+	// `dig +short` output is retained as a compatibility fallback for test
+	// harnesses and older callers: mname rname serial ...
+	if len(fields) >= 3 && !strings.HasPrefix(fields[0], ";;") {
+		return fields[2]
+	}
+	return ""
+}
+
+func setupDNSFailure(name, rcode, zone string) setupCheck {
+	check := setupCheck{Name: name, Status: "fail", Code: "DNS_" + rcode, Detail: "BIND 返回 RCODE=" + rcode + "，未能读取 " + zone + " 的 SOA"}
+	switch rcode {
+	case "REFUSED":
+		check.Remediation = "检查 BIND allow-query/递归 ACL、监听地址及 DNSGuard 所在网络；不要把 REFUSED 当作网络超时"
+	case "SERVFAIL":
+		check.Remediation = "检查 Zone 是否加载、named 日志和 named-checkconf -z；修复 BIND 后再重试"
+	case "NXDOMAIN":
+		check.Code = "ZONE_NOT_LOADED"
+		check.Remediation = "确认该 Zone 已写入最终加载的 named.conf 并完成 reload；不要直接覆盖现有 Zone"
+	default:
+		check.Remediation = "检查 BIND 响应、Zone 配置和节点网络后重试"
+	}
+	return check
 }
 
 func querySetupRcode(ctx context.Context, address, name string) (string, setupCheck) {
@@ -1487,18 +1551,19 @@ func querySetupRcode(ctx context.Context, address, name string) (string, setupCh
 	defer cancel()
 	output, err := exec.CommandContext(commandCtx, "dig", "@"+host, "-p", port, name, "A", "+comments", "+time=2", "+tries=1").CombinedOutput()
 	if err != nil {
-		return "", setupCheck{Name: "全局拒绝递归效果", Status: "fail", Detail: "无法读取递归策略 RCODE"}
-	}
-	for _, line := range strings.Split(string(output), "\n") {
-		if marker := strings.Index(line, "status: "); marker >= 0 {
-			value := strings.TrimSpace(strings.SplitN(line[marker+len("status: "):], ",", 2)[0])
-			if value == "" {
-				break
-			}
-			return value, setupCheck{Name: "全局拒绝递归效果", Status: "pass", Detail: "递归测试返回 RCODE=" + value + "，测试名=" + name}
+		if commandCtx.Err() != nil {
+			return "", setupCheck{Name: "全局拒绝递归效果", Status: "fail", Code: "DNS_TIMEOUT", Detail: "递归策略查询超时", Remediation: "检查递归节点地址和 DNSGuard 到 BIND 的网络路径"}
 		}
+		return "", setupCheck{Name: "全局拒绝递归效果", Status: "fail", Code: "DNS_UNREACHABLE", Detail: "无法读取递归策略 RCODE", Remediation: "确认 Secondary 递归服务已启动且允许 DNSGuard 测试地址"}
 	}
-	return "", setupCheck{Name: "全局拒绝递归效果", Status: "fail", Detail: "递归响应缺少有效 RCODE"}
+	value := digResponseCode(string(output))
+	if value == "" {
+		return "", setupCheck{Name: "全局拒绝递归效果", Status: "fail", Code: "DNS_RESPONSE_INVALID", Detail: "递归响应缺少有效 RCODE", Remediation: "确认递归节点返回标准 DNS 响应后重试"}
+	}
+	if value == "NXDOMAIN" {
+		return value, setupCheck{Name: "全局拒绝递归效果", Status: "pass", Code: "RPZ_DENY_CONFIRMED", Detail: "递归测试返回 RCODE=NXDOMAIN，测试名=" + name}
+	}
+	return value, setupCheck{Name: "全局拒绝递归效果", Status: "fail", Code: "RPZ_DENY_NOT_CONFIRMED", Detail: "递归测试返回 RCODE=" + value + "，预期 NXDOMAIN", Remediation: "确认 Global Deny 已由 BIND 管理员启用，并使用启用前保存的正常解析基线"}
 }
 
 func splitDNSAddress(address string) (string, string) {
@@ -1513,18 +1578,18 @@ func setupTSIGProbe(ctx context.Context, request setupRequest) setupCheck {
 	host, port := splitDNSAddress(request.Primary.Address)
 	buffer := make([]byte, 6)
 	if _, err := rand.Read(buffer); err != nil {
-		return setupCheck{Name: "TSIG 动态更新权限", Status: "fail", Detail: "无法生成受控测试记录名"}
+		return setupCheck{Name: "TSIG 动态更新权限", Status: "fail", Code: "TSIG_PROBE_GENERATION", Detail: "无法生成受控测试记录名", Remediation: "检查 API 随机源和初始化环境后重试"}
 	}
 	probe := "_dnsguard-bootstrap-" + hex.EncodeToString(buffer) + "." + request.Zone
 	addInput := fmt.Sprintf("server %s %s\nzone %s\nupdate add %s 30 TXT \"dnsguard-setup-probe\"\nsend\n", host, port, request.Zone, probe)
 	if err := runSetupNSUpdate(ctx, request.TSIGKeyPath, addInput); err != nil {
-		return setupCheck{Name: "TSIG 动态更新权限", Status: "fail", Detail: "受控 TXT 写入失败；只读检查不能证明 TSIG 写权限", Impact: "本次验证尝试向 Primary Zone 写入临时 TXT", Cleanup: "未确认写入成功，需人工核对该临时记录"}
+		return setupCheck{Name: "TSIG 动态更新权限", Status: "fail", Code: "TSIG_UPDATE_FAILED", Detail: "受控 TXT 写入失败；只读检查不能证明 TSIG 写权限", Impact: "本次验证尝试向 Primary Zone 写入临时 TXT", Cleanup: "未确认写入成功，需人工核对该临时记录", Remediation: "检查 TSIG Key 文件权限、Key 名称/算法与 Primary allow-update 配置；不要重新生成生产 Key"}
 	}
 	cleanup := fmt.Sprintf("server %s %s\nzone %s\nupdate delete %s TXT\nsend\n", host, port, request.Zone, probe)
 	if err := runSetupNSUpdate(ctx, request.TSIGKeyPath, cleanup); err != nil {
-		return setupCheck{Name: "TSIG 动态更新权限", Status: "fail", Detail: "写入成功但临时 TXT 清理失败；禁止继续初始化", Impact: "Primary 可能仍保留临时 TXT", Cleanup: "请人工删除临时记录 " + probe}
+		return setupCheck{Name: "TSIG 动态更新权限", Status: "fail", Code: "TSIG_CLEANUP_FAILED", Detail: "写入成功但临时 TXT 清理失败；禁止继续初始化", Impact: "Primary 可能仍保留临时 TXT", Cleanup: "请人工删除临时记录 " + probe, Remediation: "先确认该精确探针记录的清理状态，再修复 TSIG 或动态更新权限"}
 	}
-	return setupCheck{Name: "TSIG 动态更新权限", Status: "pass", Detail: "受控 TXT 写入和清理均成功，TSIG 动态更新权限已验证", Impact: "验证期间曾向 Primary Zone 写入临时 TXT", Cleanup: "临时 TXT 已删除"}
+	return setupCheck{Name: "TSIG 动态更新权限", Status: "pass", Code: "TSIG_VERIFIED", Detail: "受控 TXT 写入和清理均成功，TSIG 动态更新权限已验证", Impact: "验证期间曾向 Primary Zone 写入临时 TXT", Cleanup: "临时 TXT 已删除"}
 }
 
 func runSetupNSUpdate(parent context.Context, keyPath, input string) error {
