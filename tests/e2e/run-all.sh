@@ -178,7 +178,20 @@ EOF
   cp "$KEY_FILE" "$BIND_DIR/primary/etc-bind/keys/rpz-manager.key"
   cp "$KEY_FILE" "$BIND_DIR/secondary/etc-bind/keys/rpz-manager.key"
   chmod 0640 "$KEY_FILE" "$BIND_DIR"/*/etc-bind/keys/rpz-manager.key
-  chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind
+  # GitHub-hosted runners execute this script as an unprivileged user.  Prefer
+  # the direct ownership change, then use the runner's non-interactive sudo;
+  # never prompt or weaken host permissions.  The final chmod fallback keeps
+  # the test-only tree readable/writable by the container when neither is
+  # available, without touching any host or production path.
+  if ! chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
+      :
+    else
+      chmod -R u+rwX,go+rwX "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind
+      chmod 0644 "$BIND_DIR"/*/etc-bind/keys/rpz-manager.key
+      printf '%s\n' '[e2e] no ownership change available; using isolated test-tree permissions' >&2
+    fi
+  fi
 }
 write_named_conf() {
   cat >"$BIND_DIR/primary/etc-bind/named.conf" <<EOF
