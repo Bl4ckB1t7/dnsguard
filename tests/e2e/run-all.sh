@@ -569,14 +569,20 @@ EOF
   done
   return 1
 }
+isolated_sed() {
+  if sed -i "$@" 2>/dev/null; then
+    return 0
+  fi
+  command -v sudo >/dev/null 2>&1 && sudo -n sed -i "$@"
+}
 enable_global_deny() {
-  sed -i 's#// zone "global-deny.rpz.local";#zone "global-deny.rpz.local";#' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf"
+  isolated_sed 's#// zone "global-deny.rpz.local";#zone "global-deny.rpz.local";#' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf"
   # Keep the isolated recursive fixture aligned with the documented
   # qname-wait-recurse=no profile. The option is part of the response-policy
   # statement and therefore belongs on its closing line.
   # This is test-only BIND configuration; the product never changes an
   # administrator's production recursion settings.
-  sed -i 's/^};$/} qname-wait-recurse no;/' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf"
+  isolated_sed 's/^};$/} qname-wait-recurse no;/' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf"
   docker exec "$BIND_PRIMARY" named-checkconf -z /etc/bind/named.conf >/dev/null
   docker exec "$BIND_SECONDARY" named-checkconf -z /etc/bind/named.conf >/dev/null
   docker exec "$BIND_PRIMARY" rndc reload >/dev/null 2>&1 || docker kill -s HUP "$BIND_PRIMARY" >/dev/null
