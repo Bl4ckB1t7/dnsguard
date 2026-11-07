@@ -519,6 +519,11 @@ EOF
   bind_user="$(id -un)"
   bind_group="$(id -gn)"
   make_named_checkconf_wrapper "$host_etc" "$host_lib" "$BIND_DIR/primary/cache-bind"
+  # The package apply runs as the CI/host user before the mounted BIND tree is
+  # handed back to uid 53.  Keep this isolated parent writable for that
+  # operation; the post-apply permission step below restores the container
+  # ownership/permissions without touching any external path.
+  chmod u+rwx,go+rwx "$host_lib" "$BIND_DIR/primary/cache-bind"
   # The package is generated for the container's canonical paths. For the
   # host-side apply script, translate only the isolated test tree paths, then
   # restore the canonical paths before named loads the mounted configuration.
@@ -528,6 +533,7 @@ EOF
   host_etc="$BIND_DIR/secondary/etc-bind"
   host_lib="$BIND_DIR/secondary/lib-bind"
   make_named_checkconf_wrapper "$host_etc" "$host_lib" "$BIND_DIR/secondary/cache-bind"
+  chmod u+rwx,go+rwx "$host_lib" "$BIND_DIR/secondary/cache-bind"
   sed -i "s#${BIND_DIR}/primary/etc-bind#$host_etc#g; s#${BIND_DIR}/primary/lib-bind#$host_lib#g" "$package_root"/config/*.conf
   env BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --check secondary
   env BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --apply secondary
