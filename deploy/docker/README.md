@@ -51,6 +51,8 @@ sudo cat ./secrets/bootstrap.token
 若设置 `DNSGUARD_SECRET_DIR`，读取该目录下的 `bootstrap.token`；以安装脚本最后输出的实际
 路径为准。不要将 Token 写入聊天、截图或普通日志。
 
+安全默认值：Web 仅绑定宿主机 `127.0.0.1:443`，API 不发布宿主机端口，BIND 也不由生产 Compose 启动或发布端口。只有在管理员明确指定受控 VPN/本机地址时，才设置 `DNSGUARD_WEB_BIND_IP`；不要使用 `0.0.0.0`，也不要依赖 Docker 默认行为代替防火墙和认证。
+
 ## 3. Web 初始化：先平台，后 BIND
 
 1. 打开安装输出的 HTTPS 地址。
