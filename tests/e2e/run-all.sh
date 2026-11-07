@@ -22,6 +22,7 @@ SECRET_DIR="$RUNTIME/secrets"
 TLS_DIR="$RUNTIME/tls"
 BIND_LOG_DIR="$RUNTIME/bind-logs"
 ENV_FILE="$RUNTIME/dnsguard.env"
+BUILD_OVERRIDE="$RUNTIME/compose.e2e-build.yaml"
 REPORT="$RUNTIME/acceptance-report.md"
 COOKIE_JAR="$RUNTIME/cookies.txt"
 STORAGE_STATE="$ROOT_DIR/tests/e2e/playwright-storage.json"
@@ -29,7 +30,7 @@ WEB_PORT="${E2E_WEB_PORT:-}"
 WEB_URL="https://127.0.0.1:${WEB_PORT}"
 KEY_FILE="$SECRET_DIR/rpz-manager.key"
 KEEP="${E2E_KEEP:-false}"
-COMPOSE=(docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/compose.bind-network.yaml")
+COMPOSE=(docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/compose.bind-network.yaml" -f "$BUILD_OVERRIDE")
 BIND_COMPOSE=(docker compose -p "$PROJECT-bind" -f "$BIND_DIR/compose.yaml")
 declare -a CASE_NAMES=() CASE_STATUS=() CASE_EVIDENCE=()
 
@@ -283,6 +284,21 @@ TRUSTED_PROXY_CIDRS=$INTERNAL_SUBNET
 DNSGUARD_WEB_BIND_IP=127.0.0.1
 DNSGUARD_WEB_PORT=$WEB_PORT
 DNSGUARD_ENV_FILE=$ENV_FILE
+EOF
+  # The production Compose file deliberately uses network: host while
+  # downloading build dependencies. GitHub-hosted BuildKit runners may require
+  # an explicit network.host entitlement for that setting. The isolated E2E
+  # build does not need host networking, so override only the build-time
+  # network without changing the production Compose architecture or runtime
+  # networks.
+  cat >"$BUILD_OVERRIDE" <<'EOF'
+services:
+  dnsguard-api:
+    build:
+      network: default
+  dnsguard-web:
+    build:
+      network: default
 EOF
   chmod 0640 "$ENV_FILE"
   chown -R 10001:10001 "$DATA_DIR" "$SECRET_DIR" 2>/dev/null || true
