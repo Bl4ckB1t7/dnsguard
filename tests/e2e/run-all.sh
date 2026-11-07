@@ -32,6 +32,9 @@ WEB_PORT="${E2E_WEB_PORT:-}"
 WEB_URL="https://127.0.0.1:${WEB_PORT}"
 KEY_FILE="$SECRET_DIR/rpz-manager.key"
 KEEP="${E2E_KEEP:-false}"
+DNSSEC_OBSERVE="${E2E_DNSSEC_OBSERVE:-false}"
+DNSSEC_OBSERVATION_STATUS="NOT RUN"
+DNSSEC_OBSERVATION_DETAIL=""
 COMPOSE=(docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/compose.bind-network.yaml" -f "$BUILD_OVERRIDE")
 BIND_COMPOSE=(docker compose -p "$PROJECT-bind" -f "$BIND_DIR/compose.yaml")
 declare -a CASE_NAMES=() CASE_STATUS=() CASE_EVIDENCE=()
@@ -55,7 +58,13 @@ case_run() {
   safe_name="${name//[^a-zA-Z0-9_-]/_}"
   evidence="$RUNTIME/evidence/${#CASE_NAMES[@]}-${safe_name}.log"
   set +e; (set -e; "$fn") >"$evidence" 2>&1; code=$?; set -e
-  if ((code == 0)); then record "$name" PASS "$evidence"; else record "$name" FAIL "$evidence"; fi
+  if ((code == 0)); then
+    record "$name" PASS "$evidence"
+  elif ((code == 2)); then
+    record "$name" 'NOT RUN' "$evidence"
+  else
+    record "$name" FAIL "$evidence"
+  fi
 }
 require_case() {
   local name="$1" fn="$2"
@@ -221,6 +230,10 @@ EOF
   fi
 }
 write_named_conf() {
+  local upstream_logging=''
+  if [[ "$DNSSEC_OBSERVE" == true ]]; then
+    upstream_logging='logging { channel dnssec_query_log { file "/var/log/bind/query.log" versions 2 size 1m; severity info; print-time yes; }; category queries { dnssec_query_log; }; };'
+  fi
   cat >"$BIND_DIR/primary/etc-bind/named.conf" <<EOF
 options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion no; allow-query { 127.0.0.1; $API_IP; $SECONDARY_IP; }; allow-recursion { none; }; dnssec-validation no; response-policy { zone "rpz.local"; } qname-wait-recurse no; notify yes; also-notify { $SECONDARY_IP; }; };
 include "/etc/bind/keys/rpz-manager.key";
@@ -235,6 +248,7 @@ zone "global-deny.rpz.local" { type secondary; primaries { $PRIMARY_IP key rpz-m
 EOF
   mkdir -p "$BIND_DIR/upstream/etc-bind/keys"
   cat >"$BIND_DIR/upstream/etc-bind/named.conf" <<EOF
+$upstream_logging
 options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion no; allow-query { $SECONDARY_IP; 127.0.0.1; }; dnssec-validation no; };
 zone "app.test" { type primary; file "/var/lib/bind/app.test.zone"; };
 EOF
@@ -515,6 +529,53 @@ check_global_dns() {
   printf 'global_primary_serial=%s\nglobal_secondary_serial=%s\ntrigger=%s\nrecursive_after_deny=%s\nwhitelist_after_deny=%s\nnested_whitelist_after_deny=%s\na_redirect_after_deny=%s\nunknown_qname=%s\nunknown_rcode=%s\n' "$p" "$s" "$trigger" "$r" "$allow" "$nested" "$redirect" "$unknown" "$unknown_rcode"
   [[ -n "$p" && "$p" == "$s" && "$trigger" == '.' && -z "$r" && "$allow" == '192.0.2.43' && "$nested" == '192.0.2.44' && "$redirect" == '192.0.2.99' && "$unknown_rcode" == 'NXDOMAIN' ]]
 }
+check_dnssec_upstream_observation() {
+  local qname_do0 qname_do1 rcode_do0 rcode_do1 log_file label_base observed_do0 observed_do1
+  if [[ "$DNSSEC_OBSERVE" != true ]]; then
+    printf 'NOT RUN: set E2E_DNSSEC_OBSERVE=true to enable isolated upstream query logging\n'
+    DNSSEC_OBSERVATION_STATUS='NOT RUN'
+    DNSSEC_OBSERVATION_DETAIL='opt-in only; no external DNSLog or production resolver was used'
+    return 2
+  fi
+  log_file="$BIND_DIR/upstream/log-bind/query.log"
+  label_base="dnssec-${RUN_ID//[^[:alnum:]]/}"
+  qname_do0="${label_base}-do0.app.test."
+  qname_do1="${label_base}-do1.app.test."
+  for _ in $(seq 1 20); do
+    [[ -f "$log_file" ]] && break
+    sleep 1
+  done
+  [[ -f "$log_file" ]] || {
+    printf 'FAIL: controlled upstream query log was not created: %s\n' "$log_file"
+    DNSSEC_OBSERVATION_STATUS='FAIL'
+    DNSSEC_OBSERVATION_DETAIL='upstream logging was requested but no log file was available'
+    return 1
+  }
+  rcode_do0="$(docker exec "$BIND_SECONDARY" dig +nodnssec +recurse +time=2 +tries=1 +noall +comments @127.0.0.1 "$qname_do0" A 2>/dev/null | awk '/status:/{gsub(",", "", $6); print $6; exit}' || true)"
+  rcode_do1="$(docker exec "$BIND_SECONDARY" dig +dnssec +recurse +time=2 +tries=1 +noall +comments @127.0.0.1 "$qname_do1" A 2>/dev/null | awk '/status:/{gsub(",", "", $6); print $6; exit}' || true)"
+  sleep 2
+  observed_do0=false
+  observed_do1=false
+  if grep -Fq -- "${qname_do0%.}" "$log_file"; then
+    observed_do0=true
+  fi
+  if grep -Fq -- "${qname_do1%.}" "$log_file"; then
+    observed_do1=true
+  fi
+  printf 'do0_qname=%s\ndo0_rcode=%s\ndo0_upstream_observed=%s\ndo1_qname=%s\ndo1_rcode=%s\ndo1_upstream_observed=%s\n' "$qname_do0" "$rcode_do0" "$observed_do0" "$qname_do1" "$rcode_do1" "$observed_do1"
+  if [[ "$rcode_do0" != NXDOMAIN || "$rcode_do1" != NXDOMAIN ]]; then
+    DNSSEC_OBSERVATION_STATUS='FAIL'
+    DNSSEC_OBSERVATION_DETAIL="client RCODEs were not both NXDOMAIN (DO=0: ${rcode_do0:-empty}, DO=1: ${rcode_do1:-empty})"
+    return 1
+  fi
+  if [[ "$observed_do0" == true || "$observed_do1" == true ]]; then
+    DNSSEC_OBSERVATION_STATUS='FAIL'
+    DNSSEC_OBSERVATION_DETAIL='the complete randomized QNAME appeared in the isolated authoritative upstream query log; NXDOMAIN is not treated as containment'
+    return 1
+  fi
+  DNSSEC_OBSERVATION_STATUS='PASS'
+  DNSSEC_OBSERVATION_DETAIL='both queries returned NXDOMAIN and the complete randomized QNAME was not observed in the isolated upstream log'
+}
 create_storage_state() {
   local captcha_json captcha_id captcha_svg captcha_code
   captcha_json="$(curl -kfsS "$WEB_URL/api/auth/captcha")"
@@ -563,7 +624,7 @@ final_browser() {
 }
 write_report() {
   mkdir -p "$RUNTIME"
-  { echo '# DNSGuard isolated real E2E'; echo; echo "- run: $RUN_ID"; echo "- BIND image: internetsystemsconsortium/bind9:9.20"; echo "- resources: $PROJECT / $BIND_NETWORK / $INTERNAL_NETWORK"; echo '- topology: one Primary, one Secondary, and one isolated authoritative upstream fixture'; echo '- recursive profile: qname-wait-recurse no; DNSSEC DO=1/public DNSLog observation: NOT RUN'; echo '- production resources and real secrets: not accessed'; echo; echo '| test | status | evidence |'; echo '|---|---|---|'; for i in "${!CASE_NAMES[@]}"; do printf "| %s | %s | \`%s\` |\\n" "${CASE_NAMES[$i]}" "${CASE_STATUS[$i]}" "${CASE_EVIDENCE[$i]}"; done; } >"$REPORT"
+  { echo '# DNSGuard isolated real E2E'; echo; echo "- run: $RUN_ID"; echo "- BIND image: internetsystemsconsortium/bind9:9.20"; echo "- resources: $PROJECT / $BIND_NETWORK / $INTERNAL_NETWORK"; echo '- topology: one Primary, one Secondary, and one isolated authoritative upstream fixture'; echo "- recursive profile: qname-wait-recurse no; DNSSEC DO=1/upstream observation: $DNSSEC_OBSERVATION_STATUS"; echo "- DNSSEC observation detail: $DNSSEC_OBSERVATION_DETAIL"; echo '- public DNSLog observation: NOT RUN; no public resolver or external DNSLog was used'; echo '- production resources and real secrets: not accessed'; echo; echo '| test | status | evidence |'; echo '|---|---|---|'; for i in "${!CASE_NAMES[@]}"; do printf "| %s | %s | \`%s\` |\\n" "${CASE_NAMES[$i]}" "${CASE_STATUS[$i]}" "${CASE_EVIDENCE[$i]}"; done; } >"$REPORT"
 }
 main() {
   require_tools; mkdir -p "$RUNTIME"; write_env; start_api_web
@@ -575,6 +636,9 @@ main() {
   require_case 'real BIND config and two RPZ zones loaded' check_real_dns
   enable_global_deny
   require_case 'Global Deny follows whitelist and baseline gate' check_global_dns
+  case_run 'controlled DNSSEC DO=1 upstream observation' check_dnssec_upstream_observation
+  DNSSEC_OBSERVATION_STATUS="${CASE_STATUS[$((${#CASE_STATUS[@]} - 1))]}"
+  DNSSEC_OBSERVATION_DETAIL="see ${CASE_EVIDENCE[$((${#CASE_EVIDENCE[@]} - 1))]} for the separate DO=0 and DO=1 QNAME observations"
   export COMPOSE_PROJECT_NAME="$PROJECT" DNSGUARD_ENV_FILE="$ENV_FILE" DNSGUARD_BIND_NETWORK="$BIND_NETWORK" DNSGUARD_INTERNAL_NETWORK_NAME="$INTERNAL_NETWORK" DNSGUARD_DATA_DIR="$DATA_DIR" DNSGUARD_SECRET_DIR="$SECRET_DIR" DNSGUARD_TLS_DIR="$TLS_DIR" DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR"
   export DNSGUARD_COMPOSE_OVERRIDE="$BUILD_OVERRIDE"
   if ! bash "$ROOT_DIR/scripts/finalize-global-deny.sh"; then
