@@ -35,6 +35,7 @@ KEEP="${E2E_KEEP:-false}"
 DNSSEC_OBSERVE="${E2E_DNSSEC_OBSERVE:-false}"
 DNSSEC_OBSERVATION_STATUS="NOT RUN"
 DNSSEC_OBSERVATION_DETAIL=""
+RPZ_PACKAGE_ROOT=""
 COMPOSE=(docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/compose.bind-network.yaml" -f "$BUILD_OVERRIDE")
 BIND_COMPOSE=(docker compose -p "$PROJECT-bind" -f "$BIND_DIR/compose.yaml")
 declare -a CASE_NAMES=() CASE_STATUS=() CASE_EVIDENCE=()
@@ -67,9 +68,14 @@ case_run() {
   fi
 }
 require_case() {
-  local name="$1" fn="$2"
+  local name="$1" fn="$2" evidence
   case_run "$name" "$fn"
-  [[ "${CASE_STATUS[$((${#CASE_STATUS[@]} - 1))]}" == PASS ]] || die "验收项失败：$name；详见报告"
+  evidence="${CASE_EVIDENCE[$((${#CASE_EVIDENCE[@]} - 1))]}"
+  if [[ "${CASE_STATUS[$((${#CASE_STATUS[@]} - 1))]}" != PASS ]]; then
+    printf '验收证据（不含密钥）：%s\n' "$evidence" >&2
+    sed -n '1,240p' "$evidence" >&2 || true
+    die "验收项失败：$name；详见报告"
+  fi
 }
 need() { command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"; }
 require_tools() {
@@ -183,7 +189,7 @@ cleanup() {
 trap cleanup EXIT
 
 write_zone_files() {
-  mkdir -p "$BIND_DIR"/primary/{etc-bind,lib-bind,log-bind} "$BIND_DIR"/secondary/{etc-bind,lib-bind,log-bind} "$BIND_DIR"/upstream/{etc-bind,lib-bind,log-bind} "$BIND_DIR"/primary/etc-bind/keys "$BIND_DIR"/secondary/etc-bind/keys
+  mkdir -p "$BIND_DIR"/primary/{etc-bind,lib-bind,cache-bind,log-bind} "$BIND_DIR"/secondary/{etc-bind,lib-bind,cache-bind,log-bind} "$BIND_DIR"/upstream/{etc-bind,lib-bind,cache-bind,log-bind} "$BIND_DIR"/primary/etc-bind/keys "$BIND_DIR"/secondary/etc-bind/keys
   cat >"$BIND_DIR/primary/lib-bind/rpz.local.zone" <<'EOF'
 $TTL 60
 $ORIGIN rpz.local.
@@ -219,11 +225,11 @@ EOF
   # never prompt or weaken host permissions.  The final chmod fallback keeps
   # the test-only tree readable/writable by the container when neither is
   # available, without touching any host or production path.
-  if ! chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
-    if command -v sudo >/dev/null 2>&1 && sudo -n chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
+  if ! chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/cache-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n chown -R 53:53 "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/cache-bind "$BIND_DIR"/*/log-bind 2>/dev/null; then
       :
     else
-      chmod -R u+rwX,go+rwX "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/log-bind
+      chmod -R u+rwX,go+rwX "$BIND_DIR"/*/etc-bind/keys "$BIND_DIR"/*/lib-bind "$BIND_DIR"/*/cache-bind "$BIND_DIR"/*/log-bind
       chmod 0644 "$BIND_DIR"/*/etc-bind/keys/rpz-manager.key
       printf '%s\n' '[e2e] no ownership change available; using isolated test-tree permissions' >&2
     fi
@@ -235,16 +241,10 @@ write_named_conf() {
     upstream_logging='logging { channel dnssec_query_log { file "/var/log/bind/query.log" versions 2 size 1m; severity info; print-time yes; }; category queries { dnssec_query_log; }; };'
   fi
   cat >"$BIND_DIR/primary/etc-bind/named.conf" <<EOF
-options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion no; allow-query { 127.0.0.1; $API_IP; $SECONDARY_IP; }; allow-recursion { none; }; dnssec-validation no; response-policy { zone "rpz.local"; } qname-wait-recurse no; notify yes; also-notify { $SECONDARY_IP; }; };
-include "/etc/bind/keys/rpz-manager.key";
-zone "rpz.local" { type primary; file "/var/lib/bind/rpz.local.zone"; allow-update { key rpz-manager; }; allow-transfer { key rpz-manager; }; notify yes; };
-zone "global-deny.rpz.local" { type primary; file "/var/lib/bind/global-deny.rpz.local.zone"; allow-update { key rpz-manager; }; allow-transfer { key rpz-manager; }; notify yes; };
+options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion no; allow-query { 127.0.0.1; $API_IP; $SECONDARY_IP; }; allow-recursion { none; }; dnssec-validation no; };
 EOF
   cat >"$BIND_DIR/secondary/etc-bind/named.conf" <<EOF
-options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion yes; forward only; forwarders { $UPSTREAM_IP; }; allow-query { 127.0.0.1; $API_IP; }; allow-recursion { 127.0.0.1; $API_IP; }; allow-query-cache { 127.0.0.1; $API_IP; }; dnssec-validation no; response-policy { zone "rpz.local"; } qname-wait-recurse no; };
-include "/etc/bind/keys/rpz-manager.key";
-zone "rpz.local" { type secondary; primaries { $PRIMARY_IP key rpz-manager; }; file "/var/lib/bind/rpz.local.zone"; };
-zone "global-deny.rpz.local" { type secondary; primaries { $PRIMARY_IP key rpz-manager; }; file "/var/lib/bind/global-deny.rpz.local.zone"; };
+options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion yes; forward only; forwarders { $UPSTREAM_IP; }; allow-query { 127.0.0.1; $API_IP; }; allow-recursion { 127.0.0.1; $API_IP; }; allow-query-cache { 127.0.0.1; $API_IP; }; dnssec-validation no; };
 EOF
   mkdir -p "$BIND_DIR/upstream/etc-bind/keys"
   cat >"$BIND_DIR/upstream/etc-bind/named.conf" <<EOF
@@ -264,6 +264,7 @@ services:
     volumes:
       - ./primary/etc-bind:/etc/bind
       - ./primary/lib-bind:/var/lib/bind
+      - ./primary/cache-bind:/var/cache/bind
       - ./primary/log-bind:/var/log/bind
   secondary:
     image: internetsystemsconsortium/bind9:9.20
@@ -273,6 +274,7 @@ services:
     volumes:
       - ./secondary/etc-bind:/etc/bind
       - ./secondary/lib-bind:/var/lib/bind
+      - ./secondary/cache-bind:/var/cache/bind
       - ./secondary/log-bind:/var/log/bind
   upstream:
     image: internetsystemsconsortium/bind9:9.20
@@ -282,6 +284,7 @@ services:
     volumes:
       - ./upstream/etc-bind:/etc/bind
       - ./upstream/lib-bind:/var/lib/bind
+      - ./upstream/cache-bind:/var/cache/bind
       - ./upstream/log-bind:/var/log/bind
 networks:
   bind:
@@ -394,40 +397,46 @@ print(data["NetworkSettings"]["Networks"][network]["IPAddress"])
   [[ "$API_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die '无法确定隔离 API 在 BIND 网络中的地址'
   write_zone_files; write_named_conf; write_bind_compose
   docker run --rm --entrypoint named-checkconf \
-    -v "$BIND_DIR/primary/etc-bind:/etc/bind:ro" -v "$BIND_DIR/primary/lib-bind:/var/lib/bind:ro" \
+    -v "$BIND_DIR/primary/etc-bind:/etc/bind:ro" -v "$BIND_DIR/primary/lib-bind:/var/lib/bind:ro" -v "$BIND_DIR/primary/cache-bind:/var/cache/bind:ro" \
     internetsystemsconsortium/bind9:9.20 -z /etc/bind/named.conf >/dev/null
   docker run --rm --entrypoint named-checkzone \
     -v "$BIND_DIR/primary/lib-bind:/var/lib/bind:ro" internetsystemsconsortium/bind9:9.20 \
     rpz.local /var/lib/bind/rpz.local.zone >/dev/null
   docker run --rm --entrypoint named-checkconf \
-    -v "$BIND_DIR/secondary/etc-bind:/etc/bind:ro" -v "$BIND_DIR/secondary/lib-bind:/var/lib/bind:ro" \
+    -v "$BIND_DIR/secondary/etc-bind:/etc/bind:ro" -v "$BIND_DIR/secondary/lib-bind:/var/lib/bind:ro" -v "$BIND_DIR/secondary/cache-bind:/var/cache/bind:ro" \
     internetsystemsconsortium/bind9:9.20 -z /etc/bind/named.conf >/dev/null
   docker run --rm --entrypoint named-checkconf \
-    -v "$BIND_DIR/upstream/etc-bind:/etc/bind:ro" -v "$BIND_DIR/upstream/lib-bind:/var/lib/bind:ro" \
+    -v "$BIND_DIR/upstream/etc-bind:/etc/bind:ro" -v "$BIND_DIR/upstream/lib-bind:/var/lib/bind:ro" -v "$BIND_DIR/upstream/cache-bind:/var/cache/bind:ro" \
     internetsystemsconsortium/bind9:9.20 -z /etc/bind/named.conf >/dev/null
   docker run --rm --entrypoint named-checkzone \
     -v "$BIND_DIR/upstream/lib-bind:/var/lib/bind:ro" internetsystemsconsortium/bind9:9.20 \
     app.test /var/lib/bind/app.test.zone >/dev/null
   "${BIND_COMPOSE[@]}" up -d >/dev/null
   for _ in $(seq 1 90); do
-    docker exec "$BIND_PRIMARY" dig +tcp +time=1 +tries=1 @127.0.0.1 rpz.local SOA +short 2>/dev/null | grep -q '[0-9]' && break; sleep 1
+    docker exec "$BIND_PRIMARY" dig +tcp +time=1 +tries=1 @127.0.0.1 version.bind CH TXT +noall +comments >/dev/null 2>&1 && break
+    sleep 1
   done
-  docker exec "$BIND_PRIMARY" dig +tcp +time=2 +tries=1 @127.0.0.1 rpz.local SOA +short >/dev/null
+  docker exec "$BIND_PRIMARY" dig +tcp +time=2 +tries=1 @127.0.0.1 version.bind CH TXT +noall +comments >/dev/null
   for _ in $(seq 1 90); do
-    docker exec "$BIND_SECONDARY" dig +tcp +time=1 +tries=1 @127.0.0.1 rpz.local SOA +short 2>/dev/null | grep -q '[0-9]' && return 0; sleep 1
+    docker exec "$BIND_SECONDARY" dig +tcp +time=1 +tries=1 @127.0.0.1 version.bind CH TXT +noall +comments >/dev/null 2>&1 && return 0
+    sleep 1
   done
   return 1
 }
-browser_initial() {
+browser_package() {
   local bootstrap_token
   bootstrap_token="$(cat "$SECRET_DIR/bootstrap.token")"
-  export E2E_REAL_BASE_URL="$WEB_URL" E2E_BOOTSTRAP_TOKEN="$bootstrap_token" E2E_TSIG_PATH=/run/dnsguard-secrets/rpz-manager.key E2E_PRIMARY="$PRIMARY_IP:53" E2E_SECONDARY="$SECONDARY_IP:53" E2E_REAL_PHASE=full
+  export E2E_REAL_BASE_URL="$WEB_URL" E2E_BOOTSTRAP_TOKEN="$bootstrap_token" E2E_TSIG_PATH=/run/dnsguard-secrets/rpz-manager.key E2E_PRIMARY="$PRIMARY_IP:53" E2E_SECONDARY="$SECONDARY_IP:53" E2E_REAL_PHASE=package E2E_PACKAGE_PATH="$RUNTIME/dnsguard-rpz-package.zip" E2E_PLATFORM_STORAGE_STATE="$RUNTIME/package-storage.json"
   (cd "$ROOT_DIR" && npx playwright test tests/ui/real-deployment.spec.ts --project=desktop)
 }
-browser_platform() {
+browser_bind() {
   local bootstrap_token
   bootstrap_token="$(cat "$SECRET_DIR/bootstrap.token")"
-  export E2E_REAL_BASE_URL="$WEB_URL" E2E_PLATFORM_STORAGE_STATE="$RUNTIME/platform-storage.json" E2E_BOOTSTRAP_TOKEN="$bootstrap_token" E2E_TSIG_PATH=/run/dnsguard-secrets/rpz-manager.key E2E_PRIMARY="$PRIMARY_IP:53" E2E_SECONDARY="$SECONDARY_IP:53" E2E_REAL_PHASE=platform
+  # Platform bootstrap creates the administrator but does not create a
+  # browser login session. Authenticate through the same captcha/login API
+  # used by the real UI before opening the second browser phase.
+  create_storage_state
+  export E2E_REAL_BASE_URL="$WEB_URL" E2E_STORAGE_STATE="$STORAGE_STATE" E2E_BOOTSTRAP_TOKEN="$bootstrap_token" E2E_TSIG_PATH=/run/dnsguard-secrets/rpz-manager.key E2E_PRIMARY="$PRIMARY_IP:53" E2E_SECONDARY="$SECONDARY_IP:53" E2E_REAL_PHASE=bind
   (cd "$ROOT_DIR" && npx playwright test tests/ui/real-deployment.spec.ts --project=desktop)
 }
 api_gate_before_bind() {
@@ -435,8 +444,145 @@ api_gate_before_bind() {
   code="$(curl -ksS -o "$RUNTIME/pre-bind-publish.json" -w '%{http_code}' -X POST "$WEB_URL/api/dns/rpz/publish" -H 'Content-Type: application/json' -d '{}')"
   [[ "$code" == 428 ]]
 }
+extract_package_safely() {
+  local archive="$RUNTIME/dnsguard-rpz-package.zip" target="$RUNTIME/rpz-package" nested
+  [[ -s "$archive" ]] || { printf 'FAIL: Web did not produce an RPZ package: %s\n' "$archive"; return 1; }
+  mkdir -p "$target"
+  python3 - "$archive" "$target" <<'PY'
+import pathlib, stat, sys, zipfile
+archive, target = sys.argv[1:]
+root = pathlib.Path(target).resolve()
+with zipfile.ZipFile(archive) as package:
+    for member in package.infolist():
+        name = member.filename
+        path = pathlib.PurePosixPath(name)
+        if path.is_absolute() or '..' in path.parts:
+            raise SystemExit(f'unsafe archive path: {name}')
+        mode = (member.external_attr >> 16) & 0o170000
+        if mode == stat.S_IFLNK:
+            raise SystemExit(f'symbolic links are not allowed: {name}')
+        destination = (root / pathlib.Path(*path.parts)).resolve()
+        if root != destination and root not in destination.parents:
+            raise SystemExit(f'archive path escapes target: {name}')
+        if member.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with package.open(member) as source, destination.open('xb') as output:
+            output.write(source.read())
+        destination.chmod(0o750 if member.filename.endswith('.sh') else 0o640)
+PY
+  # The API ZIP intentionally contains a single top-level package directory.
+  # Accept that layout as well as a flat archive, but never guess through more
+  # than one directory: the safe extractor above already rejected traversal.
+  nested=""
+  if [[ -x "$target/apply-rpz-config.sh" && -x "$target/verify-rpz-config.sh" ]]; then
+    nested="$target"
+  elif [[ -x "$target/dnsguard-rpz-package/apply-rpz-config.sh" && -x "$target/dnsguard-rpz-package/verify-rpz-config.sh" ]]; then
+    nested="$target/dnsguard-rpz-package"
+  fi
+  [[ -n "$nested" ]] || { printf 'FAIL: extracted RPZ package is incomplete\n'; return 1; }
+  RPZ_PACKAGE_ROOT="$nested"
+}
+apply_downloaded_package() {
+  local package_root host_etc host_lib bind_user bind_group
+  extract_package_safely
+  package_root="$RPZ_PACKAGE_ROOT"
+  # The package is executed by host Bash, but its final named.conf contains
+  # container paths such as /var/cache/bind.  Run named-checkconf through the
+  # isolated BIND image so the package check validates the same mounted tree
+  # that the running container will load.  This wrapper is test-only and never
+  # changes a host or production BIND configuration.
+  local check_tools="$RUNTIME/check-tools"
+  mkdir -p "$check_tools"
+  make_named_checkconf_wrapper() {
+    local etc_dir="$1" lib_dir="$2" cache_dir="$3"
+    cat >"$check_tools/named-checkconf" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+args=("\$@")
+# shellcheck disable=SC2154 # args is assigned immediately above in the generated wrapper.
+for i in "\${!args[@]}"; do
+  if [[ "\${args[i]}" == "$etc_dir/named.conf" ]]; then
+    args[i]=/etc/bind/named.conf
+  fi
+done
+exec docker run --rm --entrypoint named-checkconf \\
+  -v "$etc_dir:/etc/bind:ro" -v "$lib_dir:/var/lib/bind:ro" -v "$cache_dir:/var/cache/bind:ro" \\
+  internetsystemsconsortium/bind9:9.20 "\${args[@]}"
+EOF
+    chmod 0750 "$check_tools/named-checkconf"
+  }
+  export PATH="$check_tools:$PATH"
+  run_package_script() {
+    if [[ "${EUID:-$(id -u)}" == 0 ]]; then
+      env "PATH=$check_tools:$PATH" "$@"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      sudo -n env "PATH=$check_tools:$PATH" "$@"
+    else
+      env "PATH=$check_tools:$PATH" "$@"
+    fi
+  }
+  host_etc="$BIND_DIR/primary/etc-bind"
+  host_lib="$BIND_DIR/primary/lib-bind"
+  bind_user="$(id -un)"
+  bind_group="$(id -gn)"
+  make_named_checkconf_wrapper "$host_etc" "$host_lib" "$BIND_DIR/primary/cache-bind"
+  # The package apply runs as the CI/host user before the mounted BIND tree is
+  # handed back to uid 53.  Keep this isolated parent writable for that
+  # operation; the post-apply permission step below restores the container
+  # ownership/permissions without touching any external path.
+  # The package is generated for the container's canonical paths. For the
+  # host-side apply script, translate only the isolated test tree paths, then
+  # restore the canonical paths before named loads the mounted configuration.
+  sed -i "s#/etc/bind#$host_etc#g; s#/var/lib/bind#$host_lib#g; s#/var/cache/bind#$BIND_DIR/secondary/lib-bind#g" "$package_root"/config/*.conf
+  run_package_script BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$host_lib/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --check primary
+  run_package_script BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$host_lib/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --apply primary
+  host_etc="$BIND_DIR/secondary/etc-bind"
+  host_lib="$BIND_DIR/secondary/lib-bind"
+  make_named_checkconf_wrapper "$host_etc" "$host_lib" "$BIND_DIR/secondary/cache-bind"
+  sed -i "s#${BIND_DIR}/primary/etc-bind#$host_etc#g; s#${BIND_DIR}/primary/lib-bind#$host_lib#g" "$package_root"/config/*.conf
+  run_package_script BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --check secondary
+  run_package_script BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --apply secondary
+  # Restore paths as seen inside the BIND containers after the host-side
+  # preview/apply/verify completed. No production path is touched.
+  sed -i "s#${BIND_DIR}/primary/etc-bind#/etc/bind#g; s#${BIND_DIR}/primary/lib-bind#/var/lib/bind#g; s#${BIND_DIR}/secondary/etc-bind#/etc/bind#g; s#${BIND_DIR}/secondary/lib-bind#/var/lib/bind#g" "$BIND_DIR/primary/etc-bind/named.conf" "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config"/*.conf "$BIND_DIR/secondary/etc-bind/named.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config"/*.conf
+  if ! chown -R 53:53 "$BIND_DIR/primary/etc-bind/dnsguard-rpz" "$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz" "$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary" 2>/dev/null; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n chown -R 53:53 "$BIND_DIR/primary/etc-bind/dnsguard-rpz" "$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz" "$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary" 2>/dev/null; then
+      :
+    else
+      chmod -R u+rwX,go+rX "$BIND_DIR/primary/etc-bind/dnsguard-rpz" "$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz" "$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary"
+    fi
+  fi
+  docker exec "$BIND_PRIMARY" named-checkconf -z /etc/bind/named.conf
+  docker exec "$BIND_SECONDARY" named-checkconf -z /etc/bind/named.conf
+  docker kill -s HUP "$BIND_PRIMARY" >/dev/null
+  docker kill -s HUP "$BIND_SECONDARY" >/dev/null
+  for _ in $(seq 1 90); do
+    docker exec "$BIND_PRIMARY" dig +tcp +time=1 +tries=1 @127.0.0.1 rpz.local SOA +short 2>/dev/null | grep -q '[0-9]' && break
+    sleep 1
+  done
+  docker exec "$BIND_PRIMARY" dig +tcp +time=2 +tries=1 @127.0.0.1 rpz.local SOA +short >/dev/null
+  for _ in $(seq 1 90); do
+    docker exec "$BIND_SECONDARY" dig +tcp +time=1 +tries=1 @127.0.0.1 rpz.local SOA +short 2>/dev/null | grep -q '[0-9]' && return 0
+    sleep 1
+  done
+  return 1
+}
+isolated_sed() {
+  if sed -i "$@" 2>/dev/null; then
+    return 0
+  fi
+  command -v sudo >/dev/null 2>&1 && sudo -n sed -i "$@"
+}
 enable_global_deny() {
-  sed -i 's/response-policy { zone "rpz.local"; }/response-policy { zone "rpz.local"; zone "global-deny.rpz.local"; }/' "$BIND_DIR/primary/etc-bind/named.conf" "$BIND_DIR/secondary/etc-bind/named.conf"
+  isolated_sed 's#// zone "global-deny.rpz.local";#zone "global-deny.rpz.local";#' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf"
+  # Keep the isolated recursive fixture aligned with the documented
+  # qname-wait-recurse=no profile. The option is part of the response-policy
+  # statement and therefore belongs on its closing line.
+  # This is test-only BIND configuration; the product never changes an
+  # administrator's production recursion settings.
+  isolated_sed 's/^};$/} qname-wait-recurse no;/' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf"
   docker exec "$BIND_PRIMARY" named-checkconf -z /etc/bind/named.conf >/dev/null
   docker exec "$BIND_SECONDARY" named-checkconf -z /etc/bind/named.conf >/dev/null
   docker exec "$BIND_PRIMARY" rndc reload >/dev/null 2>&1 || docker kill -s HUP "$BIND_PRIMARY" >/dev/null
@@ -507,7 +653,11 @@ check_network_exposure() {
   done
   [[ "$primary_rcode" == REFUSED ]] || { printf 'FAIL: Primary 未授权递归查询 RCODE=%s\n' "${primary_rcode:-empty}"; return 1; }
   [[ "$secondary_rcode" == REFUSED ]] || { printf 'FAIL: Secondary 未授权递归查询 RCODE=%s\n' "${secondary_rcode:-empty}"; return 1; }
-  [[ "$transfer_rcode" == REFUSED ]] || { printf 'FAIL: 未授权 AXFR RCODE=%s\n' "${transfer_rcode:-empty}"; return 1; }
+  if [[ "${E2E_EXPECT_RPZ_ACL:-false}" == true ]]; then
+    [[ "$transfer_rcode" == REFUSED ]] || { printf 'FAIL: 已加载 RPZ 的未授权 AXFR RCODE=%s\n' "${transfer_rcode:-empty}"; return 1; }
+  else
+    [[ "$transfer_rcode" == REFUSED || "$transfer_rcode" == NOTAUTH ]] || { printf 'FAIL: 未配置 RPZ 时的未授权 AXFR RCODE=%s\n' "${transfer_rcode:-empty}"; return 1; }
+  fi
   set +e
   printf 'server %s\nzone rpz.local\nupdate add unauthorized.rpz.local. 60 TXT denied\nsend\n' "$PRIMARY_IP" | docker exec -i "$BIND_UPSTREAM" nsupdate -v >/dev/null 2>&1
   update_code=$?
@@ -632,7 +782,10 @@ main() {
   case_run 'publish gate rejects writes before BIND' api_gate_before_bind
   start_bind
   require_case 'network exposure and BIND ACL gate' check_network_exposure
-  require_case 'real browser platform/BIND/package/whitelist flow' browser_initial
+  require_case 'real browser platform/package download flow' browser_package
+  require_case 'real RPZ package preview/apply/verify and BIND reload' apply_downloaded_package
+  E2E_EXPECT_RPZ_ACL=true require_case 'loaded BIND ACL gate' check_network_exposure
+  require_case 'real browser BIND completion/package/whitelist flow' browser_bind
   require_case 'real BIND config and two RPZ zones loaded' check_real_dns
   enable_global_deny
   require_case 'Global Deny follows whitelist and baseline gate' check_global_dns

@@ -14,7 +14,7 @@ test.describe("真实隔离 BIND 首次部署", () => {
     page.on("dialog", (dialog) => void dialog.accept());
     await page.goto("/");
 
-    if (phase === "platform" || phase === "full") {
+    if (phase === "platform" || phase === "full" || phase === "package") {
       test.skip(!token, "平台阶段需要测试 Bootstrap Token");
       await expect(page.getByRole("heading", { name: "先启动 DNSGuard 平台" })).toBeVisible();
       await page.getByLabel("Bootstrap Token").fill(token!);
@@ -34,9 +34,14 @@ test.describe("真实隔离 BIND 首次部署", () => {
     await page.getByLabel("受保护 TSIG Key 文件路径").fill(tsigPath);
     await page.getByRole("button", { name: "预览配置包" }).click();
     await expect(page.getByText(/已生成/)).toBeVisible();
-    const download = page.waitForEvent("download");
-    await page.getByRole("button", { name: "下载 ZIP" }).click();
-    expect((await download).suggestedFilename()).toBe("dnsguard-rpz-package.zip");
+    if (phase !== "bind") {
+      const download = page.waitForEvent("download");
+      await page.getByRole("button", { name: "下载 ZIP" }).click();
+      const packageDownload = await download;
+      expect(packageDownload.suggestedFilename()).toBe("dnsguard-rpz-package.zip");
+      if (process.env.E2E_PACKAGE_PATH) await packageDownload.saveAs(process.env.E2E_PACKAGE_PATH);
+    }
+    if (phase === "package") return;
 
     const validationSuccess = page.getByText("BIND 连接成功，可以进入白名单配置。");
     for (let attempt = 0; attempt < 30 && await validationSuccess.count() === 0; attempt += 1) {
