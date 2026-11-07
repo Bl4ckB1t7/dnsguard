@@ -36,6 +36,16 @@ declare -a CASE_NAMES=() CASE_STATUS=() CASE_EVIDENCE=()
 
 log() { printf '[e2e] %s\n' "$*"; }
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+chown_api_tree() {
+  if chown -R 10001:10001 "$@" 2>/dev/null; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n chown -R 10001:10001 "$@" 2>/dev/null; then
+    return 0
+  fi
+  printf '无法将隔离 API 数据和测试 Secret 设置为 UID/GID 10001；请提供本地测试目录的 chown 权限\n' >&2
+  return 1
+}
 record() { CASE_NAMES+=("$1"); CASE_STATUS+=("$2"); CASE_EVIDENCE+=("$3"); printf '%-56s %s\n' "$2" "$1"; }
 case_run() {
   local name="$1" fn="$2" evidence safe_name code
@@ -301,7 +311,7 @@ services:
       network: default
 EOF
   chmod 0640 "$ENV_FILE"
-  chown -R 10001:10001 "$DATA_DIR" "$SECRET_DIR" 2>/dev/null || true
+  chown_api_tree "$DATA_DIR" "$SECRET_DIR"
   chmod 0750 "$DATA_DIR" "$SECRET_DIR" "$DATA_DIR/bootstrap" "$DATA_DIR/rpz"
 }
 start_api_web() {
