@@ -75,6 +75,10 @@ if [[ -n "${DNSGUARD_BIND_NETWORK:-}" ]]; then
   dnsguard_validate_bind_network_cidrs "$DNSGUARD_BIND_NETWORK" "${DNS_NODE_ALLOWED_CIDRS:-}" || die 'BIND Docker 网络未获得显式 CIDR 授权'
   COMPOSE_ARGS+=(-f "$ROOT/compose.bind-network.yaml")
 fi
+if [[ -n "${DNSGUARD_COMPOSE_OVERRIDE:-}" ]]; then
+  [[ -f "$DNSGUARD_COMPOSE_OVERRIDE" ]] || die "Compose override 不存在：$DNSGUARD_COMPOSE_OVERRIDE"
+  COMPOSE_ARGS+=(-f "$DNSGUARD_COMPOSE_OVERRIDE")
+fi
 "${COMPOSE_ARGS[@]}" config >/dev/null || die 'Compose 配置校验失败'
 pass 'Compose 配置和 BIND 网络检查通过'
 
