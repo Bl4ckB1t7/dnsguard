@@ -230,31 +230,30 @@ func renderPackageReadme(request rpzPackageRequest, keyPath string) string {
 
 1. 由 BIND 管理员在对应 Primary/Secondary 主机审核所有片段和路径。
 2. %s
-3. 在 Primary 包目录先运行：
+3. 在 Primary 包目录先运行（脚本会原子地把 TSIG、Primary/Secondary Zone 和业务 response-policy include 到实际的 named.conf；不会 reload）：
 
-   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --check primary
+   BIND_CONFIG_ROOT=/etc/bind BIND_NAMED_CONF=/etc/bind/named.conf ./apply-rpz-config.sh --check primary
 
 4. 确认不会覆盖已有 dnsguard-rpz 目录后，再由管理员明确执行：
 
-   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --apply primary
+   BIND_CONFIG_ROOT=/etc/bind BIND_NAMED_CONF=/etc/bind/named.conf ./apply-rpz-config.sh --apply primary
 
 Secondary 主机使用同一个包但只应用对应片段：
 
-   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --check secondary
-   BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --apply secondary
+   BIND_CONFIG_ROOT=/etc/bind BIND_NAMED_CONF=/etc/bind/named.conf ./apply-rpz-config.sh --check secondary
+   BIND_CONFIG_ROOT=/etc/bind BIND_NAMED_CONF=/etc/bind/named.conf ./apply-rpz-config.sh --apply secondary
 
-脚本只在 BIND 主机的 BIND_CONFIG_ROOT 下创建不存在的生成目录，并备份现有
-named.conf/named.conf.local 到时间戳目录；发现冲突会停止，不会追加重复配置。
+脚本只在 BIND 主机的 BIND_CONFIG_ROOT 下创建不存在的生成目录，并原子备份、更新实际
+BIND_NAMED_CONF；发现冲突会停止，不会追加重复配置。脚本不会 reload/restart BIND。
 Primary 动态 Zone 和 journal 使用 /var/lib/bind/dnsguard-rpz-primary；Secondary 的
 AXFR/IXFR 传区文件使用 /var/cache/bind/dnsguard-rpz-secondary。脚本只为这些目录设置
 0750 和 BIND_USER:BIND_GROUP（默认 bind:bind），不会递归修改其中已有文件。
 
 ## 审核与验证
 
-将 config/tsig.conf、config/rpz-primary.conf 和 config/rpz-secondary.conf 按
-管理员的现有布局纳入配置；先 include config/tsig.conf，再 include 对应的
-Primary/Secondary 片段，确保 rpz-manager Key 已定义。验证脚本需要 BIND_NAMED_CONF 指向实际已加载的
-named.conf；未提供时只验证 Zone 文件，并明确显示最终配置检查未执行。确认
+脚本会先 include config/tsig.conf，再 include 对应的 Primary/Secondary 片段，并把
+config/response-policy.conf 放入现有 options 块，确保 rpz-manager Key 已定义。若已有
+options 配置布局无法安全识别，脚本会停止并恢复备份，不会猜测。确认
 named-checkzone 和 named-checkconf 针对实际 named.conf 通过，再按现有变更流程
 reload BIND。Primary 运行
 ./verify-rpz-config.sh primary；Secondary 在传区文件出现后运行
@@ -380,7 +379,7 @@ fi
 func renderApplyScript(zone, globalDeny string) string {
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
-ROOT=${BIND_CONFIG_ROOT:-/etc/bind}
+ROOT="${BIND_CONFIG_ROOT:-/etc/bind}"
 PACKAGE_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 TARGET="$ROOT/dnsguard-rpz"
 BACKUP="$ROOT/dnsguard-rpz-backups/$(date -u +%%Y%%m%%dT%%H%%M%%SZ)"
@@ -390,6 +389,7 @@ PRIMARY_DATA_DIR=${PRIMARY_DATA_DIR:-/var/lib/bind/dnsguard-rpz-primary}
 SECONDARY_DATA_DIR=${SECONDARY_DATA_DIR:-/var/cache/bind/dnsguard-rpz-secondary}
 BIND_USER=${BIND_USER:-bind}
 BIND_GROUP=${BIND_GROUP:-bind}
+BIND_NAMED_CONF="${BIND_NAMED_CONF:-$ROOT/named.conf}"
 BUSINESS_ZONE=%q
 GLOBAL_DENY_ZONE=%q
 cleanup() { rm -rf -- "$STAGE"; }
@@ -414,6 +414,64 @@ prepare_data_dir() {
     return 1
   fi
   install -d -o "$BIND_USER" -g "$BIND_GROUP" -m 0750 -- "$DATA_DIR"
+}
+check_named_conf() {
+  [[ "$BIND_NAMED_CONF" = /* && "$BIND_NAMED_CONF" != / ]] || { echo "BIND_NAMED_CONF must be an absolute non-root path: $BIND_NAMED_CONF" >&2; return 1; }
+  [[ -f "$BIND_NAMED_CONF" ]] || { echo "BIND_NAMED_CONF does not exist: $BIND_NAMED_CONF" >&2; return 1; }
+  [[ ! -L "$BIND_NAMED_CONF" ]] || { echo "refusing to use symlink as BIND_NAMED_CONF: $BIND_NAMED_CONF" >&2; return 1; }
+  if grep -Eq '^[[:space:]]*options([[:space:]]|$)' "$BIND_NAMED_CONF" && ! grep -Eq '^[[:space:]]*options[[:space:]]*\{' "$BIND_NAMED_CONF"; then
+    echo "unsupported named.conf options layout; expected an options { declaration on one line: $BIND_NAMED_CONF" >&2
+    return 1
+  fi
+}
+TSIG_INCLUDE="include \"$TARGET/config/tsig.conf\";"
+ROLE_INCLUDE="include \"$TARGET/config/rpz-$ROLE.conf\";"
+POLICY_INCLUDE="include \"$TARGET/config/response-policy.conf\";"
+install_named_conf_includes() {
+  check_named_conf
+  local tmp policy_tmp mode owner
+  tmp="$(mktemp "${BIND_NAMED_CONF}.dnsguard.XXXXXX")"
+  cp -p -- "$BIND_NAMED_CONF" "$tmp"
+  if ! grep -Fqx "$TSIG_INCLUDE" "$tmp" || ! grep -Fqx "$ROLE_INCLUDE" "$tmp"; then
+    printf '\n// DNSGUARD-RPZ managed includes: key before zone declarations.\n%%s\n%%s\n' "$TSIG_INCLUDE" "$ROLE_INCLUDE" >>"$tmp"
+  fi
+  if ! grep -Fq -- "$POLICY_INCLUDE" "$tmp"; then
+    policy_tmp="$(mktemp "${BIND_NAMED_CONF}.dnsguard-policy.XXXXXX")"
+    if grep -Eq '^[[:space:]]*options[[:space:]]*\{' "$tmp"; then
+    awk -v line="$POLICY_INCLUDE" '
+      !done && $0 ~ /^[[:space:]]*options[[:space:]]*\{/ {
+        if ($0 ~ /}[[:space:]]*;[[:space:]]*$/) {
+          close_at = match($0, /}[[:space:]]*;[[:space:]]*$/)
+          print substr($0, 1, close_at - 1)
+          print "    " line
+          print substr($0, close_at)
+        } else {
+          print
+          print "    " line
+        }
+        done=1
+        next
+      }
+      { print }
+      END { if (!done) exit 2 }
+    ' "$tmp" >"$policy_tmp" || { rm -f -- "$tmp" "$policy_tmp"; echo "could not place RPZ response-policy include inside options: $BIND_NAMED_CONF" >&2; return 1; }
+    else
+      cat "$tmp" >"$policy_tmp"
+      printf '\noptions {\n    %%s\n};\n' "$POLICY_INCLUDE" >>"$policy_tmp"
+    fi
+    mv -- "$policy_tmp" "$tmp"
+  fi
+  mode="$(stat -c '%%a' -- "$BIND_NAMED_CONF")"
+  owner="$(stat -c '%%u:%%g' -- "$BIND_NAMED_CONF")"
+  chmod "$mode" "$tmp"
+  chown "$owner" "$tmp"
+  mv -- "$tmp" "$BIND_NAMED_CONF"
+}
+verify_named_conf_includes() {
+  check_named_conf
+  grep -Fqx "$TSIG_INCLUDE" "$BIND_NAMED_CONF" || { echo "managed TSIG include is missing from $BIND_NAMED_CONF" >&2; return 1; }
+  grep -Fqx "$ROLE_INCLUDE" "$BIND_NAMED_CONF" || { echo "managed $ROLE zone include is missing from $BIND_NAMED_CONF" >&2; return 1; }
+  grep -Fq "$POLICY_INCLUDE" "$BIND_NAMED_CONF" || { echo "managed response-policy include is missing from $BIND_NAMED_CONF" >&2; return 1; }
 }
 prepare_generated_files() {
   # The package is normally extracted by an administrator, so its files may
@@ -453,14 +511,21 @@ fi
 if [[ -e "$TARGET" ]]; then
   [[ -d "$TARGET" ]] || { echo "refusing to replace non-directory $TARGET" >&2; exit 1; }
   if same_package; then
+    if [[ ${1:-} = "--check" ]]; then
+      verify_named_conf_includes
+      verify
+      echo "CHECK PASS: the same $ROLE package is present and included by $BIND_NAMED_CONF; no files were modified"
+      exit 0
+    fi
     prepare_generated_files
     prepare_data_dir
     if [[ "$ROLE" == primary ]]; then
       copy_new_zone "$PACKAGE_DIR/zones/db.$BUSINESS_ZONE" "$DATA_DIR/db.$BUSINESS_ZONE"
       copy_new_zone "$PACKAGE_DIR/zones/db.$GLOBAL_DENY_ZONE" "$DATA_DIR/db.$GLOBAL_DENY_ZONE"
     fi
+    install_named_conf_includes
     verify
-    echo "CHECK PASS: the same $ROLE package is already present at $TARGET"
+    echo "CHECK PASS: the same $ROLE package is already present and included by $BIND_NAMED_CONF"
     exit 0
   fi
   echo "refusing to overwrite existing $TARGET; back it up and review conflicts manually" >&2
@@ -473,15 +538,16 @@ for candidate in "$ROOT/named.conf" "$ROOT/named.conf.local"; do
     exit 1
   fi
 done
+check_named_conf
 if [[ ${1:-} = "--check" ]]; then
   verify
-  echo "CHECK PASS: no existing generated directory; named.conf was not modified"
+  echo "CHECK PASS: no existing generated directory; $BIND_NAMED_CONF is writable for managed includes and was not modified"
   exit 0
 fi
 install -d -m 0750 -- "$BACKUP"
-for candidate in "$ROOT/named.conf" "$ROOT/named.conf.local"; do
-  [[ -f "$candidate" ]] && cp -p -- "$candidate" "$BACKUP/$(basename "$candidate")"
-done
+cp -p -- "$BIND_NAMED_CONF" "$BACKUP/$(basename "$BIND_NAMED_CONF")"
+[[ "$BIND_NAMED_CONF" = "$ROOT/named.conf" ]] || [[ ! -f "$ROOT/named.conf" ]] || cp -p -- "$ROOT/named.conf" "$BACKUP/named.conf"
+[[ ! -f "$ROOT/named.conf.local" ]] || cp -p -- "$ROOT/named.conf.local" "$BACKUP/named.conf.local"
 install -d -m 0750 -- "$STAGE/config" "$STAGE/zones"
 cp -a -- "$PACKAGE_DIR/config" "$PACKAGE_DIR/zones" "$STAGE/"
 cp -p -- "$PACKAGE_DIR/manifest.json" "$STAGE/manifest.json"
@@ -493,9 +559,16 @@ if [[ "$ROLE" == primary ]]; then
   copy_new_zone "$PACKAGE_DIR/zones/db.$BUSINESS_ZONE" "$DATA_DIR/db.$BUSINESS_ZONE"
   copy_new_zone "$PACKAGE_DIR/zones/db.$GLOBAL_DENY_ZONE" "$DATA_DIR/db.$GLOBAL_DENY_ZONE"
 fi
+if ! install_named_conf_includes; then
+  rm -rf -- "$TARGET"
+  cp -p -- "$BACKUP/$(basename "$BIND_NAMED_CONF")" "$BIND_NAMED_CONF"
+  echo "APPLY FAILED: named.conf was restored from $BACKUP" >&2
+  exit 1
+fi
 echo "APPLY PASS: generated $ROLE files copied to $TARGET"
+echo "BIND include PASS: $BIND_NAMED_CONF now loads TSIG, $ROLE zones, and business response-policy"
 echo "BIND data directory prepared with mode 0750 for $BIND_USER:$BIND_GROUP: $DATA_DIR"
-echo "Manual next step: review and include the config fragments, then run named-checkconf and reload BIND through your normal change process."
+echo "Manual next step: review the managed diff, run named-checkconf -z $BIND_NAMED_CONF, then reload BIND through your normal change process."
 echo "Global Deny remains absent from response-policy until whitelist synchronization is verified."
 echo "Recovery: if review fails, remove only $TARGET and restore the timestamped files from $BACKUP; do not clear existing BIND data."
 `, zone, globalDeny)
