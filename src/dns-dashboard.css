@@ -38,6 +38,7 @@ button, input { font: inherit; }
 .dns-cards article.muted strong { color: #8aaeb7; }
 .dns-cards .sync-value { font-size: 16px; margin-top: 18px; }
 .dns-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 16px; margin-bottom: 16px; align-items: stretch; }
+.dns-grid > .dns-panel, .release-grid > .dns-panel { min-width: 0; }
 .dns-grid > .dns-panel { height: 100%; box-sizing: border-box; margin-bottom: 0; }
 .release-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 16px; }
 .dns-panel { padding: 20px; margin-bottom: 16px; }
@@ -89,7 +90,7 @@ button, input { font: inherit; }
 .version-item strong, .version-item small { display: block; margin: 0; }
 .version-item small { margin-top: 4px; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.dns-panel-wide .table-wrap { border: 1px solid #123f50; border-radius: 10px; overflow: hidden; }
+.dns-panel-wide .table-wrap { border: 1px solid #123f50; border-radius: 10px; overflow-x: auto; }
 tbody tr { transition: background .18s ease; }
 tbody tr:hover { background: #0a31452b; }
 th, td { padding: 12px 10px; border-bottom: 1px solid #123748; text-align: left; white-space: nowrap; }
