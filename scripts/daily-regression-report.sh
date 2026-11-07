@@ -9,6 +9,7 @@ RESULTS=(
   "Web/Playwright: ${REGRESSION_WEB_RESULT:-NOT RUN}"
   "Legacy BIND compatibility: ${REGRESSION_BIND_RESULT:-NOT RUN}"
   "Real Docker BIND E2E: ${REGRESSION_E2E_RESULT:-NOT RUN}"
+  "v1.1.1 to candidate upgrade/rollback: ${REGRESSION_UPGRADE_RESULT:-NOT RUN}"
 )
 
 mkdir -p "$(dirname "$REPORT_FILE")"

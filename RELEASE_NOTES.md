@@ -11,10 +11,11 @@
 ## 验收结论
 
 - Go test/race/vet、React 构建、Playwright、ShellCheck、Compose、隔离 BIND 和真实 RPZ 配置包 E2E：PASS（PR #30 run #36）。
-- 公网 DNSLog/独立公网来源、完整历史 TLD 列表、v1.1.1→v1.2.1 升级回滚：NOT RUN。
+- v1.1.1→v1.2.1 隔离升级、中断恢复、快照回滚及 IANA 当前 1,436 条 TLD 兼容验收：PASS。
+- 公网 DNSLog/独立公网来源、所有目标配置下的 DNSSEC DO=1 外传、移动/平板完整视觉回归：NOT RUN。
 - DNSSEC DO=1：仅在指定隔离 profile 观察；不能据此宣称所有递归器均阻断上游 QNAME。
 
-**当前建议：NO-GO，待补齐未运行的升级回滚、完整兼容和独立网络验证。**
+**当前建议：NO-GO，待补齐独立网络验证、适用范围内的 DO=1 观察和移动/平板视觉回归。**
 
 ---
 
