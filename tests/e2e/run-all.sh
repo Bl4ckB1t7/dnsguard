@@ -163,12 +163,12 @@ $ORIGIN global-deny.rpz.local.
 ns IN A 172.34.0.10
 * IN CNAME .
 EOF
-  cat >"$BIND_DIR/upstream/lib-bind/app.test.zone" <<'EOF'
-$TTL 60
-$ORIGIN app.test.
+  cat >"$BIND_DIR/upstream/lib-bind/app.test.zone" <<EOF
+\$TTL 60
+\$ORIGIN app.test.
 @ IN SOA ns.app.test. hostmaster.app.test. (1 1h 15m 30d 60)
   IN NS ns.app.test.
-ns IN A 172.34.0.12
+ns IN A $UPSTREAM_IP
 baseline IN A 192.0.2.42
 allowed IN A 192.0.2.43
 deep.allowed IN A 192.0.2.44
@@ -211,7 +211,6 @@ EOF
 options { directory "/var/cache/bind"; listen-on port 53 { any; }; listen-on-v6 { none; }; recursion no; allow-query { $SUBNET; 127.0.0.1; }; dnssec-validation no; };
 zone "app.test" { type primary; file "/var/lib/bind/app.test.zone"; };
 EOF
-  sed -i "s/172\.34\.0\.12/$UPSTREAM_IP/" "$BIND_DIR/upstream/lib-bind/app.test.zone"
 }
 write_bind_compose() {
   cat >"$BIND_DIR/compose.yaml" <<EOF
