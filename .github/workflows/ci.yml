@@ -30,8 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck -x install.sh scripts/*.sh tests/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
-      - run: bash -n install.sh scripts/*.sh tests/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
+      - run: shellcheck -x install.sh scripts/*.sh tests/*.sh tests/e2e/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
+      - run: bash -n install.sh scripts/*.sh tests/*.sh tests/e2e/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
       - run: DNSGUARD_ENV_FILE=./deploy/docker/dnsguard.env.example docker compose --env-file deploy/docker/dnsguard.env.example -f compose.yaml config
 
   bind-integration:
@@ -83,3 +83,26 @@ jobs:
           path: |
             playwright-report/
             test-results/
+
+  e2e-real:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils bind9-utils
+      - run: npx playwright install --with-deps chromium
+      - run: bash tests/e2e/run-all.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-e2e-evidence
+          path: |
+            tests/e2e/runtime/
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
