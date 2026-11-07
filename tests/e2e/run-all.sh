@@ -68,9 +68,14 @@ case_run() {
   fi
 }
 require_case() {
-  local name="$1" fn="$2"
+  local name="$1" fn="$2" evidence
   case_run "$name" "$fn"
-  [[ "${CASE_STATUS[$((${#CASE_STATUS[@]} - 1))]}" == PASS ]] || die "验收项失败：$name；详见报告"
+  evidence="${CASE_EVIDENCE[$((${#CASE_EVIDENCE[@]} - 1))]}"
+  if [[ "${CASE_STATUS[$((${#CASE_STATUS[@]} - 1))]}" != PASS ]]; then
+    printf '验收证据（不含密钥）：%s\n' "$evidence" >&2
+    sed -n '1,240p' "$evidence" >&2 || true
+    die "验收项失败：$name；详见报告"
+  fi
 }
 need() { command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"; }
 require_tools() {
