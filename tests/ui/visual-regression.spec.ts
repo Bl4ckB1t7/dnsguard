@@ -13,7 +13,7 @@ test.describe("关键部署页面视觉回归", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "先启动 DNSGuard 平台" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
-    await expect(page).toHaveScreenshot("platform-first-install.png", { fullPage: true });
+    await expect(page).toHaveScreenshot("platform-first-install.png");
   });
 
   test("BIND 诊断错误页面保持可读且操作区可见", async ({ page }) => {
@@ -26,7 +26,7 @@ test.describe("关键部署页面视觉回归", () => {
     await expect(page.getByText("RCODE=REFUSED")).toBeVisible();
     await expect(page.getByRole("button", { name: "验证节点和 TSIG" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
-    await expect(page).toHaveScreenshot("bind-diagnostic-refused.png", { fullPage: true });
+    await expect(page).toHaveScreenshot("bind-diagnostic-refused.png");
   });
 
   test("RPZ 管理页面在各视口保持可用", async ({ page }) => {
@@ -34,6 +34,6 @@ test.describe("关键部署页面视觉回归", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "域盾 DNSGuard" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
-    await expect(page).toHaveScreenshot("rpz-dashboard.png", { fullPage: true });
+    await expect(page).toHaveScreenshot("rpz-dashboard.png");
   });
 });
