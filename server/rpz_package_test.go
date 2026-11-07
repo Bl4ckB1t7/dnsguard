@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -308,8 +309,132 @@ func TestRPZPackageApplyIsIdempotentAndRefusesConflicts(t *testing.T) {
 	if err := run("--apply", "primary"); err == nil {
 		t.Fatal("conflicting generated directory must not be overwritten")
 	}
-	if content, readErr := os.ReadFile(filepath.Join(configRoot, "named.conf")); readErr != nil || string(content) != "// existing\n" {
-		t.Fatalf("apply must not modify named.conf: %q, %v", content, readErr)
+	content, readErr := os.ReadFile(filepath.Join(configRoot, "named.conf"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	text := string(content)
+	for _, required := range []string{
+		"// existing\n",
+		"include \"" + filepath.Join(configRoot, "dnsguard-rpz", "config", "tsig.conf") + "\";",
+		"include \"" + filepath.Join(configRoot, "dnsguard-rpz", "config", "rpz-primary.conf") + "\";",
+		"include \"" + filepath.Join(configRoot, "dnsguard-rpz", "config", "response-policy.conf") + "\";",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("named.conf is missing managed include %q: %s", required, text)
+		}
+	}
+	if strings.Count(text, "response-policy.conf") != 1 {
+		t.Fatalf("repeated apply must not duplicate the response-policy include: %s", text)
+	}
+}
+
+func TestRPZPackageApplyLoadsFinalNamedConfWithRealBINDChecks(t *testing.T) {
+	if _, err := exec.LookPath("named-checkconf"); err != nil {
+		t.Skip("named-checkconf is not installed")
+	}
+	if _, err := exec.LookPath("named-checkzone"); err != nil {
+		t.Skip("named-checkzone is not installed")
+	}
+	setupTestEnvironment(t)
+	preview, err := buildRPZPackage(packageTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	packageDir := filepath.Join(root, "package")
+	if err := os.MkdirAll(packageDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(root, "keys", "rpz-manager.key")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key \"rpz-manager\" { algorithm hmac-sha256; secret \"c2VjcmV0\"; };\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	primaryData := filepath.Join(root, "var", "lib", "bind", "dnsguard-rpz-primary")
+	secondaryData := filepath.Join(root, "var", "cache", "bind", "dnsguard-rpz-secondary")
+	for _, file := range preview.Files {
+		path := filepath.Join(packageDir, file.Path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		content := file.Content
+		if strings.HasPrefix(file.Path, "config/") {
+			content = strings.ReplaceAll(content, "/etc/bind/keys/rpz-manager.key", keyPath)
+			content = strings.ReplaceAll(content, "/var/lib/bind/dnsguard-rpz-primary", primaryData)
+			content = strings.ReplaceAll(content, "/var/cache/bind/dnsguard-rpz-secondary", secondaryData)
+		}
+		mode := os.FileMode(0o640)
+		if file.Executable {
+			mode = 0o750
+		}
+		if err := os.WriteFile(path, []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	namedConf := filepath.Join(root, "named.conf")
+	if err := os.WriteFile(namedConf, []byte(fmt.Sprintf("options { directory %q; recursion no; listen-on { any; }; listen-on-v6 { none; }; };\n", root)), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	bindUser := os.Getenv("USER")
+	bindGroup := bindUser
+	if current, lookupErr := user.Current(); lookupErr == nil {
+		bindUser = current.Username
+		if group, groupErr := user.LookupGroupId(current.Gid); groupErr == nil {
+			bindGroup = group.Name
+		}
+	}
+	run := func(args ...string) error {
+		command := exec.Command("bash", append([]string{filepath.Join(packageDir, "apply-rpz-config.sh")}, args...)...)
+		command.Env = append(os.Environ(),
+			"BIND_CONFIG_ROOT="+root,
+			"BIND_NAMED_CONF="+namedConf,
+			"PRIMARY_DATA_DIR="+primaryData,
+			"SECONDARY_DATA_DIR="+secondaryData,
+			"BIND_USER="+bindUser,
+			"BIND_GROUP="+bindGroup,
+		)
+		output, runErr := command.CombinedOutput()
+		if runErr != nil {
+			return fmt.Errorf("%w: %s", runErr, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}
+	if err := run("--check", "primary"); err != nil {
+		t.Fatalf("real named.conf preflight failed: %v", err)
+	}
+	if err := run("--apply", "primary"); err != nil {
+		t.Fatalf("real named.conf apply failed: %v", err)
+	}
+	beforeCheck, err := os.ReadFile(namedConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run("--check", "primary"); err != nil {
+		t.Fatalf("real named.conf repeat preflight failed: %v", err)
+	}
+	afterCheck, err := os.ReadFile(namedConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeCheck, afterCheck) {
+		t.Fatal("--check modified the already-applied named.conf")
+	}
+	if err := run("--apply", "primary"); err != nil {
+		t.Fatalf("real named.conf repeat apply failed: %v", err)
+	}
+	content, err := os.ReadFile(namedConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if strings.Count(text, "response-policy.conf") != 1 || strings.Count(text, "rpz-primary.conf") != 1 || strings.Count(text, "tsig.conf") != 1 {
+		t.Fatalf("managed named.conf includes were duplicated or missing: %s", text)
+	}
+	if err := exec.Command("named-checkconf", "-z", namedConf).Run(); err != nil {
+		t.Fatalf("final named.conf failed named-checkconf -z: %v\n%s", err, text)
 	}
 }
 
