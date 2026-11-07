@@ -311,8 +311,11 @@ services:
       network: default
 EOF
   chmod 0640 "$ENV_FILE"
-  chown_api_tree "$DATA_DIR" "$SECRET_DIR"
   chmod 0750 "$DATA_DIR" "$SECRET_DIR" "$DATA_DIR/bootstrap" "$DATA_DIR/rpz"
+  # Set directory modes before changing ownership; a non-root CI runner may
+  # need sudo for the ownership transition and must not chmod the new owner’s
+  # directories afterward.
+  chown_api_tree "$DATA_DIR" "$SECRET_DIR"
 }
 start_api_web() {
   export DNSGUARD_ENV_FILE="$ENV_FILE" DNSGUARD_DATA_DIR="$DATA_DIR" DNSGUARD_SECRET_DIR="$SECRET_DIR" DNSGUARD_TLS_DIR="$TLS_DIR" DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR" DNSGUARD_BIND_NETWORK="$BIND_NETWORK" DNSGUARD_INTERNAL_NETWORK_NAME="$INTERNAL_NETWORK" DNSGUARD_WEB_PORT="$WEB_PORT" DNSGUARD_WEB_BIND_IP=127.0.0.1
