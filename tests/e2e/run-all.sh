@@ -488,10 +488,37 @@ apply_downloaded_package() {
   local package_root host_etc host_lib bind_user bind_group
   extract_package_safely
   package_root="$RPZ_PACKAGE_ROOT"
+  # The package is executed by host Bash, but its final named.conf contains
+  # container paths such as /var/cache/bind.  Run named-checkconf through the
+  # isolated BIND image so the package check validates the same mounted tree
+  # that the running container will load.  This wrapper is test-only and never
+  # changes a host or production BIND configuration.
+  local check_tools="$RUNTIME/check-tools"
+  mkdir -p "$check_tools"
+  make_named_checkconf_wrapper() {
+    local etc_dir="$1" lib_dir="$2" cache_dir="$3"
+    cat >"$check_tools/named-checkconf" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+args=("\$@")
+# shellcheck disable=SC2154 # args is assigned immediately above in the generated wrapper.
+for i in "\${!args[@]}"; do
+  if [[ "\${args[i]}" == "$etc_dir/named.conf" ]]; then
+    args[i]=/etc/bind/named.conf
+  fi
+done
+exec docker run --rm --entrypoint named-checkconf \\
+  -v "$etc_dir:/etc/bind:ro" -v "$lib_dir:/var/lib/bind:ro" -v "$cache_dir:/var/cache/bind:ro" \\
+  internetsystemsconsortium/bind9:9.20 "\${args[@]}"
+EOF
+    chmod 0750 "$check_tools/named-checkconf"
+  }
+  export PATH="$check_tools:$PATH"
   host_etc="$BIND_DIR/primary/etc-bind"
   host_lib="$BIND_DIR/primary/lib-bind"
   bind_user="$(id -un)"
   bind_group="$(id -gn)"
+  make_named_checkconf_wrapper "$host_etc" "$host_lib" "$BIND_DIR/primary/cache-bind"
   # The package is generated for the container's canonical paths. For the
   # host-side apply script, translate only the isolated test tree paths, then
   # restore the canonical paths before named loads the mounted configuration.
@@ -500,6 +527,7 @@ apply_downloaded_package() {
   env BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$host_lib/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$BIND_DIR/secondary/lib-bind/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --apply primary
   host_etc="$BIND_DIR/secondary/etc-bind"
   host_lib="$BIND_DIR/secondary/lib-bind"
+  make_named_checkconf_wrapper "$host_etc" "$host_lib" "$BIND_DIR/secondary/cache-bind"
   sed -i "s#${BIND_DIR}/primary/etc-bind#$host_etc#g; s#${BIND_DIR}/primary/lib-bind#$host_lib#g" "$package_root"/config/*.conf
   env BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --check secondary
   env BIND_CONFIG_ROOT="$host_etc" BIND_NAMED_CONF="$host_etc/named.conf" PRIMARY_DATA_DIR="$BIND_DIR/primary/lib-bind/dnsguard-rpz-primary" SECONDARY_DATA_DIR="$host_lib/dnsguard-rpz-secondary" BIND_USER="$bind_user" BIND_GROUP="$bind_group" bash "$package_root/apply-rpz-config.sh" --apply secondary
