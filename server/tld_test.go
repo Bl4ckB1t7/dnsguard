@@ -484,7 +484,10 @@ func TestPublishTLDPolicyTimeoutRequiresReconciliation(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	// CI runners can take longer than 20ms to start the test checker process;
+	// keep the timeout short while allowing the injected command to run before
+	// the update context is cancelled.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	verification, err := publishTLDPolicy(ctx, []string{"COM"}, nil, "")
 	if err == nil || verification.ZoneStatus != "reconcile_required" {
