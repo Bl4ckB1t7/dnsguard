@@ -1,3 +1,14 @@
+## [1.2.1-rc] — 发布候选（未发布）
+
+> v1.2.1 仍为候选版本，尚未创建 Tag 或 GitHub Release。详见 [RC 说明](docs/release-notes/v1.2.1-rc.md)。
+
+### 候选修复与验证
+
+- 修复 RPZ 配置包 apply 后未把管理 include 纳入实际加载 named.conf 的问题。
+- 真实隔离 E2E 覆盖 ZIP 下载、宿主机 Bash apply、最终配置加载、白名单同步、Global Deny 延迟启用和 finalize 收尾。
+- 保留 BIND 独立管理、最小权限、无生产 reload，以及 NXDOMAIN 不等于 QNAME 未外传的安全边界。
+- 公网 DNSLog、完整 1,436 TLD 回归和 v1.1.1→v1.2.1 升级回滚尚未完成，当前发布建议为 NO-GO。
+
 # Changelog
 
 ## [1.2.0] — 正式发布

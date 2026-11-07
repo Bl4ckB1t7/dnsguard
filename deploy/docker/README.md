@@ -84,7 +84,7 @@ BIND_CONFIG_ROOT=/etc/bind ./apply-rpz-config.sh --apply secondary
 BIND_CONFIG_ROOT=/etc/bind ./verify-rpz-config.sh secondary
 ```
 
-脚本默认只检查；`--apply` 也只在 `BIND_CONFIG_ROOT` 下创建不存在的 DNSGuard 管理目录，发现已有目录会拒绝覆盖。管理员仍需手工审核并将片段纳入 `named.conf`，再按正常变更流程执行 `named-checkconf` 和 BIND reload。Global Deny Zone 可以先创建，但在白名单发布、Primary/Secondary 同步确认前不得加入 `response-policy`。
+脚本默认只检查；`--apply` 会在管理员审核后备份并原子更新 `BIND_NAMED_CONF`，把 TSIG、对应角色 Zone 和业务 `response-policy` include 纳入实际加载的 `named.conf`。发现已有不一致的 DNSGuard 管理目录会拒绝覆盖；脚本不会 reload/restart BIND。管理员仍需在 BIND 主机执行最终 `named-checkconf -z`、`named-checkzone`，确认实际加载后再按正常变更流程 reload。Global Deny Zone 可以先创建，但在白名单发布、Primary/Secondary 同步确认前不得加入 `response-policy`。
 
 已有 BIND 时，使用与 Primary `update-policy` 匹配的现有 Key。DNSGuard 不生成、替换或修改
 BIND Key。新建 Key 必须由 BIND 管理员生成并同步配置 Primary，之后再把同一份 Key 安全提供给
