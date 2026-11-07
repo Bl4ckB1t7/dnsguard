@@ -119,9 +119,9 @@ PY
   chmod 0600 "$RUNTIME_DIR/secrets/rpz-manager.key"
   printf 'upgrade-test-bootstrap-token-only\n' >"$RUNTIME_DIR/secrets/bootstrap.token"
   chmod 0600 "$RUNTIME_DIR/secrets/bootstrap.token"
-  # The production image runs as uid 10001. Keep the fixture private while
-  # making the mounted state readable/writable by that isolated test user.
-  chown -R 10001:10001 "$RUNTIME_DIR/data" "$RUNTIME_DIR/secrets"
+  # Keep the fixture private. The container is started with the current
+  # isolated runner uid so rootless CI and bind-mounted state have identical
+  # read/write semantics without requiring chown or elevated permissions.
   chmod 0700 "$RUNTIME_DIR/data" "$RUNTIME_DIR/secrets"
 }
 
@@ -162,7 +162,7 @@ EOF
 start_api() {
   local image="$1" container="$2" env="$3"
   docker rm -f "$container" >/dev/null 2>&1 || true
-  docker run -d --name "$container" --network "$NETWORK" -p "127.0.0.1:${PORT}:8080" \
+  docker run -d --name "$container" --user "$(id -u):$(id -g)" --network "$NETWORK" -p "127.0.0.1:${PORT}:8080" \
     --label "com.dnsguard.test.run=$RUN_ID" \
     --env-file "$env" \
     -v "$RUNTIME_DIR/data:/var/lib/dnsguard" \
