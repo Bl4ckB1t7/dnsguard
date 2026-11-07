@@ -255,7 +255,11 @@ if grep -Eq '^[[:space:]]*(export[[:space:]]+)?RPZ_GLOBAL_DENY_SETUP_DEFERRED[[:
   ENV_BACKUP="$ENV_FILE.before-global-deny.$(date -u +%Y%m%dT%H%M%SZ)"
   cp -p -- "$ENV_FILE" "$ENV_BACKUP" || die '无法创建 env 保护备份，未修改原配置'
   temporary="$(mktemp "$(dirname "$ENV_FILE")/.dnsguard-env.XXXXXX")"
-  cleanup() { [[ -e "${temporary:-}" ]] && rm -f -- "$temporary"; }
+  cleanup() {
+    if [[ -n "${temporary:-}" && -e "$temporary" ]]; then
+      rm -f -- "$temporary"
+    fi
+  }
   trap cleanup EXIT
   python3 - "$ENV_FILE" "$temporary" <<'PY'
 import re
