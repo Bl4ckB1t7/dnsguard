@@ -9,6 +9,7 @@
 - 保留 BIND 独立管理、最小权限、无生产 reload，以及 NXDOMAIN 不等于 QNAME 未外传的安全边界。
 - 使用真实 v1.1.1 tag 的隔离升级、中断恢复和快照回滚验收通过。
 - 使用 IANA 当前 1,436 条 TLD 快照的隔离兼容验收通过，并校验实际输入数量。
+- 隔离 `qname-wait-recurse no` profile 的 DO=0/DO=1 多类型 QNAME 观察通过；该结果不替代公网或其他递归器验证，也不消除 DNSSEC DO=1 外传风险。
 - 公网 DNSLog、独立公网来源、所有目标配置下的 DO=1 外传和移动/平板完整视觉回归仍未完成，当前发布建议为 NO-GO。
 
 # Changelog
