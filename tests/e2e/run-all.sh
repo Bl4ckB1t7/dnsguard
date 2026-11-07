@@ -36,16 +36,6 @@ declare -a CASE_NAMES=() CASE_STATUS=() CASE_EVIDENCE=()
 
 log() { printf '[e2e] %s\n' "$*"; }
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
-chown_api_tree() {
-  if chown -R 10001:10001 "$@" 2>/dev/null; then
-    return 0
-  fi
-  if command -v sudo >/dev/null 2>&1 && sudo -n chown -R 10001:10001 "$@" 2>/dev/null; then
-    return 0
-  fi
-  printf '无法将隔离 API 数据和测试 Secret 设置为 UID/GID 10001；请提供本地测试目录的 chown 权限\n' >&2
-  return 1
-}
 chown_web_tls() {
   if chown 101:101 "$@" 2>/dev/null; then
     return 0
@@ -305,6 +295,7 @@ TRUSTED_PROXY_CIDRS=$INTERNAL_SUBNET
 DNSGUARD_WEB_BIND_IP=127.0.0.1
 DNSGUARD_WEB_PORT=$WEB_PORT
 DNSGUARD_ENV_FILE=$ENV_FILE
+E2E_API_UID_GID=$(id -u):$(id -g)
 EOF
   # The production Compose file deliberately uses network: host while
   # downloading build dependencies. GitHub-hosted BuildKit runners may require
@@ -315,6 +306,10 @@ EOF
   cat >"$BUILD_OVERRIDE" <<'EOF'
 services:
   dnsguard-api:
+    # The isolated finalizer reads the same temporary bind-mounted JSON state
+    # from the host. Match the test-only container UID to the invoking user;
+    # production Compose still runs the API as 10001:10001.
+    user: "${E2E_API_UID_GID}"
     build:
       network: default
   dnsguard-web:
@@ -323,10 +318,6 @@ services:
 EOF
   chmod 0640 "$ENV_FILE"
   chmod 0750 "$DATA_DIR" "$SECRET_DIR" "$DATA_DIR/bootstrap" "$DATA_DIR/rpz"
-  # Set directory modes before changing ownership; a non-root CI runner may
-  # need sudo for the ownership transition and must not chmod the new owner’s
-  # directories afterward.
-  chown_api_tree "$DATA_DIR" "$SECRET_DIR"
 }
 start_api_web() {
   export DNSGUARD_ENV_FILE="$ENV_FILE" DNSGUARD_DATA_DIR="$DATA_DIR" DNSGUARD_SECRET_DIR="$SECRET_DIR" DNSGUARD_TLS_DIR="$TLS_DIR" DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR" DNSGUARD_BIND_NETWORK="$BIND_NETWORK" DNSGUARD_INTERNAL_NETWORK_NAME="$INTERNAL_NETWORK" DNSGUARD_WEB_PORT="$WEB_PORT" DNSGUARD_WEB_BIND_IP=127.0.0.1
@@ -481,6 +472,7 @@ main() {
   enable_global_deny
   require_case 'Global Deny follows whitelist and baseline gate' check_global_dns
   export COMPOSE_PROJECT_NAME="$PROJECT" DNSGUARD_ENV_FILE="$ENV_FILE" DNSGUARD_BIND_NETWORK="$BIND_NETWORK" DNSGUARD_INTERNAL_NETWORK_NAME="$INTERNAL_NETWORK" DNSGUARD_DATA_DIR="$DATA_DIR" DNSGUARD_SECRET_DIR="$SECRET_DIR" DNSGUARD_TLS_DIR="$TLS_DIR" DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR"
+  export DNSGUARD_COMPOSE_OVERRIDE="$BUILD_OVERRIDE"
   if ! bash "$ROOT_DIR/scripts/finalize-global-deny.sh"; then
     die 'finalize-global-deny.sh 返回失败；保留隔离资源和报告供定位'
   fi
