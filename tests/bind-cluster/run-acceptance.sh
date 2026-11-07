@@ -252,19 +252,28 @@ deep.redirect IN A 192.0.2.102
 EOF
   cp "$RUNTIME_DIR/primary-data/app.test.zone" "$RUNTIME_DIR/secondary-1-data/app.test.zone"
   cp "$RUNTIME_DIR/primary-data/app.test.zone" "$RUNTIME_DIR/secondary-2-data/app.test.zone"
-  local tld_fixture_count="${TLD_FIXTURE_COUNT:-2}"
+  local tld_fixture_count="${TLD_FIXTURE_COUNT:-2}" tld_fixture_file="${TLD_FIXTURE_FILE:-}"
   if ! [[ "$tld_fixture_count" =~ ^[0-9]+$ ]] || ((tld_fixture_count < 2 || tld_fixture_count > 5000)); then
     echo "TLD_FIXTURE_COUNT must be between 2 and 5000" >&2
     return 2
   fi
-  {
-    echo '# Version 1, Last Updated DNSGuard isolated acceptance fixture'
-    echo 'COM'
-    echo 'NET'
-    for index in $(seq 1 $((tld_fixture_count - 2))); do
-      printf 'TEST%04d\n' "$index"
-    done
-  } >"$RUNTIME_DIR/tlds.txt"
+  if [[ -n "$tld_fixture_file" ]]; then
+    [[ -f "$tld_fixture_file" && ! -L "$tld_fixture_file" ]] || { echo "TLD_FIXTURE_FILE must be a regular file: $tld_fixture_file" >&2; return 2; }
+    local actual_tld_count
+    actual_tld_count="$(grep -Evc '^[[:space:]]*(#|$)' "$tld_fixture_file")"
+    [[ "$actual_tld_count" == "$tld_fixture_count" ]] || { echo "TLD_FIXTURE_FILE contains $actual_tld_count entries; expected $tld_fixture_count" >&2; return 2; }
+    cp -- "$tld_fixture_file" "$RUNTIME_DIR/tlds.txt"
+  else
+    {
+      echo '# Version 1, Last Updated DNSGuard isolated acceptance fixture'
+      echo 'COM'
+      echo 'NET'
+      for index in $(seq 1 $((tld_fixture_count - 2))); do
+        printf 'TEST%04d\n' "$index"
+      done
+    } >"$RUNTIME_DIR/tlds.txt"
+  fi
+  sha256sum "$RUNTIME_DIR/tlds.txt" >"$RUNTIME_DIR/tlds.sha256"
   for dir in "$RUNTIME_DIR"/*-data "$RUNTIME_DIR"/*-logs; do
     chmod 0775 "$dir"
     chown_bind_tree "$dir"
@@ -1031,6 +1040,11 @@ write_report() {
     echo "- 隔离网络：dnsguard-bind-acceptance (172.30.0.0/24)"
     echo "- 宿主机端口：${PRIMARY_PORT}/${SECONDARY_1_PORT}/${SECONDARY_2_PORT}（RPZ 集群）和 ${BASELINE_PORT}（隔离基线源，均未占用 53）"
     echo "- 生产连接：无"
+    if [[ -f "$RUNTIME_DIR/tlds.sha256" ]]; then
+      echo "- TLD fixture：${TLD_FIXTURE_COUNT:-2} 条；来源文件：${TLD_FIXTURE_FILE:-unknown}；SHA256：$(cut -d' ' -f1 "$RUNTIME_DIR/tlds.sha256")"
+    else
+      echo "- TLD fixture：${TLD_FIXTURE_COUNT:-2} 条合成隔离数据"
+    fi
     echo
     echo "## 用例结果"
     echo

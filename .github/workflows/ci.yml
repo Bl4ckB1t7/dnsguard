@@ -33,8 +33,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck -x install.sh scripts/*.sh tests/*.sh tests/e2e/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
-      - run: bash -n install.sh scripts/*.sh tests/*.sh tests/e2e/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh
+      - run: shellcheck -x install.sh scripts/*.sh tests/*.sh tests/e2e/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh tests/upgrade-rollback.sh
+      - run: bash -n install.sh scripts/*.sh tests/*.sh tests/e2e/*.sh tests/bind-cluster/*.sh tests/bind-cluster/global-deny-acceptance/*.sh tests/upgrade-rollback.sh
       - run: DNSGUARD_ENV_FILE=./deploy/docker/dnsguard.env.example docker compose --env-file deploy/docker/dnsguard.env.example -f compose.yaml config
       - run: bash tests/network-exposure.sh
 
@@ -49,7 +49,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils bind9-utils
-      - run: TLD_FIXTURE_COUNT=2 TEST_RUN_USER="$USER" bash ./tests/bind-cluster/run-acceptance.sh
+      - name: Fetch current IANA TLD snapshot
+        run: curl --fail --location --retry 2 https://data.iana.org/TLD/tlds-alpha-by-domain.txt -o "$RUNNER_TEMP/iana-tlds-alpha-by-domain.txt"
+      - run: TLD_FIXTURE_COUNT=1436 TLD_FIXTURE_FILE="$RUNNER_TEMP/iana-tlds-alpha-by-domain.txt" TEST_RUN_USER="$USER" bash ./tests/bind-cluster/run-acceptance.sh
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -112,9 +114,29 @@ jobs:
             test-results/
           if-no-files-found: warn
 
+  upgrade-rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run isolated v1.1.1 to candidate upgrade and snapshot rollback
+        run: UPGRADE_BASELINE_REF=v1.1.1 UPGRADE_CURRENT_REF=HEAD UPGRADE_HOST_PORT=18881 bash tests/upgrade-rollback.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-rollback-evidence
+          path: |
+            tests/upgrade-runtime/*/upgrade-rollback-report.md
+            tests/upgrade-runtime/*/evidence/
+            tests/upgrade-runtime/*/*-container.log
+            tests/upgrade-runtime/*/build-*.log
+          if-no-files-found: warn
+
   daily-regression-report:
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-    needs: [go, shell-and-compose, bind-integration, web, e2e-real]
+    needs: [go, shell-and-compose, bind-integration, web, e2e-real, upgrade-rollback]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -129,6 +151,7 @@ jobs:
           REGRESSION_BIND_RESULT: ${{ needs.bind-integration.result }}
           REGRESSION_WEB_RESULT: ${{ needs.web.result }}
           REGRESSION_E2E_RESULT: ${{ needs.e2e-real.result }}
+          REGRESSION_UPGRADE_RESULT: ${{ needs.upgrade-rollback.result }}
         run: scripts/daily-regression-report.sh "$RUNNER_TEMP/dnsguard-daily-regression.md"
       - if: always()
         uses: actions/upload-artifact@v4
