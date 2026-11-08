@@ -26,17 +26,19 @@ controlled, isolated upstream observation (never a public DNSLog), run:
 E2E_DNSSEC_OBSERVE=true bash tests/e2e/run-all.sh
 ```
 
-This enables query logging only in the test-owned authoritative upstream,
-issues separate randomized DO=0 and DO=1 names through the test Secondary, and
-records whether each complete name appeared in that log. The observation is
+CI enables this matrix for the real E2E job. Locally, this enables query logging only in the test-owned authoritative upstream,
+issues unique names for A, AAAA, TXT, CNAME, DNSKEY and DS across RD=0/1 and DO=0/1, repeats cold/hot-cache and whitelist checks, and
+records the client response plus whether each complete name appeared in that log. The observation is
 reported as `PASS`, `FAIL`, or `NOT RUN`; it does not weaken the normal Global
-Deny gate or hide a QNAME observed upstream. The default remains `NOT RUN` so
-ordinary CI does not silently claim a DNSSEC containment result.
+Deny gate or hide a QNAME observed upstream. The local default remains `NOT RUN`, while the CI E2E job fails when the controlled matrix finds a real upstream leak.
 
 The older `tests/bind-cluster/run-acceptance.sh` job remains a separate legacy
 TLD-deny compatibility harness. This modern flow deliberately tests only the
 v1.2.0 Global Deny zone (`global-deny.rpz.local`); it does not silently treat a
 legacy TLD fixture or its resolver failures as proof of the modern policy.
-The isolated recursive BIND profile uses `qname-wait-recurse no` to make the
-tested pre-recursion policy explicit; DNSSEC `DO=1` upstream leakage remains a
-separate risk and is not claimed as blocked by this flow.
+The generated RPZ package uses `qname-wait-recurse no break-dnssec yes` in the
+isolated recursive profile. This permits the explicit Global Deny RPZ rewrite
+for DNSSEC-bearing responses while leaving `dnssec-validation` enabled; it is
+an administrator-reviewed BIND policy trade-off, not a universal DNSSEC or
+DNS-tunnel guarantee. The test report records the exact profile and remains
+limited to the controlled BIND/upstream fixture.

@@ -102,7 +102,7 @@ jobs:
       - run: npm ci
       - run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils bind9-utils
       - run: npx playwright install --with-deps chromium
-      - run: bash tests/e2e/run-all.sh
+      - run: E2E_DNSSEC_OBSERVE=true bash tests/e2e/run-all.sh
       - if: always()
         uses: actions/upload-artifact@v4
         with:
