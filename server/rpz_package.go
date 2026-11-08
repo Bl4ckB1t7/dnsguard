@@ -211,6 +211,7 @@ func rpzPackageFiles(request rpzPackageRequest) rpzPackagePreview {
 	warnings := []string{
 		"本包不包含 TSIG Secret；existing 模式需要管理员复制已有授权 Key，admin-generate 模式需要在 BIND 受保护环境运行 tsig-keygen。",
 		"应用前必须由 BIND 管理员审核、备份并执行 named-checkconf/named-checkzone。DNSGuard 不会远程写入或重载 BIND。",
+		"response-policy 使用 qname-wait-recurse no 与 break-dnssec yes 处理 DO=1 的明确 RPZ 动作；这不关闭 DNSSEC 验证，但允许 RPZ 重写 DNSSEC 响应，必须由管理员审核。",
 		"Global Deny Zone 可以预创建，但在白名单发布并确认所有 Secondary 同步前，不得加入 response-policy。",
 	}
 	return rpzPackagePreview{FormatVersion: 1, Zone: request.Zone, GlobalDeny: request.GlobalDeny, TSIGKeyMode: request.TSIGKeyMode, TSIGKeyName: request.TSIGKeyPath, Files: files, Warnings: warnings}
@@ -252,10 +253,12 @@ AXFR/IXFR 传区文件使用 /var/cache/bind/dnsguard-rpz-secondary。脚本只�
 ## 审核与验证
 
 脚本会先 include config/tsig.conf，再 include 对应的 Primary/Secondary 片段，并把
-config/response-policy.conf 放入现有 options 块，确保 rpz-manager Key 已定义。若已有
-options 配置布局无法安全识别，脚本会停止并恢复备份，不会猜测。确认
-named-checkzone 和 named-checkconf 针对实际 named.conf 通过，再按现有变更流程
-reload BIND。Primary 运行
+config/response-policy.conf 放入现有 options 块，确保 rpz-manager Key 已定义。该片段使用
+qname-wait-recurse no break-dnssec yes，让明确的 RPZ 动作可以在递归前处理 DO=1 请求；
+break-dnssec yes 允许 RPZ 重写带 DNSSEC 数据的响应，但不关闭 dnssec-validation，因此
+必须由 BIND 管理员审核其 DNSSEC 语义。若已有 options 配置布局无法安全识别，脚本会停止并
+恢复备份，不会猜测。确认 named-checkzone 和 named-checkconf 针对实际 named.conf 通过，再
+按现有变更流程 reload BIND。Primary 运行
 ./verify-rpz-config.sh primary；Secondary 在传区文件出现后运行
 ./verify-rpz-config.sh secondary。
 
@@ -313,10 +316,14 @@ zone %q {
 func renderResponsePolicyConfig(zone, globalDeny string) string {
 	return fmt.Sprintf(`// Keep the business RPZ first. Add the commented Global Deny line only
 // after whitelist publication and Primary/Secondary verification.
+// qname-wait-recurse no allows QNAME policy evaluation before recursion.
+// break-dnssec yes permits an explicit RPZ action to rewrite DNSSEC-bearing
+// responses; it does not disable dnssec-validation. Review this trade-off
+// with the BIND administrator before applying the package.
 response-policy {
     zone %q;
     // zone %q;
-};
+} qname-wait-recurse no break-dnssec yes;
 `, zone, globalDeny)
 }
 

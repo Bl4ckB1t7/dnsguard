@@ -88,6 +88,9 @@ func TestRPZPackageIsValidatedAndContainsNoSecret(t *testing.T) {
 	if !strings.Contains(responsePolicy, `zone "rpz.local";`) || !strings.Contains(responsePolicy, `// zone "global-deny.rpz.local";`) {
 		t.Fatal("Global Deny must remain commented out in the generated response-policy fragment")
 	}
+	if !strings.Contains(responsePolicy, "qname-wait-recurse no break-dnssec yes") {
+		t.Fatal("generated response-policy must explicitly handle DO=1 RPZ rewrites before recursion")
+	}
 	primaryConfig := packageFileContent(preview, "config/rpz-primary.conf")
 	if !strings.Contains(primaryConfig, `allow-transfer { key rpz-manager; };`) ||
 		!strings.Contains(primaryConfig, `also-notify { 127.0.0.11 key rpz-manager;`) ||

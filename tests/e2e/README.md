@@ -36,6 +36,9 @@ The older `tests/bind-cluster/run-acceptance.sh` job remains a separate legacy
 TLD-deny compatibility harness. This modern flow deliberately tests only the
 v1.2.0 Global Deny zone (`global-deny.rpz.local`); it does not silently treat a
 legacy TLD fixture or its resolver failures as proof of the modern policy.
-The isolated recursive BIND profile uses `qname-wait-recurse no` to make the
-tested pre-recursion policy explicit; DNSSEC `DO=1` upstream leakage remains a
-separate risk and is not claimed as blocked by this flow.
+The generated RPZ package uses `qname-wait-recurse no break-dnssec yes` in the
+isolated recursive profile. This permits the explicit Global Deny RPZ rewrite
+for DNSSEC-bearing responses while leaving `dnssec-validation` enabled; it is
+an administrator-reviewed BIND policy trade-off, not a universal DNSSEC or
+DNS-tunnel guarantee. The test report records the exact profile and remains
+limited to the controlled BIND/upstream fixture.

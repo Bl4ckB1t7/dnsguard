@@ -580,12 +580,12 @@ isolated_sed() {
 }
 enable_global_deny() {
   isolated_sed 's#// zone "global-deny.rpz.local";#zone "global-deny.rpz.local";#' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf"
-  # Keep the isolated recursive fixture aligned with the documented
-  # qname-wait-recurse=no profile. The option is part of the response-policy
-  # statement and therefore belongs on its closing line.
-  # This is test-only BIND configuration; the product never changes an
-  # administrator's production recursion settings.
-  isolated_sed 's/^};$/} qname-wait-recurse no;/' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf"
+  # The generated package owns the response-policy options. Keep this test
+  # flow from silently falling back to the pre-fix profile: qname-wait-recurse
+  # no alone does not prevent DO=1 recursion, while break-dnssec yes permits
+  # the explicit RPZ rewrite needed by the isolated Global Deny test.
+  grep -Fq '} qname-wait-recurse no break-dnssec yes;' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" || die 'generated Primary response-policy is missing qname-wait-recurse no break-dnssec yes'
+  grep -Fq '} qname-wait-recurse no break-dnssec yes;' "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf" || die 'generated Secondary response-policy is missing qname-wait-recurse no break-dnssec yes'
   docker exec "$BIND_PRIMARY" named-checkconf -z /etc/bind/named.conf >/dev/null
   docker exec "$BIND_SECONDARY" named-checkconf -z /etc/bind/named.conf >/dev/null
   docker exec "$BIND_PRIMARY" rndc reload >/dev/null 2>&1 || docker kill -s HUP "$BIND_PRIMARY" >/dev/null
@@ -887,7 +887,7 @@ final_browser() {
 }
 write_report() {
   mkdir -p "$RUNTIME"
-  { echo '# DNSGuard isolated real E2E'; echo; echo "- run: $RUN_ID"; echo "- BIND image: internetsystemsconsortium/bind9:9.20"; echo "- resources: $PROJECT / $BIND_NETWORK / $INTERNAL_NETWORK"; echo '- topology: one Primary, one Secondary, and one isolated authoritative upstream fixture'; echo "- recursive profile: qname-wait-recurse no"; echo "- recursive forwarding baseline matrix: $FORWARDING_MATRIX_STATUS"; echo "- forwarding matrix detail: $FORWARDING_MATRIX_DETAIL"; echo "- DNSSEC/QNAME matrix: $DNSSEC_OBSERVATION_STATUS"; echo "- DNSSEC observation detail: $DNSSEC_OBSERVATION_DETAIL"; echo '- public DNSLog observation: NOT RUN; no public resolver or external DNSLog was used'; echo '- production resources and real secrets: not accessed'; echo; echo '| test | status | evidence |'; echo '|---|---|---|'; for i in "${!CASE_NAMES[@]}"; do printf "| %s | %s | \`%s\` |\\n" "${CASE_NAMES[$i]}" "${CASE_STATUS[$i]}" "${CASE_EVIDENCE[$i]}"; done; } >"$REPORT"
+  { echo '# DNSGuard isolated real E2E'; echo; echo "- run: $RUN_ID"; echo "- BIND image: internetsystemsconsortium/bind9:9.20"; echo "- resources: $PROJECT / $BIND_NETWORK / $INTERNAL_NETWORK"; echo '- topology: one Primary, one Secondary, and one isolated authoritative upstream fixture'; echo '- recursive profile: qname-wait-recurse no break-dnssec yes (generated RPZ package; dnssec-validation remains enabled)'; echo "- recursive forwarding baseline matrix: $FORWARDING_MATRIX_STATUS"; echo "- forwarding matrix detail: $FORWARDING_MATRIX_DETAIL"; echo "- DNSSEC/QNAME matrix: $DNSSEC_OBSERVATION_STATUS"; echo "- DNSSEC observation detail: $DNSSEC_OBSERVATION_DETAIL"; echo '- public DNSLog observation: NOT RUN; no public resolver or external DNSLog was used'; echo '- production resources and real secrets: not accessed'; echo; echo '| test | status | evidence |'; echo '|---|---|---|'; for i in "${!CASE_NAMES[@]}"; do printf "| %s | %s | \`%s\` |\\n" "${CASE_NAMES[$i]}" "${CASE_STATUS[$i]}" "${CASE_EVIDENCE[$i]}"; done; } >"$REPORT"
 }
 main() {
   require_tools; mkdir -p "$RUNTIME"; write_env; start_api_web
