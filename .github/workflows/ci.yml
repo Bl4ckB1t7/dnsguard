@@ -152,7 +152,7 @@ jobs:
           REGRESSION_WEB_RESULT: ${{ needs.web.result }}
           REGRESSION_E2E_RESULT: ${{ needs.e2e-real.result }}
           REGRESSION_UPGRADE_RESULT: ${{ needs.upgrade-rollback.result }}
-        run: scripts/daily-regression-report.sh "$RUNNER_TEMP/dnsguard-daily-regression.md"
+        run: bash scripts/daily-regression-report.sh "$RUNNER_TEMP/dnsguard-daily-regression.md"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
