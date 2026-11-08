@@ -27,11 +27,17 @@ for issue in json.load(sys.stdin):
 ')"
 
 if [[ -n "$issue_number" ]]; then
-  gh api --method PATCH "repos/${REPOSITORY}/issues/${issue_number}" \
-    -f body="$body" >/dev/null
+  if ! gh_error="$(gh api --method PATCH "repos/${REPOSITORY}/issues/${issue_number}" \
+    -f body="$body" 2>&1 >/dev/null)"; then
+    printf 'issue update failed; verify GITHUB_TOKEN has issues:write permission: %s\n' "$gh_error" >&2
+    exit 3
+  fi
   printf 'updated regression issue #%s\n' "$issue_number"
 else
-  gh api --method POST "repos/${REPOSITORY}/issues" \
-    -f title="$TITLE" -f body="$body" >/dev/null
+  if ! gh_error="$(gh api --method POST "repos/${REPOSITORY}/issues" \
+    -f title="$TITLE" -f body="$body" 2>&1 >/dev/null)"; then
+    printf 'issue creation failed; verify GITHUB_TOKEN has issues:write permission: %s\n' "$gh_error" >&2
+    exit 3
+  fi
   printf 'created regression issue\n'
 fi

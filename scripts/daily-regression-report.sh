@@ -33,7 +33,11 @@ done
 
 if ((failure)); then
   if [[ "${GITHUB_EVENT_NAME:-}" == schedule || "${GITHUB_EVENT_NAME:-}" == workflow_dispatch ]]; then
-    scripts/update-regression-issue.sh "$REPORT_FILE"
+    if ! issue_output="$(bash scripts/update-regression-issue.sh "$REPORT_FILE" 2>&1)"; then
+      printf 'regression report generated, but issue automation failed: %s\n' "$issue_output" >&2
+      exit 2
+    fi
+    printf '%s\n' "$issue_output"
   else
     printf 'regression failure outside scheduled/manual run; issue update skipped\n' >&2
   fi
