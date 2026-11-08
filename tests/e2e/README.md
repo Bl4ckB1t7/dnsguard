@@ -26,12 +26,11 @@ controlled, isolated upstream observation (never a public DNSLog), run:
 E2E_DNSSEC_OBSERVE=true bash tests/e2e/run-all.sh
 ```
 
-CI enables this opt-in matrix for the real E2E job. Locally, this enables query logging only in the test-owned authoritative upstream,
-issues separate randomized DO=0 and DO=1 names through the test Secondary, and
-records whether each complete name appeared in that log. The observation is
+CI enables this matrix for the real E2E job. Locally, this enables query logging only in the test-owned authoritative upstream,
+issues unique names for A, AAAA, TXT, CNAME, DNSKEY and DS across RD=0/1 and DO=0/1, repeats cold/hot-cache and whitelist checks, and
+records the client response plus whether each complete name appeared in that log. The observation is
 reported as `PASS`, `FAIL`, or `NOT RUN`; it does not weaken the normal Global
-Deny gate or hide a QNAME observed upstream. The default remains `NOT RUN` so
-ordinary CI does not silently claim a DNSSEC containment result.
+Deny gate or hide a QNAME observed upstream. The local default remains `NOT RUN`, while the CI E2E job fails when the controlled matrix finds a real upstream leak.
 
 The older `tests/bind-cluster/run-acceptance.sh` job remains a separate legacy
 TLD-deny compatibility harness. This modern flow deliberately tests only the
