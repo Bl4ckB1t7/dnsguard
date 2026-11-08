@@ -584,8 +584,8 @@ enable_global_deny() {
   # flow from silently falling back to the pre-fix profile: qname-wait-recurse
   # no alone does not prevent DO=1 recursion, while break-dnssec yes permits
   # the explicit RPZ rewrite needed by the isolated Global Deny test.
-  grep -Fq '} qname-wait-recurse no break-dnssec yes;' "$BIND_DIR/primary/etc-bind/dnsguard-rpz/config/response-policy.conf" || die 'generated Primary response-policy is missing qname-wait-recurse no break-dnssec yes'
-  grep -Fq '} qname-wait-recurse no break-dnssec yes;' "$BIND_DIR/secondary/etc-bind/dnsguard-rpz/config/response-policy.conf" || die 'generated Secondary response-policy is missing qname-wait-recurse no break-dnssec yes'
+  docker exec "$BIND_PRIMARY" grep -Fq '} qname-wait-recurse no break-dnssec yes;' /etc/bind/dnsguard-rpz/config/response-policy.conf || die 'generated Primary response-policy is missing qname-wait-recurse no break-dnssec yes'
+  docker exec "$BIND_SECONDARY" grep -Fq '} qname-wait-recurse no break-dnssec yes;' /etc/bind/dnsguard-rpz/config/response-policy.conf || die 'generated Secondary response-policy is missing qname-wait-recurse no break-dnssec yes'
   docker exec "$BIND_PRIMARY" named-checkconf -z /etc/bind/named.conf >/dev/null
   docker exec "$BIND_SECONDARY" named-checkconf -z /etc/bind/named.conf >/dev/null
   docker exec "$BIND_PRIMARY" rndc reload >/dev/null 2>&1 || docker kill -s HUP "$BIND_PRIMARY" >/dev/null
