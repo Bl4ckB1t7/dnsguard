@@ -26,7 +26,7 @@ controlled, isolated upstream observation (never a public DNSLog), run:
 E2E_DNSSEC_OBSERVE=true bash tests/e2e/run-all.sh
 ```
 
-This enables query logging only in the test-owned authoritative upstream,
+CI enables this opt-in matrix for the real E2E job. Locally, this enables query logging only in the test-owned authoritative upstream,
 issues separate randomized DO=0 and DO=1 names through the test Secondary, and
 records whether each complete name appeared in that log. The observation is
 reported as `PASS`, `FAIL`, or `NOT RUN`; it does not weaken the normal Global

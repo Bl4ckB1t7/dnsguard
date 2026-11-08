@@ -35,6 +35,8 @@ KEEP="${E2E_KEEP:-false}"
 DNSSEC_OBSERVE="${E2E_DNSSEC_OBSERVE:-false}"
 DNSSEC_OBSERVATION_STATUS="NOT RUN"
 DNSSEC_OBSERVATION_DETAIL=""
+FORWARDING_MATRIX_STATUS="NOT RUN"
+FORWARDING_MATRIX_DETAIL=""
 RPZ_PACKAGE_ROOT=""
 COMPOSE=(docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml" -f "$ROOT_DIR/compose.bind-network.yaml" -f "$BUILD_OVERRIDE")
 BIND_COMPOSE=(docker compose -p "$PROJECT-bind" -f "$BIND_DIR/compose.yaml")
@@ -212,6 +214,7 @@ EOF
   IN NS ns.app.test.
 ns IN A $UPSTREAM_IP
 baseline IN A 192.0.2.42
+matrix-baseline IN A 192.0.2.45
 allowed IN A 192.0.2.43
 deep.allowed IN A 192.0.2.44
 redirect IN A 192.0.2.50
@@ -679,52 +682,162 @@ check_global_dns() {
   printf 'global_primary_serial=%s\nglobal_secondary_serial=%s\ntrigger=%s\nrecursive_after_deny=%s\nwhitelist_after_deny=%s\nnested_whitelist_after_deny=%s\na_redirect_after_deny=%s\nunknown_qname=%s\nunknown_rcode=%s\n' "$p" "$s" "$trigger" "$r" "$allow" "$nested" "$redirect" "$unknown" "$unknown_rcode"
   [[ -n "$p" && "$p" == "$s" && "$trigger" == '.' && -z "$r" && "$allow" == '192.0.2.43' && "$nested" == '192.0.2.44' && "$redirect" == '192.0.2.99' && "$unknown_rcode" == 'NXDOMAIN' ]]
 }
-check_dnssec_upstream_observation() {
-  local qname_do0 qname_do1 rcode_do0 rcode_do1 log_file label_base observed_do0 observed_do1
+query_matrix() {
+  local qname="$1" qtype="$2" rd="$3" do_bit="$4"
+  local recursion='+norecurse' dnssec='+nodnssec'
+  [[ "$rd" == 1 ]] && recursion='+recurse'
+  [[ "$do_bit" == 1 ]] && dnssec='+dnssec'
+  docker exec "$BIND_SECONDARY" dig +tcp +time=2 +tries=1 "$recursion" "$dnssec" \
+    +noall +comments +answer @127.0.0.1 "$qname" "$qtype" 2>/dev/null || true
+}
+response_rcode() {
+  awk '/status:/{gsub(",", "", $6); print $6; exit}'
+}
+response_answer() {
+  sed '/^[;#]/d' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//'
+}
+wait_for_upstream_log() {
+  # The ISC image is started with -g. BIND sends configured logging to the
+  # container's stderr/stdout in this mode; the mounted query.log may exist
+  # but remain empty. Read the container log as the source of observation.
+  for _ in $(seq 1 20); do
+    if docker logs "$BIND_UPSTREAM" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+upstream_query_seen() {
+  local qname="$1"
+  docker logs "$BIND_UPSTREAM" 2>&1 | grep -F -- "(${qname%.})" >/dev/null 2>&1
+}
+print_matrix_observation() {
+  local phase="$1" qname="$2" qtype="$3" rd="$4" do_bit="$5" response="$6" rcode answer seen
+  rcode="$(printf '%s\n' "$response" | response_rcode)"
+  answer="$(printf '%s\n' "$response" | response_answer)"
+  seen=false
+  upstream_query_seen "$qname" && seen=true
+  printf 'phase=%s qname=%s qtype=%s rd=%s do=%s rcode=%s answer=%s upstream_qname_observed=%s\n' \
+    "$phase" "$qname" "$qtype" "$rd" "$do_bit" "${rcode:-EMPTY}" "${answer:-EMPTY}" "$seen"
+  MATRIX_LAST_RCODE="$rcode"
+  MATRIX_LAST_ANSWER="$answer"
+  MATRIX_LAST_UPSTREAM="$seen"
+}
+check_recursive_forwarding_matrix() {
+  local name='matrix-baseline.app.test.' response baseline_seen
   if [[ "$DNSSEC_OBSERVE" != true ]]; then
-    printf 'NOT RUN: set E2E_DNSSEC_OBSERVE=true to enable isolated upstream query logging\n'
+    printf 'NOT RUN: set E2E_DNSSEC_OBSERVE=true to enable controlled upstream matrix\n'
+    FORWARDING_MATRIX_STATUS='NOT RUN'
+    FORWARDING_MATRIX_DETAIL='opt-in only; no external DNSLog or production resolver was used'
+    return 2
+  fi
+  wait_for_upstream_log || {
+    printf 'FAIL: controlled upstream query log was not created: %s\n' "$BIND_DIR/upstream/log-bind/query.log"
+    FORWARDING_MATRIX_STATUS='FAIL'
+    FORWARDING_MATRIX_DETAIL='upstream logging was requested but no log file was available'
+    return 1
+  }
+  response="$(query_matrix "$name" A 1 0)"
+  print_matrix_observation pre-deny-cold "$name" A 1 0 "$response"
+  baseline_seen="$MATRIX_LAST_UPSTREAM"
+  [[ "$MATRIX_LAST_RCODE" == NOERROR && "$MATRIX_LAST_ANSWER" == *192.0.2.45* ]] || {
+    printf 'FAIL: RD=1 DO=0 normal forwarding baseline was not NOERROR with the expected answer\n'
+    FORWARDING_MATRIX_STATUS='FAIL'
+    FORWARDING_MATRIX_DETAIL='cold-cache recursive baseline did not return the controlled upstream answer'
+    return 1
+  }
+  response="$(query_matrix "$name" A 0 0)"
+  print_matrix_observation pre-deny-hot "$name" A 0 0 "$response"
+  [[ "$MATRIX_LAST_RCODE" == NOERROR && "$MATRIX_LAST_ANSWER" == *192.0.2.45* ]] || {
+    printf 'FAIL: RD=0 hot-cache baseline was not NOERROR with the cached answer\n'
+    FORWARDING_MATRIX_STATUS='FAIL'
+    FORWARDING_MATRIX_DETAIL='hot-cache non-recursive baseline did not return the cached answer'
+    return 1
+  }
+  response="$(query_matrix "$name" A 1 1)"
+  print_matrix_observation pre-deny-dnssec "$name" A 1 1 "$response"
+  [[ "$MATRIX_LAST_RCODE" == NOERROR && "$MATRIX_LAST_ANSWER" == *192.0.2.45* ]] || {
+    printf 'FAIL: DO=1 normal forwarding baseline was not NOERROR with the cached answer\n'
+    FORWARDING_MATRIX_STATUS='FAIL'
+    FORWARDING_MATRIX_DETAIL='DO=1 normal forwarding baseline did not return the cached answer'
+    return 1
+  }
+  [[ "$baseline_seen" == true ]] || {
+    printf 'FAIL: controlled upstream did not observe the baseline QNAME\n'
+    FORWARDING_MATRIX_STATUS='FAIL'
+    FORWARDING_MATRIX_DETAIL='normal forwarding was not observed at the controlled upstream'
+    return 1
+  }
+  FORWARDING_MATRIX_STATUS='PASS'
+  FORWARDING_MATRIX_DETAIL='cold RD=1 forwarding, hot RD=0 cache, and DO=1 cache responses were recorded; baseline QNAME reached the controlled upstream'
+}
+check_dnssec_qname_matrix() {
+  local base allow response type rd do_bit failures=0 queries=0 hot_response whitelist_response whitelist_seen cell_qname hot_name
+  local -a query_types=(A AAAA TXT CNAME DNSKEY DS)
+  if [[ "$DNSSEC_OBSERVE" != true ]]; then
+    printf 'NOT RUN: set E2E_DNSSEC_OBSERVE=true to enable controlled DNSSEC/QNAME matrix\n'
     DNSSEC_OBSERVATION_STATUS='NOT RUN'
     DNSSEC_OBSERVATION_DETAIL='opt-in only; no external DNSLog or production resolver was used'
     return 2
   fi
-  log_file="$BIND_DIR/upstream/log-bind/query.log"
-  label_base="dnssec-${RUN_ID//[^[:alnum:]]/}"
-  qname_do0="${label_base}-do0.app.test."
-  qname_do1="${label_base}-do1.app.test."
-  for _ in $(seq 1 20); do
-    [[ -f "$log_file" ]] && break
-    sleep 1
-  done
-  [[ -f "$log_file" ]] || {
-    printf 'FAIL: controlled upstream query log was not created: %s\n' "$log_file"
+  wait_for_upstream_log || {
+    printf 'FAIL: controlled upstream query log was not available\n'
     DNSSEC_OBSERVATION_STATUS='FAIL'
-    DNSSEC_OBSERVATION_DETAIL='upstream logging was requested but no log file was available'
+    DNSSEC_OBSERVATION_DETAIL='upstream logging was requested but container logs were unavailable'
     return 1
   }
-  rcode_do0="$(docker exec "$BIND_SECONDARY" dig +nodnssec +recurse +time=2 +tries=1 +noall +comments @127.0.0.1 "$qname_do0" A 2>/dev/null | awk '/status:/{gsub(",", "", $6); print $6; exit}' || true)"
-  rcode_do1="$(docker exec "$BIND_SECONDARY" dig +dnssec +recurse +time=2 +tries=1 +noall +comments @127.0.0.1 "$qname_do1" A 2>/dev/null | awk '/status:/{gsub(",", "", $6); print $6; exit}' || true)"
-  sleep 2
-  observed_do0=false
-  observed_do1=false
-  if grep -Fq -- "${qname_do0%.}" "$log_file"; then
-    observed_do0=true
+  base="matrix-${RUN_ID//[^[:alnum:]]/}"
+  allow='allowed.app.test.'
+  for type in "${query_types[@]}"; do
+    for rd in 0 1; do
+      for do_bit in 0 1; do
+        # Use a distinct cold-cache name for every matrix cell. A cumulative
+        # log cannot attribute a later observation to an earlier query.
+        cell_qname="${base}-${type}-rd${rd}-do${do_bit}.deep.branch.app.test."
+        response="$(query_matrix "$cell_qname" "$type" "$rd" "$do_bit")"
+        print_matrix_observation post-deny-cold "$cell_qname" "$type" "$rd" "$do_bit" "$response"
+        queries=$((queries + 1))
+        # RD=0 is non-recursive: BIND may legitimately return NOERROR with
+        # no answer, REFUSED, or an RPZ response. The security assertion is
+        # that it does not forward the complete QNAME upstream. RD=1 must
+        # return the configured deny result and not be forwarded upstream.
+        if [[ "$MATRIX_LAST_UPSTREAM" == true ]]; then
+          failures=$((failures + 1))
+        elif [[ "$rd" == 1 && "$MATRIX_LAST_RCODE" != NXDOMAIN ]]; then
+          failures=$((failures + 1))
+        fi
+      done
+    done
+  done
+  hot_name="${base}-hot-rd1-do1.deep.branch.app.test."
+  hot_response="$(query_matrix "$hot_name" A 1 1)"
+  print_matrix_observation post-deny-hot-cold "$hot_name" A 1 1 "$hot_response"
+  hot_response="$(query_matrix "$hot_name" A 1 1)"
+  print_matrix_observation post-deny-hot-repeat "$hot_name" A 1 1 "$hot_response"
+  if [[ "$MATRIX_LAST_RCODE" != NXDOMAIN || "$MATRIX_LAST_UPSTREAM" == true ]]; then
+    failures=$((failures + 1))
   fi
-  if grep -Fq -- "${qname_do1%.}" "$log_file"; then
-    observed_do1=true
-  fi
-  printf 'do0_qname=%s\ndo0_rcode=%s\ndo0_upstream_observed=%s\ndo1_qname=%s\ndo1_rcode=%s\ndo1_upstream_observed=%s\n' "$qname_do0" "$rcode_do0" "$observed_do0" "$qname_do1" "$rcode_do1" "$observed_do1"
-  if [[ "$rcode_do0" != NXDOMAIN || "$rcode_do1" != NXDOMAIN ]]; then
+  for rd in 0 1; do
+    for do_bit in 0 1; do
+      whitelist_response="$(query_matrix "$allow" A "$rd" "$do_bit")"
+      print_matrix_observation post-deny-whitelist "$allow" A "$rd" "$do_bit" "$whitelist_response"
+      if [[ "$rd" == 1 && "$do_bit" == 0 ]]; then
+        [[ "$MATRIX_LAST_RCODE" == NOERROR && "$MATRIX_LAST_ANSWER" == *192.0.2.43* ]] || failures=$((failures + 1))
+        whitelist_seen="$MATRIX_LAST_UPSTREAM"
+      fi
+    done
+  done
+  [[ "$whitelist_seen" == true ]] || failures=$((failures + 1))
+  printf 'matrix_queries=%s blocked_name_prefix=%s whitelist_qname=%s whitelist_upstream_observed=%s failures=%s\n' \
+    "$queries" "$base" "$allow" "${whitelist_seen:-false}" "$failures"
+  if ((failures)); then
     DNSSEC_OBSERVATION_STATUS='FAIL'
-    DNSSEC_OBSERVATION_DETAIL="client RCODEs were not both NXDOMAIN (DO=0: ${rcode_do0:-empty}, DO=1: ${rcode_do1:-empty})"
-    return 1
-  fi
-  if [[ "$observed_do0" == true || "$observed_do1" == true ]]; then
-    DNSSEC_OBSERVATION_STATUS='FAIL'
-    DNSSEC_OBSERVATION_DETAIL='the complete randomized QNAME appeared in the isolated authoritative upstream query log; NXDOMAIN is not treated as containment'
+    DNSSEC_OBSERVATION_DETAIL="${queries} blocked queries covered A/AAAA/TXT/CNAME/DNSKEY/DS with RD=0/1 and DO=0/1; ${failures} containment observations failed; NXDOMAIN is not treated as proof of no upstream traffic"
     return 1
   fi
   DNSSEC_OBSERVATION_STATUS='PASS'
-  DNSSEC_OBSERVATION_DETAIL='both queries returned NXDOMAIN and the complete randomized QNAME was not observed in the isolated upstream log'
+  DNSSEC_OBSERVATION_DETAIL="${queries} blocked queries covered A/AAAA/TXT/CNAME/DNSKEY/DS with RD=0/1 and DO=0/1, plus cold/hot-cache and whitelist observations; complete blocked QNAMEs were not observed upstream"
 }
 create_storage_state() {
   local captcha_json captcha_id captcha_svg captcha_code
@@ -774,7 +887,7 @@ final_browser() {
 }
 write_report() {
   mkdir -p "$RUNTIME"
-  { echo '# DNSGuard isolated real E2E'; echo; echo "- run: $RUN_ID"; echo "- BIND image: internetsystemsconsortium/bind9:9.20"; echo "- resources: $PROJECT / $BIND_NETWORK / $INTERNAL_NETWORK"; echo '- topology: one Primary, one Secondary, and one isolated authoritative upstream fixture'; echo "- recursive profile: qname-wait-recurse no; DNSSEC DO=1/upstream observation: $DNSSEC_OBSERVATION_STATUS"; echo "- DNSSEC observation detail: $DNSSEC_OBSERVATION_DETAIL"; echo '- public DNSLog observation: NOT RUN; no public resolver or external DNSLog was used'; echo '- production resources and real secrets: not accessed'; echo; echo '| test | status | evidence |'; echo '|---|---|---|'; for i in "${!CASE_NAMES[@]}"; do printf "| %s | %s | \`%s\` |\\n" "${CASE_NAMES[$i]}" "${CASE_STATUS[$i]}" "${CASE_EVIDENCE[$i]}"; done; } >"$REPORT"
+  { echo '# DNSGuard isolated real E2E'; echo; echo "- run: $RUN_ID"; echo "- BIND image: internetsystemsconsortium/bind9:9.20"; echo "- resources: $PROJECT / $BIND_NETWORK / $INTERNAL_NETWORK"; echo '- topology: one Primary, one Secondary, and one isolated authoritative upstream fixture'; echo "- recursive profile: qname-wait-recurse no"; echo "- recursive forwarding baseline matrix: $FORWARDING_MATRIX_STATUS"; echo "- forwarding matrix detail: $FORWARDING_MATRIX_DETAIL"; echo "- DNSSEC/QNAME matrix: $DNSSEC_OBSERVATION_STATUS"; echo "- DNSSEC observation detail: $DNSSEC_OBSERVATION_DETAIL"; echo '- public DNSLog observation: NOT RUN; no public resolver or external DNSLog was used'; echo '- production resources and real secrets: not accessed'; echo; echo '| test | status | evidence |'; echo '|---|---|---|'; for i in "${!CASE_NAMES[@]}"; do printf "| %s | %s | \`%s\` |\\n" "${CASE_NAMES[$i]}" "${CASE_STATUS[$i]}" "${CASE_EVIDENCE[$i]}"; done; } >"$REPORT"
 }
 main() {
   require_tools; mkdir -p "$RUNTIME"; write_env; start_api_web
@@ -787,11 +900,20 @@ main() {
   E2E_EXPECT_RPZ_ACL=true require_case 'loaded BIND ACL gate' check_network_exposure
   require_case 'real browser BIND completion/package/whitelist flow' browser_bind
   require_case 'real BIND config and two RPZ zones loaded' check_real_dns
+  case_run 'controlled recursive forwarding baseline matrix' check_recursive_forwarding_matrix
+  FORWARDING_MATRIX_STATUS="${CASE_STATUS[$((${#CASE_STATUS[@]} - 1))]}"
+  FORWARDING_MATRIX_DETAIL="see ${CASE_EVIDENCE[$((${#CASE_EVIDENCE[@]} - 1))]} for recorded RD/DO responses and upstream observations"
+  if [[ "$DNSSEC_OBSERVE" == true && "$FORWARDING_MATRIX_STATUS" != PASS ]]; then
+    die 'controlled recursive forwarding baseline matrix failed; see report'
+  fi
   enable_global_deny
   require_case 'Global Deny follows whitelist and baseline gate' check_global_dns
-  case_run 'controlled DNSSEC DO=1 upstream observation' check_dnssec_upstream_observation
+  case_run 'controlled DNSSEC/QNAME matrix' check_dnssec_qname_matrix
   DNSSEC_OBSERVATION_STATUS="${CASE_STATUS[$((${#CASE_STATUS[@]} - 1))]}"
-  DNSSEC_OBSERVATION_DETAIL="see ${CASE_EVIDENCE[$((${#CASE_EVIDENCE[@]} - 1))]} for the separate DO=0 and DO=1 QNAME observations"
+  DNSSEC_OBSERVATION_DETAIL="see ${CASE_EVIDENCE[$((${#CASE_EVIDENCE[@]} - 1))]} for the full query-type/RD/DO matrix"
+  if [[ "$DNSSEC_OBSERVE" == true && "$DNSSEC_OBSERVATION_STATUS" != PASS ]]; then
+    die 'controlled DNSSEC/QNAME matrix failed; see report'
+  fi
   export COMPOSE_PROJECT_NAME="$PROJECT" DNSGUARD_ENV_FILE="$ENV_FILE" DNSGUARD_BIND_NETWORK="$BIND_NETWORK" DNSGUARD_INTERNAL_NETWORK_NAME="$INTERNAL_NETWORK" DNSGUARD_DATA_DIR="$DATA_DIR" DNSGUARD_SECRET_DIR="$SECRET_DIR" DNSGUARD_TLS_DIR="$TLS_DIR" DNSGUARD_BIND_LOG_DIR="$BIND_LOG_DIR"
   export DNSGUARD_COMPOSE_OVERRIDE="$BUILD_OVERRIDE"
   if ! bash "$ROOT_DIR/scripts/finalize-global-deny.sh"; then
